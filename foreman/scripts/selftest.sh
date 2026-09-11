@@ -349,9 +349,10 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 for output, rc, present in (("default_mode_request_user_input    under development    false\n",0,True),("another_flag stable true\n",0,False),("",1,False)):
     b.request_input_feature.cache_clear()
-    with patch.object(b.subprocess,"run",return_value=subprocess.CompletedProcess([],rc,output,"")) as run:
+    with patch.object(b.subprocess,"run",return_value=subprocess.CompletedProcess([],rc,output,"warning: Skill descriptions were shortened")) as run:
         feature=b.request_input_feature("codex",sys.argv[2],sys.argv[2])
         assert b.request_input_feature("codex",sys.argv[2],sys.argv[2])==feature and run.call_count==1
+        assert run.call_args.kwargs["capture_output"] is True
         assert feature["present"]==present
         shown=b.feature_report(feature,"false")
         assert b.REQUEST_INPUT_FEATURE in shown
