@@ -125,6 +125,7 @@ def blank_state() -> dict:
         "turns": 0,
         "errors": [],
         "tool_errors": [],
+        "command_results": {},       # 同一命令只保留末次结果；末次成功会覆盖早先失败
         "forbidden": [],
         "approvals": [],           # appserver: 回到执行体的审批请求及决定
         "auto_reviews": [],        # appserver: Codex 自动审查（替我审批）的决定
@@ -416,9 +417,9 @@ def scan_appserver(events, role=None):
                 command = item.get("command") or ""
                 exit_code = item.get("exitCode")
                 status = item.get("status")
-                if status in ("failed", "declined") or exit_code not in (0, None):
-                    state["tool_errors"].append((f"exit {exit_code} {status or ''}".strip(),
-                                                 f"{stringify(command, 200)}\n      {stringify(item.get('aggregatedOutput'), 300)}"))
+                command_key = stringify(command, 500)
+                state["command_results"][command_key] = (
+                    exit_code, status, stringify(item.get("aggregatedOutput"), 300))
                 probe_forbidden(state, command, stringify(command, 300), role)
             elif itype == "fileChange":
                 for change in item.get("changes") or []:
@@ -479,6 +480,8 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     state = scan(events, engine, role)
     state["writable_extra"] = _extra_writable_roots(log_path)
     visible_files = _visible_changed_files(state)
+    final_command_errors = [(command, result) for command, result in state["command_results"].items()
+                            if result[1] in ("failed", "declined") or result[0] not in (0, None)]
     eng = state["engine"]
     codex_like = eng in ("codex", "appserver")
 
@@ -498,6 +501,13 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     else:
         print(f"cost=${state['cost']:.4f}  tokens={state['tokens']}")
 
+    if final_command_errors:
+        print("\n--- 最后仍失败的命令（同一命令仅末次结果）---")
+        for command, (exit_code, status, output) in final_command_errors[:10]:
+            print(f"  [exit {exit_code} {status or ''}] {command}")
+            if output:
+                print(f"      {output}")
+
     blockers = []
     # accept / research 是否改了工作树只看 foreman.sh 的起跑前后 porcelain 探针；
     # fileChange 事件可能是 --writable 交付物，这里只列事实，不据此判这轮作废。
@@ -514,9 +524,9 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
             blockers.append("会话没有正常结束（无 agent_settled）：可能超时被杀、崩溃或被中断")
     if state["errors"]:
         blockers.append(f"模型侧 / 协议错误 {len(state['errors'])} 条")
-    if state["tool_errors"]:
-        blockers.append(f"命令非零退出或被拒 {len(state['tool_errors'])} 次（迭代中出现属正常，看下面清单判断）"
-                        if codex_like else f"工具执行失败 {len(state['tool_errors'])} 次")
+    if final_command_errors or state["tool_errors"]:
+        blockers.append(f"最后仍失败的命令 {len(final_command_errors)} 条；其它工具失败 {len(state['tool_errors'])} 条"
+                        if codex_like else f"工具执行失败 {len(final_command_errors) + len(state['tool_errors'])} 次")
     if state["forbidden"]:
         blockers.append(f"命中越界命令探针 {len(state['forbidden'])} 次")
     outside = _files_outside_work_dir(state)
@@ -577,7 +587,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
             print(f"  ? {q}")
 
     if state["tool_errors"]:
-        print("\n--- 工具/命令失败（最多 10 条）---")
+        print("\n--- 其它工具失败明细（最多 10 条）---")
         for name, result in state["tool_errors"][:10]:
             print(f"  [{name}] {result}")
         if codex_like and any("xcrun_db" in r for _, r in state["tool_errors"]):

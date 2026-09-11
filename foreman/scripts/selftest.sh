@@ -258,6 +258,14 @@ with open(sys.argv[1],"w") as f:
 PY2
 expect_grep "report 展示引导来源与正文" "fromRun=7.*引导正文" python3 "$SKILL_DIR/scripts/summarize.py" "$T/steer-summary.jsonl"
 expect_grep "report 展示 steer_requeued" "steer_requeued" python3 "$SKILL_DIR/scripts/summarize.py" "$T/steer-summary.jsonl"
+cat > "$T/command-dedup.jsonl" <<'EOF2'
+{"_fleet":"thread","threadId":"t1"}
+{"method":"item/completed","params":{"item":{"type":"commandExecution","command":"retry-me","exitCode":1,"status":"failed","aggregatedOutput":"first"}}}
+{"method":"item/completed","params":{"item":{"type":"commandExecution","command":"retry-me","exitCode":0,"status":"completed","aggregatedOutput":"ok"}}}
+{"method":"item/completed","params":{"item":{"type":"commandExecution","command":"still-bad","exitCode":2,"status":"failed","aggregatedOutput":"last"}}}
+EOF2
+command_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/command-dedup.jsonl")"
+if printf '%s' "$command_out" | grep -q '最后仍失败的命令' && printf '%s' "$command_out" | grep -q 'still-bad' && ! printf '%s' "$command_out" | grep -q 'retry-me'; then ok "report 命令失败按命令去重且末次成功消除失败"; else bad "report 命令失败去重"; fi
 echo "== 引导竞态与执行体 =="
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体引导：成功、WAITING、结束竞态、失败保留、旧正文、空号与 FIFO" || bad "执行体引导竞态"
 import importlib.util, json, os, pathlib, tempfile, types, sys
