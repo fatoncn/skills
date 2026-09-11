@@ -68,6 +68,10 @@ fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
 expect_grep "status 说明用时从 request / turn 起算" "request 写入 / turn 开始算" "$F" status
 expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
+expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-mech --role mechanical --prompt "$T/brief.md" --title "机械实现" --timeout 30
+expect_rc "closeout 默认续最后一条 run 的线程" 4 "$F" run 1 --closeout --prompt "$T/brief.md" --title "收尾" --timeout 30
+close_req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json | head -1)"
+[ "$(cat "${close_req%.request.json}.thread")" = closeout-mech ] && ok "closeout 续到最后 run 的线程" || bad "closeout 续错线程"
 expect_grep "同名线程换角色被拒" "角色" "$F" run 1 --thread implement --role mechanical --prompt "$T/brief.md" --title x --timeout 30
 expect_grep "--new-thread 已取消" "已取消" "$F" run 1 --new-thread --prompt "$T/brief.md" --title x --timeout 30
 expect_grep "同名线程换引擎被拒" "引擎" "$F" run 1 --engine pi --prompt "$T/brief.md" --title x --timeout 30

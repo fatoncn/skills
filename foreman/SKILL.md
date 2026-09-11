@@ -197,7 +197,7 @@ $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writ
 
 调研不必先建 issue，票 id 用一个词就行；但**有背景 issue 就 `--gh-issue` 挂上**，线程名的 `{ids}` 才带号，桌面端一眼能认出它归哪张票。交付目录放项目约定的中间产物目录（项目没规定就 `~/.foreman/projects/<项目>/batches/<批次>/`）；`--writable` 把它放开，`report` 的越界探针把它当作内部，改到检出里的文件照样标出。调研票不走 `check` / `diff` / `pr`，验收就是你逐条核交付物（阶段 4）。追问续同一线程（`run` 不带 `--role` 自动取记录）；用完 `cleanup <id> --force`（分支没有提交，直接删）。任务书模板 `research-<id>.md` 见 `references/issue-pr-flow.md`：问事实不问方案。
 
-- **线程按对象模型走**：`run` 默认开或续 `implement` 线程；一票多 PR 时，非默认 PR 的 `run --pr <名>` 会自动用 `<角色>@<pr>`（如 `implement@b`）并行，仍可显式 `--thread` 覆盖。`--role mechanical` 走 `mechanical` 线程，`--role research` 走 `research` 线程（调研，见上），`--role accept` 走 `accept` 线程（验收，见阶段 4），`--closeout` 续 `implement` 并把 `assets/CLOSEOUT.md`「收尾阶段契约」（放行对自己这张 PR 的 push / gh 写、本轮输出格式）放在 prompt 顶部、探针按收尾白名单判；`--thread <名>` 另起；续线程不用再给角色和引擎。同名线程不覆盖，要重开就 `release` 旧的再 `--thread <新名>` 另起（旧线程的账本保留）；换引擎只能另起线程，它不记得旧线程干过什么，返工上下文要在 prompt 里补。复审每次新开 `review-N`。`threads <id>` 看全表；没有这本账，隔几个小时或换个会话回来就找不到之前的线程。
+- **线程按对象模型走**：`run` 默认开或续 `implement` 线程；一票多 PR 时，非默认 PR 的 `run --pr <名>` 会自动用 `<角色>@<pr>`（如 `implement@b`）并行，仍可显式 `--thread` 覆盖。`--role mechanical` 走 `mechanical` 线程，`--role research` 走 `research` 线程（调研，见上），`--role accept` 走 `accept` 线程（验收，见阶段 4）。`--closeout` 默认续账本里最后一条 run 所在的线程，显式 `--role` / `--thread` 时尊重显式选择，并把 `assets/CLOSEOUT.md`「收尾阶段契约」放在 prompt 顶部、探针按收尾白名单判；`--thread <名>` 另起；续线程不用再给角色和引擎。同名线程不覆盖，要重开就 `release` 旧的再 `--thread <新名>` 另起（旧线程的账本保留）；换引擎只能另起线程，它不记得旧线程干过什么，返工上下文要在 prompt 里补。复审每次新开 `review-N`。`threads <id>` 看全表；没有这本账，隔几个小时或换个会话回来就找不到之前的线程。
 - **档位**来自全局 `[roles.*]`（项目同名可覆盖），单次 `--model` / `--effort` 可覆盖；派活后看 `report` 首行的 `model= effort=` 确认，不要等验收才发现。到并发上限脚本拒绝派发，`status` 尾行显示当前在跑数。
 - **线程由常驻执行体占着（写锁）**：第一次 `run` 起一个常驻执行体载入线程并一直持有它的写锁，之后每轮只是往它的队列丢请求（同一线程的轮次排队，`status` 里 `QUEUED`）；桌面端在此期间打不开这条线程，也就不会再出现「already has an active writer」。**编排者明确结束这轮工作时 `release <id>` 释放**，`cleanup` 也会释放；空闲超过 `codex.hold_idle_minutes`（默认 360）自动释放，免得编排者会话没了还永久占着。
 - **并发派活一律 `--detach`**：宿主 shell 有 10 分钟上限，一轮 20～40 分钟正常。前台档只适合几分钟的小活。
@@ -250,7 +250,7 @@ $FOREMAN run <id> --role accept --prompt <accept-id.md> --title "…" --writable
 
 ## 阶段 5 · 收口：PR、review 闭环、报可合
 
-执行者只在 worktree 里 commit；**首次 push / 建 draft PR / 建 issue 由你直接做，不用先问**（cookie 09-11：每张票都要走的常规对外动作、没有破坏性，编排者自己拍板；仍要人按的只有项目规则点名的：合并由人、生产 / 动钱 / 部署平台的写操作、改写共享历史、删远端分支）；之后收尾轮的 push、回复 review 由实现者按收尾契约做（`run --closeout`）：
+执行者只在 worktree 里 commit；**首次 push / 建 draft PR / 建 issue 由你直接做，不用先问**（cookie 09-11：每张票都要走的常规对外动作、没有破坏性，编排者自己拍板；仍要人按的只有项目规则点名的：合并由人、生产 / 动钱 / 部署平台的写操作、改写共享历史、删远端分支）；之后收尾轮的 push、回复 review 由实现者按收尾契约做（`run --closeout` 默认续最后一条 run 的线程，显式选择优先）：
 
 ```bash
 git -C <wt> log --oneline origin/<base>..HEAD          # 提交历史干净
