@@ -2,7 +2,7 @@
 name: foreman
 description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.2.6"
+  version: "1.3.0"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码
@@ -295,12 +295,12 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 纠偏；把刚排队的改成立刻生效，turn 已结束自动转排队 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
-| `$FOREMAN status` / `wait [<id>...] [--timeout 300]` / `tail <id>` | 收敛与进度；`wait <id>` 只等给定票的全部线程并逐线程打印状态，不给 id 才等全部票；WAITING 会先点名票 / 线程 / 问题摘要、照常打印全表再返回 3，仍在跑返回 2；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
+| `$FOREMAN status` / `wait [<id>...] [--timeout 300]` / `tail <id>` | 收敛与进度；`wait <id>` 只等给定票的全部线程并逐线程打印状态，不给 id 才等全部票；同一线程若有被取消的尾轮会另列一行；WAITING 会先点名票 / 线程 / 问题摘要、照常打印全表再返回 3，仍在跑返回 2；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
 | `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
 | `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
 | `$FOREMAN release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
-| `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree（未提交 / 未推送会拒绝；票、线程与日志保留） |
+| `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree；目标 PR 有在跑 / 排队轮次时拒绝，先 `release`；未提交 / 未推送也会拒绝，票、线程与日志保留 |
 
 ## 参考
 

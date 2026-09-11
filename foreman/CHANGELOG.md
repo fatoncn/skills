@@ -1,5 +1,30 @@
 # foreman 版本记录
 
+## 1.3.0 — 2026-09-12
+
+- issue #1-1：多 PR 默认用 `<角色>@<pr>` 线程并行，已有角色线程稳定复用。
+- issue #1-2：`release` 先取消排队轮，TERM 宽限后 KILL；RUNNING 以执行体存活为准。
+- issue #1-3：`cleanup --discard-unpushed` 直接强制删分支；普通 cleanup 识别已合入 base 的分支。
+- issue #1-4：`report` 支持指定 run / review 轮次与 `--pr`，在跑时提示上一轮交付。
+- issue #1-5：`wait <id...>` 等给定票的全部线程并逐线程打印状态。
+- issue #1-6：越界探针忽略系统临时目录。
+- issue #1-7：文档补充实现轮工作树外交付物的 `--writable`。
+- issue #1-8：RUNNING 主用时从 request 派发起算，QUEUED 交接不归零。
+- issue #1-noise-a：探针 stderr 不直通，报告过滤 skill descriptions 良性告警。
+- issue #1-noise-b：`review` 命令表补齐 `--title`。
+- issue #1-noise-c：派发位置块按环境标注 `rg` 可用性。
+- issue #2-1：无 id 的 `wait` 遇 WAITING 先打问题摘要再打全表；指定 id 不受无关票影响。
+- issue #2-2：沿用 issue #1-8 的派发起算用时口径。
+- issue #2-3：只看不改以 porcelain 前后对比判定，fileChange 排除 writable roots 后只列事实。
+- issue #2-4：`--closeout` 默认续目标 PR 最近的 implement / mechanical 实现线程。
+- issue #2-5：升级前执行体的 steer 提示保持过渡期行为，未新增兼容层。
+- issue #2-6：沿用 issue #1-noise-c 的 `rg` 环境事实。
+- issue #2-7：命令失败按完整命令 + cwd 去重，末次成功不再列为最终失败。
+- issue #2-8：accept 把 PR 触碰面外的失败统一归为范围外观察。
+- issue #2-9：收尾等 CI 改为最多 5 分钟的轮询 + sleep，不用前台 `--watch`。
+- issue #2-10：未增加 ci-baseline 命令。
+- issue #2-11：沿用既有的 wait 后台运行指引。
+
 ## 1.2.3 — 2026-09-11
 
 - 档位调整（cookie 09-12）：描述定为 research / review 用旗舰，implement / accept 用旗舰或次旗舰（accept 比 implement 高一档）。今天的对应：`implement` = gpt-5.6-sol / medium，`accept` = gpt-5.6-sol / high（多是浏览器脏活，gpt-6 太奢侈），review / research 仍 gpt-6-astra / high，mechanical 仍 gpt-5.6-terra / medium。配置模板同步。
