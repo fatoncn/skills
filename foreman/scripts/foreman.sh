@@ -1723,7 +1723,7 @@ cleanup_holds_preflight() { # <票目录> <PR>
   for hd in "$dir"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; active="$(hold_active_run "$dir" "$hd")"; [ -n "$active" ] || continue
     [ "$(round_pr "$dir" "$active")" = "$pr" ] || continue; st="$(call_state "$dir/$active")"
-    case "$st" in RUNNING|WAITING) die "PR「${pr}」的 $active 仍在运行（$st），先 foreman release 释放线程再 cleanup" ;; esac
+    case "$st" in RUNNING|WAITING) die "PR「${pr}」的 $active 仍在运行（${st}），先 foreman release 释放线程再 cleanup" ;; esac
   done
 }
 cleanup_holds_apply() { # <票目录> <PR>
@@ -1897,8 +1897,8 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"
       case "$(call_state "$f")" in RUNNING|QUEUED|WAITING) continue ;; esac
       echo; echo "########## $id $kind#$n ##########"
-      if [ "$kind" = review ]; then ( cmd_report_inner "$id" "review$n" ) || echo "$id review#$n（无日志，跳过摘要）"
-      else ( cmd_report_inner "$id" "$n" ) || echo "$id run#$n（无日志，跳过摘要）"; fi
+      if [ "$kind" = review ]; then ( cmd_report_inner "$id" "review$n" ) || echo "$id review#${n}（无日志，跳过摘要）"
+      else ( cmd_report_inner "$id" "$n" ) || echo "$id run#${n}（无日志，跳过摘要）"; fi
     done
   fi
   [ "$waiting" -eq 0 ] || return 3
