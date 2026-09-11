@@ -446,14 +446,28 @@ assert not list(d.glob("run-7.*")) and max(b.run_numbers(d))==10
 assert [pathlib.Path(p).name for p in h._queued()]==["run-9.request.json","run-10.request.json"]
 print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
 PY2
-python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体领取前尊重 shell 取消标记" || bad "取消与领取锁协议"
-import importlib.util,json,pathlib,sys
+cancel_dir="$(dirname "$req")"
+sleep 300 & cancel_first_pid=$!; make_hold_fixture "$cancel_dir" cancel-first 91 "$cancel_first_pid" here implement
+"$F" release 1 --thread cancel-first > "$T/cancel-first.out" 2>&1
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" <<'PY2' && ok "取消先到：领取返回 None 且不写 active" || bad "取消先到锁协议"
+import importlib.util,pathlib,sys
 spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
-d=pathlib.Path(sys.argv[2])/"cancel-claim"; hd=d/"hold-implement"; (hd/"queue").mkdir(parents=True)
-rc=d/"run-1.rc"; (d/"run-1.cancelled").write_text("cancelled")
-req={"out_rc":str(rc),"out_jsonl":str(d/"run-1.jsonl")}; q=hd/"queue/run-1.request.json"; b.write_json(q,req)
-h=b.Holder(str(hd)); assert h._claim(str(q)) is None; assert not q.exists(); assert not (hd/"active.json").exists()
+d=pathlib.Path(sys.argv[2]); hd=d/"hold-cancel-first"; q=hd/"queue/run-91.request.json"
+h=b.Holder(str(hd)); assert h._claim(str(q)) is None
+assert (d/"run-91.cancelled").is_file() and not q.exists() and not (hd/"active.json").exists()
 PY2
+rm -rf "$cancel_dir/hold-cancel-first"; rm -f "$cancel_dir"/run-91.*
+
+sleep 300 & claim_first_pid=$!; make_hold_fixture "$cancel_dir" claim-first 92 "$claim_first_pid" here implement
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" <<'PY2'
+import importlib.util,pathlib,sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+d=pathlib.Path(sys.argv[2]); hd=d/"hold-claim-first"; q=hd/"queue/run-92.request.json"
+assert b.Holder(str(hd))._claim(str(q)) is not None and not q.exists() and (hd/"active.json").is_file()
+PY2
+claim_rc=$?; "$F" release 1 --thread claim-first > "$T/claim-first.out" 2>&1
+if [ "$claim_rc" -eq 0 ] && [ ! -f "$cancel_dir/run-92.cancelled" ]; then ok "领取先到：取消方不写 cancelled"; else bad "领取先到锁协议"; fi
+rm -rf "$cancel_dir/hold-claim-first"; rm -f "$cancel_dir"/run-92.*
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "app-server 实际 argv 默认开启、支持关闭且进程级抑制警告" || bad "app-server 提问功能位 argv"
 import importlib.util,pathlib,sys
 from unittest.mock import patch
