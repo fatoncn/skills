@@ -505,26 +505,51 @@ print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
 PY2
 cancel_dir="$(dirname "$req")"
 sleep 300 & cancel_first_pid=$!; make_hold_fixture "$cancel_dir" cancel-first 91 "$cancel_first_pid" here implement
-"$F" release 1 --thread cancel-first > "$T/cancel-first.out" 2>&1
-python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" <<'PY2' && ok "取消先到：领取返回 None 且不写 active" || bad "取消先到锁协议"
+rm -f "$T/cancel-lock.ready" "$T/cancel-lock.release" "$T/cancel-claim.result"
+FOREMAN_SELFTEST_LOCK_READY="$T/cancel-lock.ready" FOREMAN_SELFTEST_LOCK_RELEASE="$T/cancel-lock.release" "$F" release 1 --thread cancel-first > "$T/cancel-first.out" 2>&1 & cancel_cli=$!
+for _ in $(seq 1 100); do [ -f "$T/cancel-lock.ready" ] && break; sleep 0.02; done
+cancel_blocked_at="$(date +%s)"
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" "$T/cancel-claim.result" <<'PY2' & cancel_claim_cli=$!
 import importlib.util,pathlib,sys
 spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 d=pathlib.Path(sys.argv[2]); hd=d/"hold-cancel-first"; q=hd/"queue/run-91.request.json"
-h=b.Holder(str(hd)); assert h._claim(str(q)) is None
-assert (d/"run-91.cancelled").is_file() and not q.exists() and not (hd/"active.json").exists()
+result=b.Holder(str(hd))._claim(str(q)); pathlib.Path(sys.argv[3]).write_text(str(result is None))
 PY2
+sleep 1; cancel_was_blocked=0; kill -0 "$cancel_claim_cli" 2>/dev/null && cancel_was_blocked=1
+: > "$T/cancel-lock.release"; wait "$cancel_claim_cli"; wait "$cancel_cli"; cancel_elapsed=$(( $(date +%s) - cancel_blocked_at ))
+if [ "$cancel_was_blocked" -eq 1 ] && [ "$cancel_elapsed" -ge 1 ] && [ "$(cat "$T/cancel-claim.result")" = True ] && [ -f "$cancel_dir/run-91.cancelled" ] && [ ! -f "$cancel_dir/hold-cancel-first/active.json" ]; then ok "取消先持锁：_claim 真阻塞后返回 None"; else bad "取消先到并发锁协议"; fi
 rm -rf "$cancel_dir/hold-cancel-first"; rm -f "$cancel_dir"/run-91.*
 
 sleep 300 & claim_first_pid=$!; make_hold_fixture "$cancel_dir" claim-first 92 "$claim_first_pid" here implement
-python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" <<'PY2'
-import importlib.util,pathlib,sys
+rm -f "$T/claim-lock.ready" "$T/claim-lock.release" "$T/claim-first.result"
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" "$T/claim-lock.ready" "$T/claim-lock.release" "$T/claim-first.result" <<'PY2' & claim_cli=$!
+import contextlib,importlib.util,pathlib,sys,time
 spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 d=pathlib.Path(sys.argv[2]); hd=d/"hold-claim-first"; q=hd/"queue/run-92.request.json"
-assert b.Holder(str(hd))._claim(str(q)) is not None and not q.exists() and (hd/"active.json").is_file()
+real_lock=b.runs_lock
+@contextlib.contextmanager
+def held_lock(path):
+    with real_lock(path):
+        pathlib.Path(sys.argv[3]).write_text("ready")
+        while not pathlib.Path(sys.argv[4]).exists(): time.sleep(.02)
+        yield
+b.runs_lock=held_lock
+result=b.Holder(str(hd))._claim(str(q)); pathlib.Path(sys.argv[5]).write_text(str(result is not None))
 PY2
-claim_rc=$?; "$F" release 1 --thread claim-first > "$T/claim-first.out" 2>&1
-if [ "$claim_rc" -eq 0 ] && [ ! -f "$cancel_dir/run-92.cancelled" ]; then ok "领取先到：取消方不写 cancelled"; else bad "领取先到锁协议"; fi
+for _ in $(seq 1 100); do [ -f "$T/claim-lock.ready" ] && break; sleep 0.02; done
+claim_blocked_at="$(date +%s)"; "$F" release 1 --thread claim-first > "$T/claim-first.out" 2>&1 & claim_release_cli=$!
+sleep 1; release_was_blocked=0; kill -0 "$claim_release_cli" 2>/dev/null && release_was_blocked=1
+: > "$T/claim-lock.release"; wait "$claim_cli"; wait "$claim_release_cli"; claim_elapsed=$(( $(date +%s) - claim_blocked_at ))
+if [ "$release_was_blocked" -eq 1 ] && [ "$claim_elapsed" -ge 1 ] && [ "$(cat "$T/claim-first.result")" = True ] && [ ! -f "$cancel_dir/run-92.cancelled" ]; then ok "领取先持锁：cleanup 真阻塞且不写 cancelled"; else bad "领取先到并发锁协议"; fi
 rm -rf "$cancel_dir/hold-claim-first"; rm -f "$cancel_dir"/run-92.*
+make_hold_fixture "$cancel_dir" cancelled-visible 93 999999 here implement; printf '预先取消' > "$cancel_dir/run-93.cancelled"
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$cancel_dir" <<'PY2' && ok "队列与 cancelled 并存时 _claim 删队列且不写 active" || bad "_claim 未优先尊重 cancelled"
+import importlib.util,pathlib,sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+d=pathlib.Path(sys.argv[2]); hd=d/"hold-cancelled-visible"; q=hd/"queue/run-93.request.json"
+assert b.Holder(str(hd))._claim(str(q)) is None and not q.exists() and not (hd/"active.json").exists()
+PY2
+rm -rf "$cancel_dir/hold-cancelled-visible"; rm -f "$cancel_dir"/run-93.*
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "app-server 实际 argv 默认开启、支持关闭且进程级抑制警告" || bad "app-server 提问功能位 argv"
 import importlib.util,pathlib,sys
 from unittest.mock import patch

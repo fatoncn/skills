@@ -710,7 +710,13 @@ exec_call() {
 # 轮间锁是空的，桌面端一点开线程就抢走（already has an active writer）。现在一条线程一个常驻执行体（codex_appserver.py serve），
 # 每轮只往它的队列丢请求；release 文件出现才退；空闲超过 codex.hold_idle_minutes 也退（编排者会话没了不至于永久占着）。
 # fd 9 的 flock 与 Python 执行体共享；仅覆盖轮次/队列账本写入，不覆盖等待 turn。
-lock_runs() { exec 9>"$1/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9; }
+lock_runs() {
+  exec 9>"$1/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9
+  if [ -n "${FOREMAN_SELFTEST_LOCK_READY:-}" ] && [ -n "${FOREMAN_SELFTEST_LOCK_RELEASE:-}" ]; then
+    : > "$FOREMAN_SELFTEST_LOCK_READY"
+    while [ ! -f "$FOREMAN_SELFTEST_LOCK_RELEASE" ]; do sleep 0.05; done
+  fi
+}
 unlock_runs() { exec 9>&-; }
 
 hold_start() {  # <hold 目录>，调用者已确认没有活执行体
