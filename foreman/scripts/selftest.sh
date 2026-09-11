@@ -223,6 +223,14 @@ if [ "$wait42_rc" -eq 2 ] && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#2
 kill "$wait42_running_pid" 2>/dev/null; wait "$wait42_done_pid" 2>/dev/null || true; wait "$wait42_running_pid" 2>/dev/null || true
 rm -rf "$wait42_dir/hold-done-no-log" "$wait42_dir/hold-still-running"; rm -f "$wait42_dir"/run-21.* "$wait42_dir"/run-22.*
 expect_grep "wait 摘要隔离测试清理" "已删登记" "$F" cleanup 42 --force
+expect_grep "wait 取消尾轮测试登记" "PR「here」" "$F" here 43
+wait43_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/43/meta.json' -print -quit)")"; sleep 300 & wait43_pid=$!
+make_hold_fixture "$wait43_dir" cancel-tail 1 "$wait43_pid" here implement; rm -f "$wait43_dir/hold-cancel-tail/queue/run-1.request.json"; printf '{"run":"run-1"}' > "$wait43_dir/hold-cancel-tail/active.json"
+make_hold_fixture "$wait43_dir" cancel-tail 2 "$wait43_pid" here implement; rm -f "$wait43_dir/hold-cancel-tail/queue/run-2.request.json" "$wait43_dir/run-2.pid"; printf 130 > "$wait43_dir/run-2.rc"; printf '已取消尾轮' > "$wait43_dir/run-2.cancelled"
+wait43_out="$("$F" wait 43 --timeout 1 --interval 1 --no-report 2>&1)"; wait43_rc=$?
+if [ "$wait43_rc" -eq 2 ] && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#1 .*RUNNING' && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#2 CANCELLED'; then ok "wait 显示取消尾轮且继续等活动旧轮"; else bad "wait 被 CANCELLED 尾轮提前收敛" "rc=$wait43_rc"; fi
+kill "$wait43_pid" 2>/dev/null; wait "$wait43_pid" 2>/dev/null || true; rm -rf "$wait43_dir/hold-cancel-tail"; rm -f "$wait43_dir"/run-1.* "$wait43_dir"/run-2.*
+expect_grep "wait 取消尾轮测试清理" "已删登记" "$F" cleanup 43 --force
 if [ -n "$req3" ]; then
   d2="$(dirname "$req3")"; sleep 300 & sp=$!
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"

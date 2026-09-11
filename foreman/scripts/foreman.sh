@@ -1742,15 +1742,20 @@ all_issues() {
 latest_calls_by_thread() {  # <票目录>；每条线程只取最后一轮
   python3 - "$1" <<'PY2'
 import pathlib,re,sys
-d=pathlib.Path(sys.argv[1]); latest={}
+d=pathlib.Path(sys.argv[1]); calls={}
 for p in d.iterdir():
     m=re.match(r"^(run|review)-(\d+)\.",p.name)
     if not m: continue
     kind,n=m[1],int(m[2]); stem=f"{kind}-{n}"; tf=d/(stem+".thread")
     key=tf.read_text().strip() if tf.is_file() else (stem if kind=="review" else "implement")
-    item=(n,kind)
-    if key not in latest or item[0]>latest[key][0]: latest[key]=item
-for n,kind in latest.values(): print(f"{kind}|{n}")
+    calls.setdefault(key,{})[(kind,n)]=(d/(stem+".cancelled")).is_file()
+for items in calls.values():
+    live=[(n,kind) for (kind,n),cancelled in items.items() if not cancelled]
+    cancelled=[(n,kind) for (kind,n),is_cancelled in items.items() if is_cancelled]
+    if live:
+        n,kind=max(live); print(f"{kind}|{n}")
+    if cancelled:
+        n,kind=max(cancelled); print(f"{kind}|{n}")
 PY2
 }
 
