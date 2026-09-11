@@ -190,13 +190,18 @@ if [ -n "$req3" ]; then
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"
   expect_grep "同一 PR 另一条线程在跑时 run 被拒" "只准一条线程" "$F" run 2 --pr a --role accept --prompt "$T/brief.md" --title x --timeout 30
   expect_grep "同一 PR 另一条线程在跑时 review 被拒" "只准一条线程" "$F" review 2 --pr a --title x --timeout 30
-  mkdir -p "$d2/hold-stale"; printf '%s' "$sp" > "$d2/hold-stale/bridge.pid"
-  printf 'a' > "$d2/run-97.pr"; printf 'stale' > "$d2/run-97.thread"; printf '%s' "$sp" > "$d2/run-97.pid"; : > "$d2/run-97.argv"
-  if "$F" status 2 | awk '$2=="run#97" && $5=="RUNNING" {ok=1} END{exit !ok}'; then ok "bridge 存活且 active 缺失的交接窗口仍为 RUNNING"; else bad "交接窗口被误判 DEAD"; fi
-  printf 'a' > "$d2/run-98.pr"; printf 'stale' > "$d2/run-98.thread"; printf '%s' "$sp" > "$d2/run-98.pid"; : > "$d2/run-98.argv"
+  make_hold_fixture "$d2" stale 97 "$sp" a implement; rm -f "$d2/hold-stale/queue/run-97.request.json"
+  stale_line="$("$F" status 2 | grep 'run#97' | head -1)"
+  case " $stale_line " in *" RUNNING "*) ok "bridge 存活且 active 缺失的交接窗口仍为 RUNNING" ;; *) bad "交接窗口被误判 DEAD" "$stale_line" ;; esac
+  make_hold_fixture "$d2" stale 98 "$sp" a implement; rm -f "$d2/hold-stale/queue/run-98.request.json"
   printf '{"run":"run-99"}' > "$d2/hold-stale/active.json"
-  if "$F" status 2 | awk '$2=="run#98" && $5=="DEAD" {ok=1} END{exit !ok}'; then ok "active 指向更大轮次时旧轮精确判 DEAD"; else bad "旧轮未判 DEAD"; fi
-  rm -rf "$d2/hold-stale" "$d2"/run-97.* "$d2"/run-98.*
+  stale_line="$("$F" status 2 | grep 'run#98' | head -1)"
+  case " $stale_line " in *" DEAD "*) ok "active 指向更大轮次时旧轮精确判 DEAD" ;; *) bad "旧轮未判 DEAD" "$stale_line" ;; esac
+  make_hold_fixture "$d2" stale 100 "$sp" a implement; rm -f "$d2/hold-stale/queue/run-100.request.json"
+  printf '{"run":"run-99"}' > "$d2/hold-stale/active.json"
+  stale_line="$("$F" status 2 | grep 'run#100' | head -1)"
+  case " $stale_line " in *" RUNNING "*) ok "active 指向更小轮次时当前轮仍为 RUNNING" ;; *) bad "较小 active 误杀当前轮" "$stale_line" ;; esac
+  rm -rf "$d2/hold-stale" "$d2"/run-97.* "$d2"/run-98.* "$d2"/run-100.*
   rm -f "$d2"/run-99.*
   nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"
