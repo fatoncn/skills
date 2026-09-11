@@ -1802,7 +1802,10 @@ cmd_cleanup() {
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
     local unpushed
-    if git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin $PR_BASE，未能可靠判断是否已推送"
+    if git -C "$wt" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then
+      unpushed=0
+    elif git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
       unpushed="$(git -C "$wt" rev-list --count "origin/$branch..HEAD")"
     else
       unpushed="$(git -C "$wt" rev-list --count "origin/${PR_BASE}..HEAD" 2>/dev/null || echo 0)"
@@ -1812,7 +1815,10 @@ cmd_cleanup() {
     fi
     git -C "$MAIN_REPO" worktree remove "$wt"
   fi
-  [ "$keep_branch" -eq 1 ] || git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（可能未合并），需要时手动 git branch -D $branch"
+  if [ "$keep_branch" -ne 1 ]; then
+    if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch"
+    else git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（可能未合并），需要时手动 git branch -D $branch"; fi
+  fi
   pr_del "$issue" "$PR_NAME"
   echo "已清理 ${issue} 的 PR「${PR_NAME}」（票、线程与日志保留；剩余 PR: $(pr_names "$issue" | tr '\n' ' ')）"
 }
