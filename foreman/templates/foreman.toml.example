@@ -32,7 +32,7 @@ web_search = true
 approval_policy = "on-request"
 approvals_reviewer = "auto_review"
 approvals = "decline"
-question_timeout = 600
+question_timeout = 10800
 hold_idle_minutes = 360   # 常驻执行体占着线程、空闲多久自动释放；release / cleanup 之前桌面端打不开该线程
 
 

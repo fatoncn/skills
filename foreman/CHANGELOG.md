@@ -2,6 +2,7 @@
 
 ## 1.2.2 — 2026-09-11
 
+- `question_timeout` 默认 600 → 10800（cookie 09-11「不要卡太紧」）：执行者提问等编排者 3 小时再兜底；#1606 验收首轮问任务 id 等 10 分钟就兜底收尾，白跑一轮。
 - 验收任务书改名 `accept-brief-<id>.md`：原来叫 `accept-<id>.md`，与交付物 `ACCEPT-<PR>.md` 只差大小写，macOS 默认文件系统不区分大小写，验收者一落盘就把任务书覆盖了（#1606 实测）。
 - `vercel` 探针收窄到写操作子命令与 `env`，`inspect` / `list` / `logs` 这类只读查询不再误报。
 - `foreman.sh` 的命令派发段包进 `main()`：bash 逐段读脚本，`wait` 跑到一半时脚本被改会读到错位内容报 unexpected EOF；包进函数后整段先解析完再执行。

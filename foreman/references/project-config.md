@@ -66,5 +66,5 @@
 | `web_search` | 服务端联网搜索 | true |
 | `approval_policy` / `approvals_reviewer` | `on-request` + `auto_review` = 「替我审批」 | on-request / auto_review |
 | `approvals` | 自动审查不接、回到执行体时 `decline` / `accept` | decline |
-| `question_timeout` | 执行者提问时等编排者回答的秒数；0 = 立即兜底 | 600 |
+| `question_timeout` | 执行者提问时等编排者回答的秒数；0 = 立即兜底 | 10800 |
 | `hold_idle_minutes` | 常驻执行体占着线程（写锁）、空闲多久自动释放；`foreman release` / `cleanup` 之前桌面端打不开这条线程 | 360 |
