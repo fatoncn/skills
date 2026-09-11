@@ -1,5 +1,9 @@
 # foreman 版本记录
 
+## 1.2.2 — 2026-09-11
+
+- 修 `wait` 竞态：只把 RUNNING / WAITING 当在跑，`run --detach` 刚把轮次放进常驻执行体的线程队列（QUEUED，几秒的交接窗口；与并发上限无关）时立刻 `wait` 会误报「没有正在运行的会话」直接返回（#1606 验收线程派发后实测）。现在 QUEUED 也算在跑；selftest 加一项。
+
 ## 1.2.1 — 2026-09-11
 
 - **发布到 github.com/fatoncn/skills，仓库为真源**（cookie 09-11）：skill 以 `foreman/` 子目录放在个人公开仓库里，本机 `~/.claude/skills/foreman` 是指向克隆的符号链接；此前的本地仓库连历史归档到 `~/.foreman/archive/`，不再维护。

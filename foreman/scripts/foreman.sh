@@ -1570,7 +1570,7 @@ EOF
     for kind in run review; do
       n="$(latest_n "$(issue_dir "$id")" "$kind")"; [ "$n" -gt 0 ] || continue
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      case "$st" in RUNNING|WAITING) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
+      case "$st" in RUNNING|QUEUED|WAITING) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
     done
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
@@ -1581,7 +1581,7 @@ EOF
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      case "$st" in RUNNING|WAITING) left=$((left+1)) ;; esac
+      case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       [ "$st" = "WAITING" ] && echo "   ⏳ $id $kind#$n 在等你回答提问（foreman questions ${id}）"
     done
     [ "$left" -eq 0 ] && break
@@ -1594,7 +1594,7 @@ EOF
     case "$st" in
       DONE) echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")" ;;
       ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障" ;;
-      RUNNING|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
+      RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
       *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
     esac
   done
@@ -1602,7 +1602,7 @@ EOF
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"
-      case "$(call_state "$f")" in RUNNING|WAITING) continue ;; esac
+      case "$(call_state "$f")" in RUNNING|QUEUED|WAITING) continue ;; esac
       echo; echo "########## $id $kind#$n ##########"
       local role=""; [ -f "$f.role" ] && role="$(cat "$f.role")"
       python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$f.jsonl" "$f.stderr" "$f.last.md" || true
