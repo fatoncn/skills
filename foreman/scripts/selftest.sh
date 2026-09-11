@@ -107,7 +107,7 @@ expect_grep "cleanup --discard-unpushed 强删本地分支" "已清理" "$F" cle
 if git -C "$T/proj/app" show-ref --verify --quiet refs/heads/feat/$(date +%y-%m-%d)/discard; then bad "discard 后本地分支仍存在"; else ok "discard 后本地分支已 -D"; fi
 expect_grep "bootstrap 已合入 base 测试" "ready: 4" "$F" bootstrap 4 --slug merged --no-install
 wt4="$T/proj/app/.claude/worktrees/foreman-4"; echo merged > "$wt4/y"; git -C "$wt4" add y; git -C "$wt4" -c user.email=t@t -c user.name=t commit -q -m merged
-merged_sha="$(git -C "$wt4" rev-parse HEAD)"; git -C "$T/proj/app" cherry-pick -q "$merged_sha"; git -C "$T/proj/app" push -q origin main
+merged_sha="$(git -C "$wt4" rev-parse HEAD)"; git -C "$T/proj/app" cherry-pick "$merged_sha" >/dev/null; git -C "$T/proj/app" push -q origin main
 expect_grep "已合入 base 的未推送分支允许 cleanup" "已清理" "$F" cleanup 4 --force
 echo "== 调研线程 / --writable =="
 mkdir -p "$T/deliver"

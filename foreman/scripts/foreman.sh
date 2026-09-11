@@ -407,6 +407,9 @@ m=json.load(open(sys.argv[1])); print(" ".join(str(v.get("gh_pr")) for v in (m.g
 validate_id() {
   case "$1" in *[!a-zA-Z0-9._-]*|'') die "issue id 只能用字母数字和 . _ -（收到 '$1'）" ;; esac
 }
+validate_thread_id() {
+  case "$1" in *[!a-zA-Z0-9._@-]*|'') die "线程名只能用字母数字和 . _ @ -（收到 '$1'）" ;; esac
+}
 
 # ---------- init / config ----------
 
@@ -1045,7 +1048,7 @@ cmd_run() {
       [ -z "$prname" ] || [ "$PR_NAME" = "$default_pr" ] || tname="${tname}@${PR_NAME}"
     fi
   fi
-  validate_id "$tname"
+  validate_thread_id "$tname"
   require_pr_idle "$issue" "$PR_NAME" "$tname"
   local rec_role rec_engine; rec_role="$(thread_get "$issue" "$tname" role)"; rec_engine="$(thread_get "$issue" "$tname" engine)"
   if [ -n "$rec_role" ]; then
@@ -1408,7 +1411,7 @@ cmd_steer() {
     esac
   done
   [ -n "$issue" ] || die "用法: foreman steer <票 id> [--thread <名>] (<文本> | --file <f> | --from-queue N)"
-  validate_id "$tname"
+  validate_thread_id "$tname"
   if [ -n "$from" ]; then
     case "$from" in *[!0-9]*|0) die "--from-queue 必须是正整数" ;; esac
     [ -z "$text$file" ] || die "--from-queue 不能与文本 / --file 混用"
@@ -1482,12 +1485,12 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
   fi
 }
 cmd_report_inner() {
-  local issue="$1" n="${2:-}" prname="${3:-}" kind=run
+  local issue="$1" n="${2:-}" filter_pr="${3:-}" kind=run
   local dir; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
-    if [ -n "$prname" ]; then
-      n="$(python3 - "$dir" "$kind" "$prname" <<'PY'
+    if [ -n "$filter_pr" ]; then
+      n="$(python3 - "$dir" "$kind" "$filter_pr" <<'PY'
 import pathlib,re,sys
 d=pathlib.Path(sys.argv[1]); kind=sys.argv[2]; pr=sys.argv[3]; nums=[]
 for p in d.glob(f"{kind}-*.pr"):
@@ -1499,7 +1502,7 @@ PY
     else n="$(latest_n "$dir" "$kind")"; fi
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
-  if [ -n "$prname" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$prname" ]; then die "$kind-$n 不属于 PR「$prname」"; fi
+  if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「$filter_pr」"; fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
   if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
