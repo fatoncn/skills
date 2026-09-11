@@ -1646,6 +1646,18 @@ for p in d.glob("run-*.pr"):
 print(max(found)[1] if found else "")
 PY2
 }
+thread_last_pr() {  # <票目录> <线程名>
+  python3 - "$1" "$2" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); wanted=sys.argv[2]; found=[]
+for p in d.glob("run-*.pr"):
+    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
+    if not m: continue
+    n=int(m[1]); tf=d/f"run-{n}.thread"; thread=tf.read_text().strip() if tf.is_file() else "implement"
+    if thread==wanted: found.append((n,p.read_text().strip()))
+print(max(found)[1] if found else "")
+PY2
+}
 elapsed_of() {
   local f="$1" start now
   if [ ! -s "$f.started" ]; then printf '—'; return 0; fi
@@ -1879,15 +1891,10 @@ cmd_cleanup() {
       *) [ -z "$issue" ] && issue="$1" || die "cleanup: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--keep-branch] [--discard-unpushed]"
+  [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--pr <名>] [--keep-branch] [--discard-unpushed]（squash 合并仓库请用 --discard-unpushed）"
   init_repo_context; require_project; require_issue "$issue"
-  local hd; for hd in "$(issue_dir "$issue")"/hold-*; do [ -d "$hd" ] && hold_alive "$hd" && hold_release_wait "$hd"; done
   local wt branch; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
   [ -n "$PR_NAME" ] || { echo "$issue 没有登记任何 PR / 工作目录，没有要清理的"; return 0; }
-  if [ -n "$PR_HERE" ]; then
-    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
-    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
-  fi
   if [ "$force" -ne 1 ]; then
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
@@ -1895,18 +1902,24 @@ cmd_cleanup() {
   if [ -d "$wt" ]; then
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
-    local unpushed
-    git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
-    if git -C "$wt" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then
-      unpushed=0
-    elif git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      unpushed="$(git -C "$wt" rev-list --count "origin/$branch..HEAD")"
-    else
-      unpushed="$(git -C "$wt" rev-list --count "origin/${PR_BASE}..HEAD" 2>/dev/null || echo 0)"
+    if [ "$discard" -ne 1 ]; then
+      local unpushed
+      git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
+      if git -C "$wt" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then unpushed=0
+      elif git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then unpushed="$(git -C "$wt" rev-list --count "origin/$branch..HEAD")"
+      else unpushed="$(git -C "$wt" rev-list --count "origin/${PR_BASE}..HEAD" 2>/dev/null || echo 0)"; fi
+      [ "$unpushed" = "0" ] || die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
     fi
-    if [ "$unpushed" != "0" ] && [ "$discard" -ne 1 ]; then
-      die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
-    fi
+  fi
+  local hd ht; for hd in "$(issue_dir "$issue")"/hold-*; do
+    [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
+    [ "$(thread_last_pr "$(issue_dir "$issue")" "$ht")" = "$PR_NAME" ] && { hold_cancel_queued "$(issue_dir "$issue")" "$hd"; hold_release_wait "$hd"; }
+  done
+  if [ -n "$PR_HERE" ]; then
+    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
+    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
+  fi
+  if [ -d "$wt" ]; then
     git -C "$MAIN_REPO" worktree remove "$wt"
   fi
   if [ "$keep_branch" -ne 1 ]; then
