@@ -11,6 +11,7 @@ pass=0; fails=()
 ok()   { pass=$((pass+1)); echo "  [OK]  $1"; }
 bad()  { fails+=("$1"); echo "  [!!]  $1${2:+ —— $2}"; }
 expect_grep() { local name="$1" pat="$2"; shift 2; local out; out="$("$@" 2>&1)"; if printf '%s' "$out" | grep -q -- "$pat"; then ok "$name"; else bad "$name" "没找到「${pat}」；输出尾行: $(printf '%s' "$out" | tail -1 | cut -c1-120)"; fi; }
+expect_no_grep() { local name="$1" pat="$2"; shift 2; local out rc; out="$("$@" 2>&1)"; rc=$?; if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q -- "$pat"; then ok "$name"; else bad "$name" "rc=${rc}，不应出现「${pat}」"; fi; }
 expect_rc()   { local name="$1" want="$2"; shift 2; "$@" >/dev/null 2>&1; local rc=$?; if [ "$rc" = "$want" ]; then ok "$name"; else bad "$name" "rc=${rc}，期望 ${want}"; fi; }
 
 # ---- 布局：项目 proj（AGENTS.md）/ 仓库 app（origin = 本地 bare）----
@@ -294,11 +295,11 @@ expect_grep "工作目录之外的改动被标出" "工作目录之外" python3 
 expect_grep "THREAD_BUSY 横幅" "THREAD_BUSY" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 cp "$T/probe.jsonl" "$T/probe2.jsonl"; : > "$T/probe2.stderr"; echo done > "$T/probe2.last.md"
 python3 -c 'import json,sys; json.dump({"work_dir": sys.argv[2], "config_overrides": [["sandbox_workspace_write.writable_roots", json.dumps([sys.argv[2], sys.argv[3]])]]}, open(sys.argv[1],"w"))' "$T/probe2.request.json" "/workspace/proj/app" "/workspace/proj/other"
-if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q "工作目录之外"; then bad "--writable 目录不算越界"; else ok "--writable 目录不算越界（交付目录）"; fi
+expect_no_grep "--writable 目录不算越界（交付目录）" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md"
 sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/probe-tmp.jsonl"
-if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md" 2>&1 | grep -q "工作目录之外"; then bad "系统临时目录被误报越界"; else ok "系统临时目录不计工作目录之外"; fi
-if python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q '/workspace/proj/other/b.ts'; then bad "accept 交付目录 fileChange 被列为模型改动"; else ok "accept 交付目录 fileChange 从模型改动列表排除"; fi
-if python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md" 2>&1 | grep -q '改了这轮作废'; then bad "fileChange 被用作只看不改判据"; else ok "fileChange 只列事实、不判只看不改角色作废"; fi
+expect_no_grep "系统临时目录不计工作目录之外" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+expect_no_grep "accept 交付目录 fileChange 从模型改动列表排除" '/workspace/proj/other/b.ts' python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md"
+expect_no_grep "fileChange 只列事实、不判只看不改角色作废" '改了这轮作废' python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 python3 - "$T/steer-summary.jsonl" <<'PY2'
 import json,sys
 with open(sys.argv[1],"w") as f:
