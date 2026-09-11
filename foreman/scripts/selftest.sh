@@ -295,7 +295,7 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
 for value in (None,"false"):
     overrides=[] if value is None else [("features.default_mode_request_user_input",value)]
-    with patch.object(b.subprocess,"Popen") as popen, patch.object(b.threading.Thread,"start"):
+    with patch.object(b.subprocess,"Popen") as popen, patch.object(b.threading.Thread,"start"), patch.object(b,"request_input_feature",return_value={"present":True,"stage":"under development","value":"false"}):
         server=b.AppServer("fake-codex",sys.argv[2],sys.argv[2],overrides,str(pathlib.Path(sys.argv[2])/"ask-argv.jsonl"),str(pathlib.Path(sys.argv[2])/"ask-argv.stderr"))
         try:
             args=popen.call_args.args[0]
@@ -306,6 +306,33 @@ for value in (None,"false"):
         finally:
             server._log.close(); server._stderr.close()
 print("默认 true / 显式 false 两种启动 argv 断言通过")
+PY2
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "功能探测缓存、缺失/失败降级及 doctor 展示" || bad "功能探测与降级"
+import importlib.util,json,pathlib,subprocess,sys
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+for output, rc, present in (("default_mode_request_user_input    under development    false\n",0,True),("another_flag stable true\n",0,False),("",1,False)):
+    b.request_input_feature.cache_clear()
+    with patch.object(b.subprocess,"run",return_value=subprocess.CompletedProcess([],rc,output,"")) as run:
+        feature=b.request_input_feature("codex",sys.argv[2],sys.argv[2])
+        assert b.request_input_feature("codex",sys.argv[2],sys.argv[2])==feature and run.call_count==1
+        assert feature["present"]==present
+        shown=b.feature_report(feature,"false")
+        assert b.REQUEST_INPUT_FEATURE in shown
+        assert ("执行体会否按进程带上=是" if present else "执行体会否按进程带上=否") in shown
+        if present: assert "阶段=under development" in shown and "当前生效值（CLI配置）=false" in shown
+b.request_input_feature.cache_clear()
+with patch.object(b.subprocess,"run",side_effect=subprocess.TimeoutExpired("codex",15)):
+    assert not b.request_input_feature("codex",sys.argv[2],sys.argv[2])["present"]
+log=pathlib.Path(sys.argv[2])/"feature-missing.jsonl"
+with patch.object(b.subprocess,"Popen") as popen, patch.object(b.threading.Thread,"start"), patch.object(b,"request_input_feature",return_value={"present":False,"stage":"未列出","value":"未知","reason":"not_listed"}):
+    server=b.AppServer("codex",sys.argv[2],sys.argv[2],[(b.REQUEST_INPUT_KEY,"true")],str(log),str(log)+".stderr")
+    try:
+        assert not any(b.REQUEST_INPUT_KEY in arg for arg in popen.call_args.args[0])
+        events=[json.loads(line) for line in log.read_text().splitlines()]
+        assert len(events)==1 and events[0]["_fleet"]=="feature_missing" and events[0]["feature"]==b.REQUEST_INPUT_FEATURE
+    finally: server._log.close(); server._stderr.close()
+print("存在 / 缺失 / 命令失败 / 超时，缓存及缺失事件断言通过")
 PY2
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done

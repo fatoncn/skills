@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+from functools import lru_cache
 from contextlib import contextmanager
 from pathlib import Path
 import uuid
@@ -101,6 +102,35 @@ class ProtocolError(RuntimeError):
     pass
 
 
+REQUEST_INPUT_FEATURE = "default_mode_request_user_input"
+REQUEST_INPUT_KEY = "features." + REQUEST_INPUT_FEATURE
+
+
+@lru_cache(maxsize=None)
+def request_input_feature(codex_bin, home, cwd):
+    """同一执行体只探测一次；缺失或探测失败都不阻止 app-server 启动。"""
+    try:
+        result = subprocess.run([codex_bin, "features", "list"], cwd=cwd,
+                                env={**os.environ, "CODEX_HOME": home}, capture_output=True,
+                                text=True, timeout=15)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                match = re.fullmatch(re.escape(REQUEST_INPUT_FEATURE) + r"\s+(.+?)\s+(true|false)\s*", line.strip())
+                if match:
+                    return {"present": True, "stage": match[1], "value": match[2]}
+        reason = "not_listed" if result.returncode == 0 else f"probe_exit_{result.returncode}"
+    except (OSError, subprocess.SubprocessError) as exc:
+        reason = type(exc).__name__
+    return {"present": False, "stage": "未列出", "value": "未知", "reason": reason}
+
+
+def feature_report(feature, requested="true"):
+    carried = "是" if feature["present"] else "否"
+    effective = requested if feature["present"] else "不传"
+    return (f"功能位 {REQUEST_INPUT_FEATURE}: 阶段={feature['stage']}  当前生效值（CLI配置）={feature['value']}  "
+            f"执行体会否按进程带上={carried}  执行体进程值={effective}")
+
+
 class AppServer:
     """一个 app-server 子进程 + 一条 JSON-RPC 连接。所有进出消息都追加到 log_path。"""
 
@@ -111,8 +141,13 @@ class AppServer:
         args = [codex_bin, "app-server", "--listen", "stdio://"]
         # Default 模式的提问工具默认关闭；由执行体显式开启，不依赖用户级 config.toml。
         # 项目 request_user_input=false 通过 overrides 覆盖默认值；警告只在本进程抑制。
-        process_overrides = {"features.default_mode_request_user_input": "true",
-                             "suppress_unstable_features_warning": "true", **dict(overrides)}
+        feature = request_input_feature(codex_bin, home, cwd)
+        process_overrides = dict(overrides)
+        if feature["present"]:
+            process_overrides.setdefault(REQUEST_INPUT_KEY, "true")
+            process_overrides.setdefault("suppress_unstable_features_warning", "true")
+        else:
+            process_overrides.pop(REQUEST_INPUT_KEY, None)
         for key, value in process_overrides.items():
             args += ["-c", f"{key}={value}"]
         self._stderr = open(stderr_path, "ab")
@@ -122,6 +157,9 @@ class AppServer:
             text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
         self._log = open(log_path, "a", encoding="utf-8")
+        if not feature["present"]:
+            self.log_event({"_fleet": "feature_missing", "feature": REQUEST_INPUT_FEATURE,
+                            "reason": feature["reason"], "at": now_ms()})
         self._q: "queue.Queue[dict | None]" = queue.Queue()
         self._next_id = 1
         self._pending: dict[int, dict] = {}
@@ -983,12 +1021,15 @@ class Holder:
 def probe(argv: list[str]) -> int:
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
     codex_bin = "codex"
+    ask = "true"
     i = 0
     while i < len(argv):
         if argv[i] == "--home":
             home = argv[i + 1]; i += 2
         elif argv[i] == "--codex":
             codex_bin = argv[i + 1]; i += 2
+        elif argv[i] == "--request-user-input":
+            ask = argv[i + 1]; i += 2
         else:
             i += 1
     log_path = os.path.join(home, "fleet-probe.jsonl")
@@ -996,7 +1037,8 @@ def probe(argv: list[str]) -> int:
         os.remove(log_path)
     except OSError:
         pass
-    srv = AppServer(codex_bin, home, os.getcwd(), [], log_path, os.path.join(home, "fleet-probe.stderr"))
+    print(feature_report(request_input_feature(codex_bin, home, os.getcwd()), ask))
+    srv = AppServer(codex_bin, home, os.getcwd(), [(REQUEST_INPUT_KEY, ask)], log_path, os.path.join(home, "fleet-probe.stderr"))
     srv.on_server_request = lambda m: srv.respond(m["id"], error={"code": -32601, "message": "probe"})
     srv.on_notification = lambda m: None
     try:

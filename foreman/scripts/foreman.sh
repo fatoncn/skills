@@ -1836,7 +1836,7 @@ cmd_doctor() {
   if [ "$CODEX_HOME_MODE" = "shared" ]; then echo "模式=shared  CODEX_HOME=$CODEX_HOME_DIR  （桌面端能看到 foreman 线程；执行者继承桌面端 config.toml 的 MCP / 插件 / notify / 全局 AGENTS.md）"
   else echo "模式=$CODEX_HOME_MODE  CODEX_HOME=$CODEX_HOME_DIR  auth.json → $(readlink "$CODEX_HOME_DIR/auth.json" 2>/dev/null)  （桌面端看不到线程，用 foreman tail / report）"; fi
   echo; echo "--- app-server 握手（不起模型，零 token）---"
-  python3 "$PY_APPSERVER" probe --home "$CODEX_HOME_DIR" --codex "$CODEX_BIN" || echo "!! app-server 握手失败：codex 执行器暂时不可用，把上面的原始报错告诉用户；不要自行排代理 / 换节点"
+  python3 "$PY_APPSERVER" probe --home "$CODEX_HOME_DIR" --codex "$CODEX_BIN" --request-user-input "$(cfg codex.request_user_input true)" || echo "!! app-server 握手失败：codex 执行器暂时不可用，把上面的原始报错告诉用户；不要自行排代理 / 换节点"
 
   [ -n "$wt" ] || return 0
   echo; echo "--- 沙箱边界自检（codex sandbox，不起模型，零 token）---"

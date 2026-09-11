@@ -5,7 +5,7 @@
 - **先发消息，再改引导**（cookie 09-11 晚口径）：编排者追加内容默认 `run`，turn 在跑就安全排队，结束了就起下一轮。排队输出明确指出当前 run 和新 run，并给出 `foreman steer <id> --from-queue N --thread <名>`；要立刻纠偏才转换。直接 `steer <id> [--thread <名>] "文本"` / `--file <f>` 也保留。
 - 引导走 `turn/steer`，以提交时的活动 turn 为前置条件；处理中 turn 已结束或 ID 不匹配就建齐新轮次（标题「引导转排队」），记 `steer_requeued`，不丢消息、不误投下一轮。已被拿起的 queue 轮次不再撤回。成功 / 失败回执最多等待 30 秒，失败保留消息。
 - `--from-queue` 清理原轮次全部账本及线程 runs；`prompt_source` 保存原任务书绝对路径，旧请求回退到去掉位置块的 prompt 正文。轮次定位扫描现存最大编号，允许撤回产生空号；队列取出、撤回和分配在短文件锁内完成。report 增加引导列表（时间、fromRun、前 120 字）和转排队记录。
-- **Default 模式提问由执行体开启**：app-server 进程默认覆盖 `features.default_mode_request_user_input=true` 和 `suppress_unstable_features_warning=true`，不改用户级配置；项目 `codex.request_user_input=false` 可关闭。编排者 probe-ask run #2 已验证 request_user_input → WAITING → answer → 复述回答全链路，44 秒完成。五份角色样例与 SKILL 恢复工具提问：只有红线和真正定不了的口径才问，其它合理完成后列「需要澄清」。
+- **Default 模式提问由执行体开启**：先探测并缓存 `codex features list`；功能位存在时 app-server 进程默认覆盖 `features.default_mode_request_user_input=true` 和 `suppress_unstable_features_warning=true`，不改用户级配置；功能位缺失或探测失败不传该位，仅记 `feature_missing`，doctor 展示名称、阶段、生效值与是否携带；项目 `codex.request_user_input=false` 可关闭。编排者 probe-ask run #2 已验证 request_user_input → WAITING → answer → 复述回答全链路，44 秒完成。五份角色样例与 SKILL 恢复工具提问：只有红线和真正定不了的口径才问，其它合理完成后列「需要澄清」。
 - 脚本以同一行 `main "$@"; exit $?` 收尾，避免运行中改文件后 bash 从旧偏移继续解析，污染 wait 返回码。
 
 ## 1.2.2 — 2026-09-11

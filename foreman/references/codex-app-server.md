@@ -178,12 +178,14 @@ cookie 的最终口径是「先发消息，再改引导」：编排者默认用 
 
 编排者在项目 `probe-ask` 的 run #2 实测：codex-cli 0.153.4 的 `default_mode_request_user_input` 为 under development 功能位，出厂默认 false。不开时模型按系统提示自我禁用，通常用纯文本提问结束 turn；打开后模型真实调用 `request_user_input`，桥收到 `item/tool/requestUserInput` → questions 文件 → WAITING → `foreman answer --qid <id> "B"` → 约 2 秒内继续，最后一条消息原文复述回答。全链路 44 秒。此证据由编排者提供，本票执行者线程的下一轮验证另计。
 
-执行体启动 app-server 默认传这两个进程级覆盖，不修改 `~/.codex/config.toml`：
+执行体先用 `codex features list` 探测，并在同一进程内缓存一次。只有输出包含 `default_mode_request_user_input` 才默认传这两个进程级覆盖，不修改 `~/.codex/config.toml`：
 
 ```text
 -c features.default_mode_request_user_input=true
 -c suppress_unstable_features_warning=true
 ```
+
+功能位缺失或探测失败时不传该位（包括请求里已有的覆盖），不报错，只在执行体 jsonl 写一条 `_fleet: feature_missing`，带功能位名与缺失原因。`doctor` 显示名称、阶段、当前 CLI 配置的生效值、执行体是否会携带以及进程覆盖值；它与启动共用探测缓存，不重复调用。
 
 项目 `foreman.toml` 的 `[codex] request_user_input = false` 可关闭；该值经 request 的 config_overrides 传给执行体，覆盖其默认 true。hold 启动时生效，现有进程不会热加载。
 
