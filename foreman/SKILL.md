@@ -2,7 +2,7 @@
 name: foreman
 description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.2.5"
+  version: "1.2.6"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码
@@ -199,7 +199,7 @@ $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writ
 - **档位**来自全局 `[roles.*]`（项目同名可覆盖），单次 `--model` / `--effort` 可覆盖；派活后看 `report` 首行的 `model= effort=` 确认，不要等验收才发现。到并发上限脚本拒绝派发，`status` 尾行显示当前在跑数。
 - **线程由常驻执行体占着（写锁）**：第一次 `run` 起一个常驻执行体载入线程并一直持有它的写锁，之后每轮只是往它的队列丢请求（同一线程的轮次排队，`status` 里 `QUEUED`）；桌面端在此期间打不开这条线程，也就不会再出现「already has an active writer」。**编排者明确结束这轮工作时 `release <id>` 释放**，`cleanup` 也会释放；空闲超过 `codex.hold_idle_minutes`（默认 360）自动释放，免得编排者会话没了还永久占着。
 - **并发派活一律 `--detach`**：宿主 shell 有 10 分钟上限，一轮 20～40 分钟正常。前台档只适合几分钟的小活。
-- 收敛用 `status` / `wait --timeout 300`（返回 2 = 还在跑再调一次；3 = 执行者在提问，问题已打出，`answer` 后再 wait）/ `tail <id>`（跑到一半看进度）。`DEAD` = 进程没了但没写完成标记，按失败处理。`THREAD_BUSY` = shared 模式下桌面端正打开着这条线程、续不上（这轮什么都没跑）：让用户关掉它再续，急就 `release` 后 `--thread <新名>` 另起并在 prompt 里补上下文。
+- 收敛用 `status` / `wait --timeout <秒>`（返回 2 = 还在跑再调一次；3 = 执行者在提问，问题已打出，`answer` 后再 wait）/ `tail <id>`（跑到一半看进度）。**`wait` 会阻塞调用它的会话，强烈不建议前台等**：它挂着的时候你回不了用户、派不了别的票、答不了别的票的提问（执行体是独立进程，不受影响）。宿主能把命令放后台并在退出时唤醒你的（如 Claude Code 的 Bash `run_in_background`），一律放后台跑，`--timeout` 取宿主允许的上限，返回 2 就再放一次；是不是后台由宿主决定，skill 管不了，所以不限 timeout。`DEAD` = 进程没了但没写完成标记，按失败处理。`THREAD_BUSY` = shared 模式下桌面端正打开着这条线程、续不上（这轮什么都没跑）：让用户关掉它再续，急就 `release` 后 `--thread <新名>` 另起并在 prompt 里补上下文。
 - **执行者会向你提问**：阻塞问题用 `request_user_input` 问编排者并等答复；`status` 显示 `WAITING` 时，用 `questions <id>` 看问题、`answer <id> --qid <问题 id> "回答"` 回复，执行体通常 2 秒内读取并继续。`wait` 遇到 WAITING 返回 3，回答后再等；超过 `codex.question_timeout` 才给兜底答复。这靠执行体探测可用后默认带的功能位 `default_mode_request_user_input`（缺失时不传，只记 `feature_missing`，用 doctor 检查），不开它 codex 默认模式不会调用这个工具；项目可设 `codex.request_user_input = false` 关闭（重起 hold 生效）。只有红线和真正定不了的口径才问，其它按合理理解做完列进报告的「需要澄清」。派出后要盯 WAITING，别把 wait 丢后台就走。
 - **追加内容默认先 `run`**：turn 结束就起下一轮，仍在跑就排队。脚本输出排队轮次和 `steer --from-queue N`；确认要立刻纠偏才转换。也可直接 `steer <id> --thread <名> "纠偏文本"`。steer 处理时 turn 已结束会自动转回完整新轮次，打印「turn 已结束，这条消息已转为 run #K 排队」；`report` 可看引导及 `steer_requeued`。`--from-queue N` 若已经被拿起则拒绝，因为它已经在跑，本来就是要的效果。默认线程 implement，其它线程显式带 `--thread`。
 - **线程命名自动化**：每次 `run` / `review` 都按本机 `config.toml` 的 `codex.thread_name` 模板给 codex 线程命名，模板由使用者定，skill 只约束它必须含 `{ids}`（这张票相关的全部 issue / PR 号，`+` 连接）和 `{title}`（具体工作内容）。**每次 `run` / `review` 都给 `--title`，写这一轮真实做的事**（返工写返的是什么、复审写审的是什么），不给才回落到任务书首个标题、再回落到阶段词「实现 / 返工 第 N 轮 / 收尾 / 复审」并打警告。shared 模式下桌面端按这个名字找线程。
@@ -293,7 +293,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN review <id> [--pr 名] [--prompt f] [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 纠偏；把刚排队的改成立刻生效，turn 已结束自动转排队 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
-| `$FOREMAN status` / `wait [--timeout 300]` / `tail <id>` | 收敛与进度；wait 返回 2 = 还在跑、3 = 执行者在提问；`ENGINE_DOWN` = 执行器不可用，告知用户 |
+| `$FOREMAN status` / `wait [--timeout 300]` / `tail <id>` | 收敛与进度；wait 返回 2 = 还在跑、3 = 执行者在提问；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
 | `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
 | `$FOREMAN report <id> [N\|reviewN]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
