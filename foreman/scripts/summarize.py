@@ -457,7 +457,7 @@ def scan_appserver(events, role=None):
             ))
         elif method == "warning":
             msg = stringify(params.get("message") or params, 300)
-            if "Automatic approval review" not in msg:
+            if "Automatic approval review" not in msg and "Skill descriptions were shortened" not in msg:
                 state["notices"].append("warning: " + msg)
         elif method == "thread/tokenUsage/updated":
             usage = (params.get("tokenUsage") or {}).get("total") or {}

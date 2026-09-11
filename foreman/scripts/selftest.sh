@@ -300,6 +300,10 @@ sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/pr
 expect_no_grep "系统临时目录不计工作目录之外" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_no_grep "accept 交付目录 fileChange 从模型改动列表排除" '/workspace/proj/other/b.ts' python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md"
 expect_no_grep "fileChange 只列事实、不判只看不改角色作废" '改了这轮作废' python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+printf '%s\n' '{"method":"warning","params":{"message":"warning: Skill descriptions were shortened to fit the context"}}' '{"method":"warning","params":{"message":"keep this warning"}}' > "$T/warnings.jsonl"
+: > "$T/warnings.stderr"; echo done > "$T/warnings.last.md"
+warning_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/warnings.jsonl" "$T/warnings.stderr" "$T/warnings.last.md" 2>&1)"; warning_rc=$?
+if [ "$warning_rc" -eq 0 ] && printf '%s\n' "$warning_out" | grep -q 'keep this warning' && ! printf '%s\n' "$warning_out" | grep -q 'Skill descriptions were shortened'; then ok "report 只过滤 skill descriptions 良性告警"; else bad "report 良性告警过滤" "rc=$warning_rc"; fi
 python3 - "$T/steer-summary.jsonl" <<'PY2'
 import json,sys
 with open(sys.argv[1],"w") as f:
