@@ -26,12 +26,13 @@ expect_rc   "setup（生成角色表 + 角色文件）" 0 "$F" setup
 expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
-expect_grep "无可续接 turn 时 steer 保留路径边界正确" "消息已保留在 .*\uff0c用 run 起新一轮" "$F" steer 1 "纠偏"
+expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
 expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
 echo "== 票 / PR / 线程 =="
 echo task > "$T/brief.md"
 expect_rc   "假 codex 下前台 run 返回 4（ENGINE_DOWN）" 4 "$F" run 1 --prompt "$T/brief.md" --title "自测" --timeout 30
+expect_grep "steer 保留路径变量边界正确" "消息已保留在 .*，用 run 起新一轮" "$F" steer 1 "纠偏"
 req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json 2>/dev/null | head -1)"
 [ -n "$req" ] && python3 - "$req" "$T/proj" "$T/proj/app" <<'PY' && ok "run 请求：cwd = 项目根、work_dir = 票目录、可写根含票目录" || bad "run 请求：cwd / work_dir / 可写根"
 import json,sys,os
@@ -110,9 +111,7 @@ printf 'b' > "$d2/run-97.pr"; printf 'implement@b' > "$d2/run-97.thread"; printf
 printf '{"_fleet":"thread","threadId":"t","workDir":"%s"}\n' "$T/proj/app/.claude/worktrees/foreman-2-b" > "$d2/run-97.jsonl"; : > "$d2/run-97.stderr"
 expect_grep "report 最新运行轮正文为空时提示上一轮" "run #97 进行中；上一轮交付" "$F" report 2 --pr b
 kill "$report_pid"; wait "$report_pid" 2>/dev/null || true; rm -f "$d2"/run-97.*
-set +e
 check_ok_out="$("$F" check 2 --pr b true 2>&1)"; check_ok_rc=$?
-set -e
 if [ "$check_ok_rc" -eq 0 ] && printf '%s\n' "$check_ok_out" | grep -q "ALL PASS" && ! printf '%s\n' "$check_ok_out" | grep -q "unbound variable"; then
   ok "check 命令通过且 RETURN 后无 unbound"
 else
