@@ -139,7 +139,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 ## 未验证（下次要盯的）
 
-1. `item/tool/requestUserInput` 在 app-server + `experimentalApi:true` 下是否真的会出现（首跑没触发，模型没提问）。
+1. **已验**：打开 `features.default_mode_request_user_input` 后 Default 模式真实触发 `item/tool/requestUserInput`，见文末提问实测。
 2. `turn/interrupt` 后 `turn/completed.status=interrupted` 是否可靠到达（否则执行体 20 秒后强杀，rc=143）。
 3. 长任务自动压缩上下文后 developerInstructions 是否仍在场（`thread/compacted` 通知可观察）。
 4. 并发 2 路以上的订阅额度表现；terra/high 档一轮真实票的 token 与用时。
@@ -176,6 +176,27 @@ cookie 的最终口径是「先发消息，再改引导」：编排者默认用 
 
 ## Default 协作模式下的提问实测（2026-09-11）
 
-本票连续轮次中，执行者声称提交了提问，但事件流没有 `item/tool/requestUserInput`。Default 协作模式的提示要求：必须要用户输入才能继续时，用纯文本问题结束 turn；所以 `request_user_input` 基本不会被调用。
+编排者在项目 `probe-ask` 的 run #2 实测：codex-cli 0.153.4 的 `default_mode_request_user_input` 为 under development 功能位，出厂默认 false。不开时模型按系统提示自我禁用，通常用纯文本提问结束 turn；打开后模型真实调用 `request_user_input`，桥收到 `item/tool/requestUserInput` → questions 文件 → WAITING → `foreman answer --qid <id> "B"` → 约 2 秒内继续，最后一条消息原文复述回答。全链路 44 秒。此证据由编排者提供，本票执行者线程的下一轮验证另计。
 
-提问的常态是最后一条交付报告的「需要澄清」，编排者用下一轮 `run` 回答。只有红线问题停下来等，其它拿不准的按合理理解完成后再列。`WAITING` / `questions` / `answer` / `question_timeout` 只在服务端真正发出 `item/tool/requestUserInput` 时才生效，文件通道保留。五份角色样例已同步这条口径；用户级运行时角色副本由编排者同步。
+执行体启动 app-server 默认传这两个进程级覆盖，不修改 `~/.codex/config.toml`：
+
+```text
+-c features.default_mode_request_user_input=true
+-c suppress_unstable_features_warning=true
+```
+
+项目 `foreman.toml` 的 `[codex] request_user_input = false` 可关闭；该值经 request 的 config_overrides 传给执行体，覆盖其默认 true。hold 启动时生效，现有进程不会热加载。
+
+服务端请求形状（字段以 0.153.4 v2 schema 为准）：
+
+```json
+{"jsonrpc":"2.0","id":17,"method":"item/tool/requestUserInput","params":{"threadId":"<thread>","turnId":"<turn>","itemId":"<item>","isBlocking":true,"questions":[{"id":"choice","header":"联调","question":"随机词选 A 还是 B？","options":[{"label":"A","description":"使用 A"},{"label":"B","description":"使用 B"}]}]}}
+```
+
+`foreman answer <id> --qid choice "B"` 写入本地 answer 文件的 answers 是 `{ "choice": ["B"] }`，完整文件为 `{"answers":{"choice":["B"]}}`。桥读取后返回协议要求的嵌套结构：
+
+```json
+{"jsonrpc":"2.0","id":17,"result":{"answers":{"choice":{"answers":["B"]}}}}
+```
+
+阻塞问题用工具问并等待；超过 `question_timeout` 才兜底。只有红线和真正定不了的口径才问，其它合理完成后列进报告的「需要澄清」。五份角色样例同步；用户级运行时角色副本仍由编排者同步。

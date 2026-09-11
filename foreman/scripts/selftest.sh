@@ -38,6 +38,20 @@ r=json.load(open(sys.argv[1])); root=os.path.realpath(sys.argv[2]); wt=os.path.r
 assert os.path.realpath(r["cwd"])==root, r["cwd"]; assert os.path.realpath(r["work_dir"])==wt, r["work_dir"]
 ov=dict(r["config_overrides"]); assert wt in ov["sandbox_workspace_write.writable_roots"], ov
 PY
+[ -n "$req" ] && python3 -c 'import json,sys; assert dict(json.load(open(sys.argv[1]))["config_overrides"])["features.default_mode_request_user_input"] == "true"' "$req" && ok "提问功能位默认开启" || bad "提问功能位默认开启"
+ask_toml="$FOREMAN_HOME/projects/proj/foreman.toml"
+python3 - "$ask_toml" <<'PY2'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); assert "[codex]" in s
+p.write_text(s.replace("[codex]", "[codex]\nrequest_user_input = false",1))
+PY2
+expect_rc "关闭提问功能仍正常派发（假 codex）" 4 "$F" run 1 --prompt "$T/brief.md" --title "提问关闭" --timeout 30
+ask_req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json | head -1)"
+python3 -c 'import json,sys; assert dict(json.load(open(sys.argv[1]))["config_overrides"])["features.default_mode_request_user_input"] == "false"' "$ask_req" && ok "项目可关闭提问功能位" || bad "项目关闭提问功能位"
+python3 - "$ask_toml" <<'PY2'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("\nrequest_user_input = false", "",1))
+PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
 expect_grep "release：没有占着的线程" "没有被占着" "$F" release 1
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
@@ -274,6 +288,24 @@ b.submit_steer(d,"implement","","",7)
 assert not list(d.glob("run-7.*")) and max(b.run_numbers(d))==10
 assert [pathlib.Path(p).name for p in h._queued()]==["run-9.request.json","run-10.request.json"]
 print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
+PY2
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "app-server 实际 argv 默认开启、支持关闭且进程级抑制警告" || bad "app-server 提问功能位 argv"
+import importlib.util,pathlib,sys
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+for value in (None,"false"):
+    overrides=[] if value is None else [("features.default_mode_request_user_input",value)]
+    with patch.object(b.subprocess,"Popen") as popen, patch.object(b.threading.Thread,"start"):
+        server=b.AppServer("fake-codex",sys.argv[2],sys.argv[2],overrides,str(pathlib.Path(sys.argv[2])/"ask-argv.jsonl"),str(pathlib.Path(sys.argv[2])/"ask-argv.stderr"))
+        try:
+            args=popen.call_args.args[0]
+            settings=[args[i+1] for i,a in enumerate(args) if a=="-c"]
+            assert settings.count("features.default_mode_request_user_input="+(value or "true"))==1, settings
+            assert len([s for s in settings if s.startswith("features.default_mode_request_user_input=")])==1
+            assert "suppress_unstable_features_warning=true" in settings
+        finally:
+            server._log.close(); server._stderr.close()
+print("默认 true / 显式 false 两种启动 argv 断言通过")
 PY2
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done

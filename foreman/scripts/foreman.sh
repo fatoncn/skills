@@ -910,11 +910,12 @@ PY
 config_overrides_json() {  # <mode> <worktree> <effort> <extra writable>
   local mode="$1" wt="$2" effort="$3" extra="$4"
   local gitdir=""; if [ "$mode" != "read-only" ] && [ "$IN_GIT" -eq 1 ]; then gitdir="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)"; fi
-  local net web; net="$(cfg codex.sandbox_network true)"; web="$(cfg codex.web_search true)"
-  python3 - "$mode" "$gitdir" "$net" "$web" "$effort" $extra <<'PY'
+  local net web ask; net="$(cfg codex.sandbox_network true)"; web="$(cfg codex.web_search true)"; ask="$(cfg codex.request_user_input true)"
+  case "$ask" in true|false) ;; *) die "codex.request_user_input 必须是 true 或 false" ;; esac
+  python3 - "$mode" "$gitdir" "$net" "$web" "$effort" "$ask" $extra <<'PY'
 import json, sys
-mode, gitdir, net, web, effort, *extra = sys.argv[1:]
-ov = [["tools.web_search", web]]
+mode, gitdir, net, web, effort, ask, *extra = sys.argv[1:]
+ov = [["tools.web_search", web], ["features.default_mode_request_user_input", ask]]
 if effort: ov.append(["model_reasoning_effort", json.dumps(effort)])
 if mode != "read-only":
     roots = [r for r in [gitdir, *extra] if r]

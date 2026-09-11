@@ -109,7 +109,11 @@ class AppServer:
         env = dict(os.environ)
         env["CODEX_HOME"] = home
         args = [codex_bin, "app-server", "--listen", "stdio://"]
-        for key, value in overrides:
+        # Default 模式的提问工具默认关闭；由执行体显式开启，不依赖用户级 config.toml。
+        # 项目 request_user_input=false 通过 overrides 覆盖默认值；警告只在本进程抑制。
+        process_overrides = {"features.default_mode_request_user_input": "true",
+                             "suppress_unstable_features_warning": "true", **dict(overrides)}
+        for key, value in process_overrides.items():
             args += ["-c", f"{key}={value}"]
         self._stderr = open(stderr_path, "ab")
         self.proc = subprocess.Popen(
