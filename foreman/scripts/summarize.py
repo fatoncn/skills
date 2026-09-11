@@ -28,7 +28,9 @@ FORBIDDEN = [
     (re.compile(r"\bgh\s+(release|workflow|secret|repo)\b"), "gh 写操作"),
     (re.compile(r"\bgh\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"), "gh api 写"),
     (re.compile(r"\bgh\s+api\s+graphql\b"), "gh api graphql"),
-    (re.compile(r"\bvercel\b"), "vercel"),
+    # vercel 只探写操作与 env：inspect / list / ls / logs / whoami / api GET 是任务书常允许的只读查询（#1606 验收线程 3 次误报）
+    (re.compile(r"\bvercel\s+(deploy|promote|rollback|redeploy|alias|env|domains|dns|certs|rm|remove|link|project|teams|switch|login|logout|git)\b"), "vercel 写操作或 env"),
+    (re.compile(r"\bvercel\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"), "vercel api 写"),
     (re.compile(r"\bsupabase\s+(link|db\s+push|db\s+remote)\b"), "supabase 远端"),
     (re.compile(r"\bnpx?\s+sst\b|\bsst\s+deploy\b"), "sst deploy"),
     (re.compile(r"eslint-disable"), "eslint-disable"),

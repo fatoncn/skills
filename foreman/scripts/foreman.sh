@@ -1836,6 +1836,8 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
 EOF
 }
 
+# 整段派发包在函数里：bash 先把函数体整个解析完再执行，脚本文件在长命令（wait）跑到一半时被改也不会读到错位内容
+main() {
 [ $# -gt 0 ] || { usage; exit 1; }
 sub="$1"; shift
 case "$sub" in
@@ -1866,3 +1868,5 @@ case "$sub" in
   -h|--help|help) usage ;;
   *) die "未知命令 '$sub'（-h 看用法）" ;;
 esac
+}
+main "$@"

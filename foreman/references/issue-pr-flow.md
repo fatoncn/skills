@@ -9,7 +9,7 @@
 | `brief-<id>.md`（要建 issue 时它就是 issue 正文） | 首轮 `run --prompt` | 单张票的任务书，首段写明真源 | 一个执行者 + 人 |
 | `rework-<id>-N.md` | 后续轮 `run --prompt` | 具体哪里不对、证据、期望 | 同一个执行者（线程连续） |
 | `REVIEW-<id>.md` | `review --prompt` | 需求口径（前因后果、做到什么程度、有意不做的）+ 关注点 | 复审者（只提意见，你拍板） |
-| `accept-<id>.md` | 验收线程首轮 `run --role accept --prompt`，证据目录用 `--writable` 放开 | 复测入口、账号、逐步操作与应看到什么、证据要求、不在范围项 | 验收者 + 你 |
+| `accept-brief-<id>.md` | 验收线程首轮 `run --role accept --prompt`，证据目录用 `--writable` 放开 | 复测入口、账号、逐步操作与应看到什么、证据要求、不在范围项 | 验收者 + 你 |
 | PR 描述 | `foreman pr --body-file` | 改了什么、风险档、复测入口、项目要求的实测证据 | review 机器人 + 收尾者 + 合并的人 |
 | `HANDOFF-<PR>-closeout.md` | `run <id> --closeout --prompt`（实现者续同一线程），或贴给做实现的外部会话 | 收尾任务书 | 实现者（收尾轮） |
 | `ACCEPT-<PR>.md` | 报可合时给用户 | 验收包三件 | 亲自验收的人 |
@@ -167,7 +167,7 @@
 
 ---
 
-## accept-<id>.md（验收任务书：把产品真跑起来对清单看）
+## accept-brief-<id>.md（验收任务书：把产品真跑起来对清单看；不要叫 `accept-<id>.md`——交付物 `ACCEPT-<PR>.md` 在大小写不敏感的文件系统上会把它覆盖）
 
 ```markdown
 真源: <PR #n + 任务书路径 + 用户口径>

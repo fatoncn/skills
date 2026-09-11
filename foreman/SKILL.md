@@ -200,7 +200,7 @@ $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writ
 - **线程由常驻执行体占着（写锁）**：第一次 `run` 起一个常驻执行体载入线程并一直持有它的写锁，之后每轮只是往它的队列丢请求（同一线程的轮次排队，`status` 里 `QUEUED`）；桌面端在此期间打不开这条线程，也就不会再出现「already has an active writer」。**编排者明确结束这轮工作时 `release <id>` 释放**，`cleanup` 也会释放；空闲超过 `codex.hold_idle_minutes`（默认 360）自动释放，免得编排者会话没了还永久占着。
 - **并发派活一律 `--detach`**：宿主 shell 有 10 分钟上限，一轮 20～40 分钟正常。前台档只适合几分钟的小活。
 - 收敛用 `status` / `wait --timeout 300`（返回 2 = 还在跑，再调一次）/ `tail <id>`（跑到一半看进度）。`DEAD` = 进程没了但没写完成标记，按失败处理。`THREAD_BUSY` = shared 模式下桌面端正打开着这条线程、续不上（这轮什么都没跑）：让用户关掉它再续，急就 `release` 后 `--thread <新名>` 另起并在 prompt 里补上下文。
-- **执行者会向你提问**：`status` 显示 `WAITING` 时 `questions <id>` 看问题、`answer <id> "回答"`。超过 `codex.question_timeout` 秒没回，它收到兜底答复（按合理理解做、问题写进「需要澄清」）。
+- **执行者会向你提问**：`status` 显示 `WAITING` 时 `questions <id>` 看问题、`answer <id> "回答"`。超过 `codex.question_timeout` 秒没回，它收到兜底答复（按合理理解做、问题写进「需要澄清」）。调研 / 验收线程最容易问（缺任务 id、缺账号、缺数据）：派出后别把 `wait` 丢进后台就走，用前台 `wait`（会打 ⏳）或每半分钟看一次 `status` 的循环盯到 WAITING 就答；问题超时兜底等于白跑一轮。
 - **线程命名自动化**：每次 `run` / `review` 都按本机 `config.toml` 的 `codex.thread_name` 模板给 codex 线程命名，模板由使用者定，skill 只约束它必须含 `{ids}`（这张票相关的全部 issue / PR 号，`+` 连接）和 `{title}`（具体工作内容）。**每次 `run` / `review` 都给 `--title`，写这一轮真实做的事**（返工写返的是什么、复审写审的是什么），不给才回落到任务书首个标题、再回落到阶段词「实现 / 返工 第 N 轮 / 收尾 / 复审」并打警告。shared 模式下桌面端按这个名字找线程。
 - **执行器不可用就告知用户，不自己排障**：`status` / `wait` 出现 `ENGINE_DOWN`、`report` 顶部有 ⛔ 横幅、或 `doctor` 握手失败（404 / 5xx / 连接失败 / 额度用尽 / 登录失效）→ 一句话告诉用户 codex 暂时无法使用并附原始报错，让用户决定等、换 `--engine`、还是改 spawn；不要自己排代理、换节点、反复重试刷额度。
 
@@ -237,7 +237,7 @@ $FOREMAN review <id> --engine pi     # pi：一次性副本 worktree，审完丢
 $FOREMAN run <id> --role accept --prompt <accept-id.md> --title "…" --writable <证据目录> --detach   # 位置是这张 PR 的 worktree（只读用，可起本地服务）；实现者线程已停手
 ```
 
-验收者按清单逐项操作、证据落交付目录、不在范围项只记不判、发现问题只报不修；交回来的是填好的 `ACCEPT-<PR>.md` 和逐项结果，可不可合由你判。派谁（自己、spawn、foreman）按会话定的通道。任务书模板 `accept-<id>.md` 见 `references/issue-pr-flow.md`。
+验收者按清单逐项操作、证据落交付目录、不在范围项只记不判、发现问题只报不修；交回来的是填好的 `ACCEPT-<PR>.md` 和逐项结果，可不可合由你判。派谁（自己、spawn、foreman）按会话定的通道。任务书模板 `accept-brief-<id>.md` 见 `references/issue-pr-flow.md`。
 
 **调研票的验收**：交付物按任务书的问题逐条核：每条事实有没有出处（文件:行号、命令与输出）、「看到的」和「推断的」分开没有、未核项列了没有；关键数字与线上状态自己复核一次再采信。判断由你下：调研者给的是候选项和证据，不是决定。`report` 的越界探针对调研票同样有效：改到检出里的文件一律阻塞。
 

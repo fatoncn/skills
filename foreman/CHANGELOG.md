@@ -2,6 +2,10 @@
 
 ## 1.2.2 — 2026-09-11
 
+- 验收任务书改名 `accept-brief-<id>.md`：原来叫 `accept-<id>.md`，与交付物 `ACCEPT-<PR>.md` 只差大小写，macOS 默认文件系统不区分大小写，验收者一落盘就把任务书覆盖了（#1606 实测）。
+- `vercel` 探针收窄到写操作子命令与 `env`，`inspect` / `list` / `logs` 这类只读查询不再误报。
+- `foreman.sh` 的命令派发段包进 `main()`：bash 逐段读脚本，`wait` 跑到一半时脚本被改会读到错位内容报 unexpected EOF；包进函数后整段先解析完再执行。
+- SKILL.md 阶段 3 补一句：调研 / 验收线程最容易提问，派出后要盯 WAITING，别把 `wait` 丢后台就走（问题超时兜底等于白跑一轮）。
 - 修 `wait` 竞态：只把 RUNNING / WAITING 当在跑，`run --detach` 刚把轮次放进常驻执行体的线程队列（QUEUED，几秒的交接窗口；与并发上限无关）时立刻 `wait` 会误报「没有正在运行的会话」直接返回（#1606 验收线程派发后实测）。现在 QUEUED 也算在跑；selftest 加一项。
 
 ## 1.2.1 — 2026-09-11
