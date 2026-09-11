@@ -1631,13 +1631,14 @@ print(max((int(m[1]) for p in pathlib.Path(sys.argv[1]).iterdir() if (m := patte
 PY2
 }
 last_implementation_thread() {  # <票目录> <PR 名>
-  python3 - "$1" "$2" <<'PY2'
+  python3 - "$1" "$2" "$(default_pr_name "$1")" <<'PY2'
 import pathlib,re,sys
-d=pathlib.Path(sys.argv[1]); pr=sys.argv[2]; found=[]
-for p in d.glob("run-*.pr"):
-    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
-    if not m or p.read_text().strip()!=pr: continue
-    n=int(m[1]); role=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+d=pathlib.Path(sys.argv[1]); pr,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if actual!=pr: continue
+    role=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
     if role not in ("implement","mechanical"): continue
     thread=(d/f"run-{n}.thread").read_text().strip() if (d/f"run-{n}.thread").is_file() else "implement"
     found.append((n,thread))
@@ -1645,27 +1646,28 @@ print(max(found)[1] if found else "")
 PY2
 }
 thread_for_pr_role() {  # <票目录> <PR 名> <角色>
-  python3 - "$1" "$2" "$3" <<'PY2'
+  python3 - "$1" "$2" "$3" "$(default_pr_name "$1")" <<'PY2'
 import pathlib,re,sys
-d=pathlib.Path(sys.argv[1]); pr,role=sys.argv[2:]; found=[]
-for p in d.glob("run-*.pr"):
-    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
-    if not m or p.read_text().strip()!=pr: continue
-    n=int(m[1]); rr=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+d=pathlib.Path(sys.argv[1]); pr,role,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if actual!=pr: continue
+    rr=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
     if rr!=role: continue
     tf=d/f"run-{n}.thread"; found.append((n,tf.read_text().strip() if tf.is_file() else "implement"))
 print(max(found)[1] if found else "")
 PY2
 }
 thread_last_pr() {  # <票目录> <线程名>
-  python3 - "$1" "$2" <<'PY2'
+  python3 - "$1" "$2" "$(default_pr_name "$1")" <<'PY2'
 import pathlib,re,sys
-d=pathlib.Path(sys.argv[1]); wanted=sys.argv[2]; found=[]
-for p in d.glob("run-*.pr"):
-    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
-    if not m: continue
-    n=int(m[1]); tf=d/f"run-{n}.thread"; thread=tf.read_text().strip() if tf.is_file() else "implement"
-    if thread==wanted: found.append((n,p.read_text().strip()))
+d=pathlib.Path(sys.argv[1]); wanted,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    tf=d/f"run-{n}.thread"; thread=tf.read_text().strip() if tf.is_file() else "implement"
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if thread==wanted: found.append((n,actual))
 print(max(found)[1] if found else "")
 PY2
 }

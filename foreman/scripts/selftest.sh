@@ -231,6 +231,17 @@ wait43_out="$("$F" wait 43 --timeout 1 --interval 1 --no-report 2>&1)"; wait43_r
 if [ "$wait43_rc" -eq 2 ] && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#1 .*RUNNING' && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#2 CANCELLED'; then ok "wait 显示取消尾轮且继续等活动旧轮"; else bad "wait 被 CANCELLED 尾轮提前收敛" "rc=$wait43_rc"; fi
 kill "$wait43_pid" 2>/dev/null; wait "$wait43_pid" 2>/dev/null || true; rm -rf "$wait43_dir/hold-cancel-tail"; rm -f "$wait43_dir"/run-1.* "$wait43_dir"/run-2.*
 expect_grep "wait 取消尾轮测试清理" "已删登记" "$F" cleanup 43 --force
+expect_grep "旧轮 closeout 测试登记" "PR「here」" "$F" here 44
+old44_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/44/meta.json' -print -quit)")"; make_hold_fixture "$old44_dir" implement 1 999999 here implement
+rm -f "$old44_dir/run-1.pr" "$old44_dir/hold-implement/queue/run-1.request.json"
+expect_rc "旧轮缺 .pr 时 closeout 续 implement" 4 "$F" run 44 --closeout --prompt "$T/brief.md" --title old-closeout --timeout 30
+old44_latest="$(ls -t "$old44_dir"/run-*.request.json | head -1)"; [ "$(cat "${old44_latest%.request.json}.thread")" = implement ] && ok "旧轮 closeout 线程归属回退 default PR" || bad "旧轮 closeout 未续 implement"
+rm -rf "$old44_dir/hold-implement"; rm -f "$old44_dir"/run-*; expect_grep "旧轮 closeout 测试清理" "已删登记" "$F" cleanup 44 --force
+expect_grep "旧轮 cleanup 测试登记" "PR「here」" "$F" here 45
+old45_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/45/meta.json' -print -quit)")"; sleep 300 & old45_pid=$!
+make_hold_fixture "$old45_dir" implement 1 "$old45_pid" here implement; rm -f "$old45_dir/run-1.pr"
+expect_grep "旧轮缺 .pr 时 cleanup 取消并释放 hold" "已丢弃 run #1" "$F" cleanup 45 --force
+if [ -f "$old45_dir/run-1.cancelled" ] && ! kill -0 "$old45_pid" 2>/dev/null; then ok "旧轮 cleanup 按 default PR 识别 hold"; else bad "旧轮 cleanup 漏释放 hold"; fi
 if [ -n "$req3" ]; then
   d2="$(dirname "$req3")"; sleep 300 & sp=$!
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"
