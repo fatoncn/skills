@@ -161,9 +161,11 @@ expect_grep "清理首个 PR" "剩余 PR: b" "$F" cleanup 6 --pr stable-a --forc
 expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b2 --timeout 30
 [ "$stable_before" = "$(cat "$stable_dir/run-2.thread")" ] && ok "清理默认 PR 后自动线程名保持稳定" || bad "自动线程名漂移"
 expect_grep "登记脏检出 here cleanup 测试" "PR「here」" "$F" here 31
-echo dirty > "$T/proj/app/here-dirty.tmp"
+printf 'dirty\ncontent must stay\n' > "$T/proj/app/here-dirty.tmp"; here_dirty_sha="$(git hash-object "$T/proj/app/here-dirty.tmp")"
 expect_grep "脏检出 here cleanup 只删登记" "已删登记" "$F" cleanup 31 --force
-[ -f "$T/proj/app/here-dirty.tmp" ] && ok "here cleanup 不动脏检出文件" || bad "here cleanup 动了检出文件"
+[ "$here_dirty_sha" = "$(git hash-object "$T/proj/app/here-dirty.tmp" 2>/dev/null)" ] && ok "here cleanup 保留脏文件完整内容" || bad "here cleanup 改写了脏文件"
+here31_meta="$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/31/meta.json' -print -quit)"
+python3 -c 'import json,sys; assert "here" not in (json.load(open(sys.argv[1])).get("prs") or {})' "$here31_meta" && ok "here cleanup 从 meta 删除登记" || bad "here cleanup 遗留 meta 登记"
 rm -f "$T/proj/app/here-dirty.tmp"
 expect_grep "cleanup 占用测试 PR A" "ready: 40" "$F" bootstrap 40 --slug cleanup-active-a --pr a --no-install
 expect_grep "cleanup 占用测试 PR B" "ready: 40" "$F" bootstrap 40 --slug cleanup-active-b --pr b --no-install
