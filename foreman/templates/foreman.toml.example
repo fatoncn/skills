@@ -1,0 +1,44 @@
+# foreman 项目配置示例：一个项目（Claude 的工作目录）一份，兼容多仓库。init 生成骨架（中性默认），项目特有字段由编排者按项目规则填。
+# 字段说明: ~/.claude/skills/foreman/references/project-config.md
+schema = 2
+
+[project]
+root = "/path/to/project"                  # Claude 的工作目录；项目就是仓库本身时与仓库相同
+
+[repo]                                     # 对项目里每个仓库都适用的默认
+default_base = ""                          # 空 = 远端默认分支；按仓库不同写到 [repos."<slug>"]，或派活时 bootstrap --base
+branch_template = "{type}/{yy}-{mm}-{dd}/{slug}"
+branch_pattern = "^[a-z][a-z0-9-]*/[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])/[a-z0-9]+(-[a-z0-9]+)*$"
+branch_check = "warn"                      # 仓库有分支名校验脚本就改 strict
+worktree_root = "{repo}/.claude/worktrees" # 占位符 {repo}=仓库主 checkout {project}=项目根 {name}=仓库目录名
+worktree_prefix = "foreman-"
+copy_env = []                              # bootstrap 从主 checkout 拷进 worktree 的未跟踪文件
+install_cmd = ""                           # 空 = 按 lockfile 自动（pnpm / yarn / npm）
+
+[verify]
+commands = []                              # 空 = 取仓库 package.json 的 type-check / lint
+
+[github]
+gh = "gh"                                  # 项目要求包装脚本就填它的路径
+pr_draft = true
+
+[engines]
+default = "codex"
+concurrency = 5      # 覆盖本机默认；计数是本机所有项目合计在跑的 codex 线程
+
+[codex]
+sandbox_network = true
+web_search = true
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+approvals = "decline"
+question_timeout = 600
+hold_idle_minutes = 360   # 常驻执行体占着线程、空闲多久自动释放；release / cleanup 之前桌面端打不开该线程
+
+
+# 角色档位在 ~/.foreman/config.toml（跨项目）；本项目要不同档位时在此加同名 [roles.<名>] 覆盖
+
+# 按仓库覆盖：某个仓库和项目默认不一样的地方，键名与顶层同名（repo.* / verify.* / github.*）
+[repos."owner--repo"]
+repo.default_base = "staging"
+repo.copy_env = [".env.local"]
