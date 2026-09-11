@@ -2,6 +2,7 @@
 
 ## 1.2.2 — 2026-09-11
 
+- `wait` 遇到执行者提问（WAITING）立即打出问题并以 rc=3 返回（cookie 09-11 同意）：后台挂一个 `wait` 就同时覆盖「做完了」和「它在问你」两种叫醒，不用再另写轮询 status 的循环。selftest 加两项。
 - `question_timeout` 默认 600 → 1800（cookie 09-11「不要卡太紧」）：执行者用 `request_user_input` 提问时等编排者 30 分钟再兜底。
 - 验收任务书改名 `accept-brief-<id>.md`：原来叫 `accept-<id>.md`，与交付物 `ACCEPT-<PR>.md` 只差大小写，macOS 默认文件系统不区分大小写，验收者一落盘就把任务书覆盖了（#1606 实测）。
 - `vercel` 探针收窄到写操作子命令与 `env`，`inspect` / `list` / `logs` 这类只读查询不再误报。

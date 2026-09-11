@@ -1582,7 +1582,11 @@ EOF
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
-      [ "$st" = "WAITING" ] && echo "   ⏳ $id $kind#$n 在等你回答提问（foreman questions ${id}）"
+      if [ "$st" = "WAITING" ]; then
+        echo "   ⏳ $id $kind#$n 在等你回答提问，wait 先返回（rc=3）：foreman answer $id \"…\" 之后再 wait"
+        cmd_questions "$id" 2>/dev/null || true
+        return 3
+      fi
     done
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
@@ -1823,7 +1827,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            回答执行者的提问（超过 codex.question_timeout 没回会给兜底答复）
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
-  wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑
+  wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑，3 = 执行者在提问（问题已打出，answer 后再 wait）
   report <id> [N|reviewN]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）
