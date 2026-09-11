@@ -1677,7 +1677,7 @@ EOF
     done
   done
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
-  echo "状态: RUNNING 在跑 | WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
+  echo "状态: RUNNING 在跑（用时从本轮 request 写入 / turn 开始算）| WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
   local hd hid; for hd in "$ISSUES_DIR"/*/hold-*; do [ -d "$hd" ] && hold_alive "$hd" || continue; hid="$(basename "$(dirname "$hd")")"; echo "HOLD   $hid  线程「$(basename "$hd" | sed 's/^hold-//')」由常驻执行体占着（pid $(cat "$hd/bridge.pid")；桌面端此时打不开它；foreman release $hid 释放）"; done
   echo "本机 codex 线程在跑（所有项目合计）: $(active_codex_runs) / 本项目派发上限 $(concurrency_limit)"
 }
