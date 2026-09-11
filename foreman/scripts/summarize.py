@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -125,7 +126,7 @@ def blank_state() -> dict:
         "turns": 0,
         "errors": [],
         "tool_errors": [],
-        "command_results": {},       # 同一命令只保留末次结果；末次成功会覆盖早先失败
+        "command_results": {},       # sha256(完整命令 + cwd) → 展示、末次结果、历史失败数
         "forbidden": [],
         "approvals": [],           # appserver: 回到执行体的审批请求及决定
         "auto_reviews": [],        # appserver: Codex 自动审查（替我审批）的决定
@@ -417,9 +418,17 @@ def scan_appserver(events, role=None):
                 command = item.get("command") or ""
                 exit_code = item.get("exitCode")
                 status = item.get("status")
-                command_key = stringify(command, 500)
-                state["command_results"][command_key] = (
-                    exit_code, status, stringify(item.get("aggregatedOutput"), 300))
+                cwd = item.get("cwd") or ""
+                identity = json.dumps([command, cwd], ensure_ascii=False, sort_keys=True, default=str)
+                command_key = hashlib.sha256(identity.encode()).hexdigest()
+                failed = status in ("failed", "declined") or exit_code not in (0, None)
+                previous = state["command_results"].get(command_key, {})
+                state["command_results"][command_key] = {
+                    "command": stringify(command, 500), "cwd": stringify(cwd, 160),
+                    "exit": exit_code, "status": status,
+                    "output": stringify(item.get("aggregatedOutput"), 300),
+                    "failures": previous.get("failures", 0) + int(failed),
+                }
                 probe_forbidden(state, command, stringify(command, 300), role)
             elif itype == "fileChange":
                 for change in item.get("changes") or []:
@@ -480,8 +489,9 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     state = scan(events, engine, role)
     state["writable_extra"] = _extra_writable_roots(log_path)
     visible_files = _visible_changed_files(state)
-    final_command_errors = [(command, result) for command, result in state["command_results"].items()
-                            if result[1] in ("failed", "declined") or result[0] not in (0, None)]
+    final_command_errors = [result for result in state["command_results"].values()
+                            if result["status"] in ("failed", "declined") or result["exit"] not in (0, None)]
+    historical_command_failures = sum(result["failures"] for result in state["command_results"].values())
     eng = state["engine"]
     codex_like = eng in ("codex", "appserver")
 
@@ -503,10 +513,12 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
 
     if final_command_errors:
         print("\n--- 最后仍失败的命令（同一命令仅末次结果）---")
-        for command, (exit_code, status, output) in final_command_errors[:10]:
-            print(f"  [exit {exit_code} {status or ''}] {command}")
-            if output:
-                print(f"      {output}")
+        for result in final_command_errors[:10]:
+            print(f"  [exit {result['exit']} {result['status'] or ''}] {result['command']}  cwd={result['cwd'] or '—'}")
+            if result["output"]:
+                print(f"      {result['output']}")
+    if historical_command_failures:
+        print(f"迭代中命令失败 {historical_command_failures} 次；上节仅列各完整命令 + cwd 的末次仍失败结果")
 
     blockers = []
     # accept / research 是否改了工作树只看 foreman.sh 的起跑前后 porcelain 探针；
