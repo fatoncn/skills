@@ -150,3 +150,32 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 - `foreman doctor`：握手 + `model/list` + 额度 + 沙箱断言，全程不起模型。
 - `CODEX_HOME=~/.foreman/codex-home codex debug prompt-input`：打印模型可见的完整 prompt（不花钱）。
 - `codex app-server generate-json-schema --out <dir>`：导出协议 schema（本笔记的字段名全部来自它）。
+
+
+## turn/steer 与排队转引导（2026-09-11）
+
+cookie 的最终口径是「先发消息，再改引导」：编排者默认用 `foreman run` 追加任务，正在跑就排队，结束了就起下一轮；看到排队提示后，需要立即纠偏才用 `foreman steer <id> --from-queue N --thread <名>`。直接 `steer <id> --thread <名> "文本"` / `--file <f>` 保留。
+
+0.153.4 本机 `codex app-server generate-json-schema --out <目录>` 的 v2 schema：
+
+```json
+{"method":"turn/steer","params":{"threadId":"<thread id>","expectedTurnId":"<活动 turn id>","input":[{"type":"text","text":"引导正文"}]}}
+```
+
+`threadId`、`expectedTurnId`、`input` 必填；可选 `clientUserMessageId`。`input` 与 `turn/start` 同形，响应 `TurnSteerResponse` 为 `{"turnId":"<turn id>"}`。
+
+独立只读协议探针实测（thread `01a0911b-0d58-71b0-aee5-cc7a9a0d8968`，只回复 OK，正常 completed），故意传错误 expectedTurnId，JSON-RPC 错误原文：
+
+```json
+{"code":-32600,"message":"expected active turn id `foreman-intentionally-wrong-turn` but found `01a0911b-0dc7-7b30-baa6-0efcf8159941`"}
+```
+
+执行体将此类前置条件失败、已 completed、当前无活动 turn 转为完整新排队轮次，标题「引导转排队」，记录 `_fleet: steer_requeued`；其它错误记录 `steer_error` 并保留原消息。提交时固定目标 turn，不能把原 turn 的纠偏误投到下一轮。RUNNING 的主循环和 WAITING 的 answer 轮询都消费 `hold-<线程>/steer/*.json`；成功回执放 `sent/`，失败放 `failed/`，CLI 最多等 30 秒，超时只表示尚无回执，不应重复发送。
+
+`--from-queue` 只撤回尚在 queue 的轮次；取队列与撤回共用票目录 `.runs.lock`。撤回清理 `run-N.*` 和 meta 的线程 runs，允许编号有空洞。`run-N.argv` 实际是 NUL 分隔的执行器 argv，没有原 `--prompt`；新请求的 `prompt_source` 存原任务书绝对路径，旧请求退回 `run-N.prompt.md` 并去掉完整生成位置块。转排队沿用原请求的模型、权限、工作目录等配置，重新建立全部轮次路径和账本。已有 hold 进程不会热加载新代码；CLI 用与 bridge.pid 匹配的 steer.pid 标记识别支持此通道的执行体，旧进程会明确拒绝且不改队列。结束并 release 后新起的进程才支持此通道。
+
+## Default 协作模式下的提问实测（2026-09-11）
+
+本票连续轮次中，执行者声称提交了提问，但事件流没有 `item/tool/requestUserInput`。Default 协作模式的提示要求：必须要用户输入才能继续时，用纯文本问题结束 turn；所以 `request_user_input` 基本不会被调用。
+
+提问的常态是最后一条交付报告的「需要澄清」，编排者用下一轮 `run` 回答。只有红线问题停下来等，其它拿不准的按合理理解完成后再列。`WAITING` / `questions` / `answer` / `question_timeout` 只在服务端真正发出 `item/tool/requestUserInput` 时才生效，文件通道保留。五份角色样例已同步这条口径；用户级运行时角色副本由编排者同步。
