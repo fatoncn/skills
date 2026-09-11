@@ -190,13 +190,23 @@ sleep 300 & cleanup40_pid=$!
 make_hold_fixture "$cleanup40_dir" shared-pr 301 "$cleanup40_pid" a implement
 make_hold_fixture "$cleanup40_dir" shared-pr 302 "$cleanup40_pid" b implement
 rm -f "$cleanup40_dir/hold-shared-pr/queue/run-301.request.json"; printf '{"run":"run-301"}' > "$cleanup40_dir/hold-shared-pr/active.json"
-expect_grep "cleanup 拒绝删除正在活动的 PR A" "先 foreman release" "$F" cleanup 40 --pr a --force
-cleanup40_a="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"]["a"]["worktree"])' "$cleanup40_dir/meta.json")"; [ -d "$cleanup40_a" ] && kill -0 "$cleanup40_pid" 2>/dev/null && ok "cleanup 拒绝后 PR A 工作树与执行体仍在" || bad "cleanup 误删活动 PR A"
-expect_grep "cleanup PR B 只取消排队轮次" "已丢弃 run #302" "$F" cleanup 40 --pr b --force
-if [ -f "$cleanup40_dir/run-302.cancelled" ] && kill -0 "$cleanup40_pid" 2>/dev/null && [ -d "$cleanup40_a" ]; then ok "cleanup PR B 不杀 PR A 执行体"; else bad "cleanup PR B 影响 PR A 执行体"; fi
-kill "$cleanup40_pid" 2>/dev/null; wait "$cleanup40_pid" 2>/dev/null || true
+cleanup40_a="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"]["a"]["worktree"])' "$cleanup40_dir/meta.json")"
+cleanup40_b="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"]["b"]["worktree"])' "$cleanup40_dir/meta.json")"
+cleanup_a_out="$("$F" cleanup 40 --pr a --force 2>&1)"; cleanup_a_rc=$?
+if [ "$cleanup_a_rc" -ne 0 ] && printf '%s' "$cleanup_a_out" | grep -q 'run-301: RUNNING' && [ -d "$cleanup40_a" ] && kill -0 "$cleanup40_pid" 2>/dev/null; then ok "cleanup 目标 PR 有 RUNNING 轮时拒绝且保留状态"; else bad "cleanup RUNNING 拒绝" "rc=$cleanup_a_rc"; fi
+cleanup_b_out="$("$F" cleanup 40 --pr b --force 2>&1)"; cleanup_b_rc=$?
+if [ "$cleanup_b_rc" -ne 0 ] && printf '%s' "$cleanup_b_out" | grep -q 'run-302: QUEUED' && [ -f "$cleanup40_dir/hold-shared-pr/queue/run-302.request.json" ] && kill -0 "$cleanup40_pid" 2>/dev/null; then ok "cleanup 目标 PR 有 QUEUED 轮时拒绝且不取消"; else bad "cleanup QUEUED 拒绝" "rc=$cleanup_b_rc"; fi
+printf 0 > "$cleanup40_dir/run-301.rc"; rm -f "$cleanup40_dir/run-301.pid" "$cleanup40_dir/hold-shared-pr/active.json"
+rm -f "$T/cleanup-lock.ready" "$T/cleanup-lock.release"; FOREMAN_SELFTEST_LOCK_READY="$T/cleanup-lock.ready" FOREMAN_SELFTEST_LOCK_RELEASE="$T/cleanup-lock.release" "$F" cleanup 40 --pr a --force > "$T/cleanup40-a.out" 2>&1 & cleanup40_cli=$!
+for _ in $(seq 1 100); do [ -f "$T/cleanup-lock.ready" ] && break; sleep 0.02; done
+"$F" run 40 --pr a --prompt "$T/brief.md" --title blocked-by-cleanup --timeout 30 > "$T/cleanup40-run.out" 2>&1 & cleanup40_run_cli=$!
+sleep 1; run_was_blocked=0; kill -0 "$cleanup40_run_cli" 2>/dev/null && run_was_blocked=1
+: > "$T/cleanup-lock.release"; wait "$cleanup40_cli"; cleanup40_rc=$?; wait "$cleanup40_run_cli"; cleanup40_run_rc=$?
+if [ "$cleanup40_rc" -eq 0 ] && [ "$run_was_blocked" -eq 1 ] && [ "$cleanup40_run_rc" -ne 0 ] && grep -q '没有名为 a 的 PR' "$T/cleanup40-run.out"; then ok "cleanup 全程持锁，run 阻塞后因 PR 已删被拒"; else bad "cleanup 全程持锁"; fi
+if [ ! -d "$cleanup40_a" ] && [ -d "$cleanup40_b" ] && kill -0 "$cleanup40_pid" 2>/dev/null && [ -f "$cleanup40_dir/hold-shared-pr/queue/run-302.request.json" ] && python3 -c 'import json,sys; assert "a" not in json.load(open(sys.argv[1]))["prs"]' "$cleanup40_dir/meta.json"; then ok "cleanup 目标 PR 无轮次时成功且保留另一 PR 队列与 hold"; else bad "cleanup 误动另一 PR hold"; fi
+expect_grep "release 明确取消 PR B 排队轮" "已丢弃 run #302" "$F" release 40 --thread shared-pr
+expect_rc "最后一个存活 hold 属其它 PR 时 cleanup 仍成功" 0 "$F" cleanup 40 --pr b --force
 rm -rf "$cleanup40_dir/hold-shared-pr"; rm -f "$cleanup40_dir"/run-301.* "$cleanup40_dir"/run-302.*
-expect_grep "cleanup 占用测试清理 PR A" "已清理" "$F" cleanup 40 --pr a --force
 git clone -q --bare "$T/bare" "$T/discard-private.git"; git clone -q "$T/discard-private.git" "$T/proj/discard-app"
 expect_grep "私有远程 bootstrap 丢弃分支测试" "ready: 30" bash -c "cd '$T/proj/discard-app' && '$F' bootstrap 30 --slug discard-private --no-install"
 wt3="$T/proj/discard-app/.claude/worktrees/foreman-30"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
@@ -230,6 +240,15 @@ sleep 1; printf 0 > "$toctou_dir/run-12.rc"; printf '{"run":"run-13"}' > "$tocto
 toctou_line="$(grep 'run#12' "$T/toctou-status.out" | head -1)"; case " $toctou_line " in *" DONE "*) ok "active 读取期间落 rc 不误判 DEAD" ;; *) bad "DEAD TOCTOU 重读完成标记" "$toctou_line" ;; esac
 kill "$toctou_pid" 2>/dev/null; wait "$toctou_pid" 2>/dev/null || true; rm -rf "$toctou_dir/hold-toctou"; rm -f "$toctou_dir"/run-12.*
 expect_grep "DEAD TOCTOU 测试清理" "已删登记" "$F" cleanup 41 --force
+expect_grep "旧执行体 active 推断测试登记" "PR「here」" "$F" here 46
+active46_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/46/meta.json' -print -quit)")"; sleep 300 & active46_pid=$!
+make_hold_fixture "$active46_dir" legacy-active 10 "$active46_pid" here implement; rm -f "$active46_dir/hold-legacy-active/queue/run-10.request.json"; printf 0 > "$active46_dir/run-10.rc"
+make_hold_fixture "$active46_dir" legacy-active 11 "$active46_pid" here implement; rm -f "$active46_dir/hold-legacy-active/queue/run-11.request.json"
+make_hold_fixture "$active46_dir" legacy-active 12 "$active46_pid" here implement; rm -f "$active46_dir/hold-legacy-active/active.json"
+active46="$(FOREMAN_SELFTEST=1 "$F" __hold_active_run "$active46_dir" "$active46_dir/hold-legacy-active" 2>/dev/null)"
+[ "$active46" = run-11 ] && ok "无 active 时排除历史 rc 与未来 queue，选当前活动轮" || bad "旧执行体 active 推断" "$active46"
+kill "$active46_pid" 2>/dev/null; wait "$active46_pid" 2>/dev/null || true; rm -rf "$active46_dir/hold-legacy-active"; rm -f "$active46_dir"/run-10.* "$active46_dir"/run-11.* "$active46_dir"/run-12.*
+expect_grep "旧执行体 active 推断测试清理" "已删登记" "$F" cleanup 46 --force
 expect_grep "wait 摘要隔离测试登记" "PR「here」" "$F" here 42
 wait42_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/42/meta.json' -print -quit)")"
 sleep 300 & wait42_done_pid=$!; sleep 300 & wait42_running_pid=$!
@@ -258,7 +277,9 @@ rm -rf "$old44_dir/hold-implement"; rm -f "$old44_dir"/run-*; expect_grep "旧�
 expect_grep "旧轮 cleanup 测试登记" "PR「here」" "$F" here 45
 old45_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/45/meta.json' -print -quit)")"; sleep 300 & old45_pid=$!
 make_hold_fixture "$old45_dir" implement 1 "$old45_pid" here implement; rm -f "$old45_dir/run-1.pr"
-expect_grep "旧轮缺 .pr 时 cleanup 取消并释放 hold" "已丢弃 run #1" "$F" cleanup 45 --force
+expect_grep "旧轮缺 .pr 时 cleanup 按 default PR 拒绝排队轮" "run-1: QUEUED" "$F" cleanup 45 --force
+expect_grep "旧轮 cleanup 前显式 release" "已丢弃 run #1" "$F" release 45 --thread implement
+expect_grep "旧轮 release 后 cleanup 成功" "已删登记" "$F" cleanup 45 --force
 if [ -f "$old45_dir/run-1.cancelled" ] && ! kill -0 "$old45_pid" 2>/dev/null; then ok "旧轮 cleanup 按 default PR 识别 hold"; else bad "旧轮 cleanup 漏释放 hold"; fi
 if [ -n "$req3" ]; then
   d2="$(dirname "$req3")"; sleep 300 & sp=$!

@@ -1706,35 +1706,27 @@ for tf in d.glob("run-*.thread"):
 if found: print(max(found)[1])
 PY2
 }
-hold_cancel_queued_pr() { # <票目录> <hold 目录> <PR>
-  local dir="$1" hd="$2" pr="$3" q base n stem
-  lock_runs "$dir"
-  for q in "$hd"/queue/run-*.request.json; do
-    [ -f "$q" ] || continue; base="${q##*/}"; n="${base#run-}"; n="${n%.request.json}"; stem="run-$n"
-    [ "$(round_pr "$dir" "$stem")" = "$pr" ] || continue
-    rm -f "$q" "$dir/$stem.pid" "$dir/$stem.questions.json"
-    printf '130' > "$dir/$stem.rc"; printf '线程被 cleanup，排队轮次未开跑' > "$dir/$stem.cancelled"
-    echo "  已丢弃 run #$n"
+cleanup_require_pr_idle() { # <票目录> <PR>；调用者已持 runs lock
+  local dir="$1" pr="$2" p="" stem="" st="" seen=""
+  for p in "$dir"/run-*.* "$dir"/review-*.*; do
+    [ -f "$p" ] || continue; stem="${p%.*}"
+    case " $seen " in *" ${stem} "*) continue ;; esac; seen="$seen $stem"
+    [ "$(round_pr "$dir" "${stem##*/}")" = "$pr" ] || continue; st="$(call_state "$stem")"
+    case "$st" in RUNNING|WAITING|QUEUED) die "PR「${pr}」还有轮次在跑 / 排队（${stem##*/}: ${st}），先 foreman release 释放线程再 cleanup" ;; esac
   done
-  unlock_runs
+  return 0
 }
-cleanup_holds_preflight() { # <票目录> <PR>
-  local dir="$1" pr="$2" hd="" active="" st=""
-  for hd in "$dir"/hold-*; do
-    [ -d "$hd" ] && hold_alive "$hd" || continue; active="$(hold_active_run "$dir" "$hd")"; [ -n "$active" ] || continue
-    [ "$(round_pr "$dir" "$active")" = "$pr" ] || continue; st="$(call_state "$dir/$active")"
-    case "$st" in RUNNING|WAITING) die "PR「${pr}」的 $active 仍在运行（${st}），先 foreman release 释放线程再 cleanup" ;; esac
-  done
-}
-cleanup_holds_apply() { # <票目录> <PR>
-  local dir="$1" pr="$2" hd ht active
+cleanup_release_idle_holds() { # <票目录> <PR>；调用者已持 runs lock
+  local dir="$1" pr="$2" hd="" ht="" active="" q=""
   for hd in "$dir"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
-    hold_cancel_queued_pr "$dir" "$hd" "$pr"
     active="$(hold_active_run "$dir" "$hd")"
-    [ -n "$active" ] && continue
-    [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ] && hold_release_wait "$hd"
+    if [ -z "$active" ]; then
+      q="$(find "$hd/queue" -type f -name 'run-*.request.json' -print -quit 2>/dev/null || true)"
+      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then hold_release_wait "$hd"; fi
+    fi
   done
+  return 0
 }
 elapsed_of() {
   local f="$1" start now
@@ -1982,13 +1974,7 @@ cmd_cleanup() {
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
   fi
-  cleanup_holds_preflight "$(issue_dir "$issue")" "$PR_NAME"
-  if [ -n "$PR_HERE" ]; then
-    cleanup_holds_apply "$(issue_dir "$issue")" "$PR_NAME"
-    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
-    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
-  fi
-  if [ -d "$wt" ]; then
+  if [ -z "$PR_HERE" ] && [ -d "$wt" ]; then
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
     if [ "$discard" -ne 1 ]; then
@@ -2000,15 +1986,23 @@ cmd_cleanup() {
       [ "$unpushed" = "0" ] || die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
     fi
   fi
-  cleanup_holds_apply "$(issue_dir "$issue")" "$PR_NAME"
+  local dir; dir="$(issue_dir "$issue")"; lock_runs "$dir"
+  cleanup_require_pr_idle "$dir" "$PR_NAME"
+  cleanup_release_idle_holds "$dir" "$PR_NAME"
+  if [ -n "$PR_HERE" ]; then
+    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
+    pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
+    unlock_runs; echo "已删登记（线程与日志保留）"; return 0
+  fi
   if [ -d "$wt" ]; then
-    git -C "$MAIN_REPO" worktree remove "$wt"
+    git -C "$MAIN_REPO" worktree remove "$wt" || die "cleanup: 删除 worktree 失败: $wt"
   fi
   if [ "$keep_branch" -ne 1 ]; then
-    if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch"
-    else git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（可能未合并），需要时手动 git branch -D $branch"; fi
+    if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch" || die "cleanup: 强制删除分支失败: $branch"
+    else git -C "$MAIN_REPO" branch -d "$branch" || die "cleanup: 分支未合并，拒绝删除: $branch"; fi
   fi
-  pr_del "$issue" "$PR_NAME"
+  pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
+  unlock_runs
   echo "已清理 ${issue} 的 PR「${PR_NAME}」（票、线程与日志保留；剩余 PR: $(pr_names "$issue" | tr '\n' ' ')）"
 }
 
@@ -2169,6 +2163,7 @@ case "$sub" in
   release)   cmd_release "$@" ;;
   # 内部：--detach 的执行体，由 launch_call 重入调用；参数: <main-repo> <dir> <kind> <n>
   __exec)    MAIN_REPO="$1"; shift; exec_call "$@" ;;
+  __hold_active_run) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; hold_active_run "$@" ;;
   -h|--help|help) usage ;;
   *) die "未知命令 '$sub'（-h 看用法）" ;;
 esac
