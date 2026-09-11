@@ -1619,11 +1619,12 @@ latest_calls_by_thread() {  # <票目录>；每条线程只取最后一轮
   python3 - "$1" <<'PY2'
 import pathlib,re,sys
 d=pathlib.Path(sys.argv[1]); latest={}
-for p in d.glob("*.thread"):
-    m=re.fullmatch(r"(run|review)-(\d+)\.thread",p.name)
+for p in d.iterdir():
+    m=re.match(r"^(run|review)-(\d+)\.",p.name)
     if not m: continue
-    key=p.read_text().strip() or p.stem
-    item=(int(m[2]),m[1])
+    kind,n=m[1],int(m[2]); stem=f"{kind}-{n}"; tf=d/(stem+".thread")
+    key=tf.read_text().strip() if tf.is_file() else (stem if kind=="review" else "implement")
+    item=(n,kind)
     if key not in latest or item[0]>latest[key][0]: latest[key]=item
 for n,kind in latest.values(): print(f"{kind}|{n}")
 PY2
