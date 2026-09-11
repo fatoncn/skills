@@ -109,7 +109,14 @@ printf 'b' > "$d2/run-97.pr"; printf 'implement@b' > "$d2/run-97.thread"; printf
 printf '{"_fleet":"thread","threadId":"t","workDir":"%s"}\n' "$T/proj/app/.claude/worktrees/foreman-2-b" > "$d2/run-97.jsonl"; : > "$d2/run-97.stderr"
 expect_grep "report 最新运行轮正文为空时提示上一轮" "run #97 进行中；上一轮交付" "$F" report 2 --pr b
 kill "$report_pid"; wait "$report_pid" 2>/dev/null || true; rm -f "$d2"/run-97.*
-expect_grep "check 命令通过" "ALL PASS" "$F" check 2 --pr b true
+set +e
+check_ok_out="$("$F" check 2 --pr b true 2>&1)"; check_ok_rc=$?
+set -e
+if [ "$check_ok_rc" -eq 0 ] && printf '%s\n' "$check_ok_out" | grep -q "ALL PASS" && ! printf '%s\n' "$check_ok_out" | grep -q "unbound variable"; then
+  ok "check 命令通过且 RETURN 后无 unbound"
+else
+  bad "check 命令通过且 RETURN 后无 unbound —— rc=$check_ok_rc，输出: $(printf '%s\n' "$check_ok_out" | tail -1)"
+fi
 expect_rc   "check 命令失败返回 1" 1 "$F" check 2 --pr b false
 expect_grep "diff 指明 PR" "PR「b」" "$F" diff 2 --pr b
 echo body > "$T/body.md"

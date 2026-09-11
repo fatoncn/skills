@@ -1573,7 +1573,6 @@ EOF
   [ ${#cmds[@]} -gt 0 ] || die "check: 没有验收命令（foreman.toml 的 verify.commands 为空且当前仓库 package.json 没有 type-check / lint），请显式给命令"
   local dir out failed=0 c rc tmp
   dir="$(issue_dir "$issue")"; out="$dir/check-$(date +%Y%m%dT%H%M%S).log"; tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' RETURN
   for c in "${cmds[@]}"; do
     echo "=== $c ==="; rc=0
     ( cd "$wt" && eval "$c" ) >"$tmp" 2>&1 || rc=$?
@@ -1583,6 +1582,7 @@ EOF
   done
   echo; echo "完整输出: $out"
   [ "$failed" -eq 0 ] && echo "RESULT: ALL PASS" || echo "RESULT: FAIL"
+  rm -f "$tmp"
   return "$failed"
 }
 
