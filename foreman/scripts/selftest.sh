@@ -54,6 +54,16 @@ p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("\nrequest_user_
 PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
 expect_grep "release：没有占着的线程" "没有被占着" "$F" release 1
+if [ -n "$req" ]; then
+  rd="$(dirname "$req")"; mkdir -p "$rd/hold-release-test/queue"
+  sh -c 'trap "" TERM; while :; do sleep 1; done' & release_pid=$!
+  printf '%s' "$release_pid" > "$rd/hold-release-test/bridge.pid"
+  cp "$req" "$rd/hold-release-test/queue/run-88.request.json"; printf '%s' "$release_pid" > "$rd/run-88.pid"
+  printf 'release-test' > "$rd/run-88.thread"; : > "$rd/run-88.argv"
+  expect_grep "release 丢弃排队轮次" "已丢弃 run #88" "$F" release 1 --thread release-test
+  [ "$(cat "$rd/run-88.rc" 2>/dev/null)" = 130 ] && ! kill -0 "$release_pid" 2>/dev/null && ok "release TERM 超时后 KILL 且轮次可读为 CANCELLED" || bad "release 强杀 / CANCELLED 状态"
+  rm -rf "$rd/hold-release-test" "$rd"/run-88.*
+fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
 expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
 expect_grep "同名线程换角色被拒" "角色" "$F" run 1 --thread implement --role mechanical --prompt "$T/brief.md" --title x --timeout 30
@@ -95,6 +105,10 @@ if [ -n "$req3" ]; then
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"
   expect_grep "同一 PR 另一条线程在跑时 run 被拒" "只准一条线程" "$F" run 2 --pr a --role accept --prompt "$T/brief.md" --title x --timeout 30
   expect_grep "同一 PR 另一条线程在跑时 review 被拒" "只准一条线程" "$F" review 2 --pr a --title x --timeout 30
+  mkdir -p "$d2/hold-stale"; printf '%s' "$sp" > "$d2/hold-stale/bridge.pid"
+  printf 'a' > "$d2/run-98.pr"; printf 'stale' > "$d2/run-98.thread"; printf '%s' "$sp" > "$d2/run-98.pid"; : > "$d2/run-98.argv"
+  expect_grep "守卫把 hold 存活但轮次已死判 DEAD" "DEAD" "$F" status 2
+  rm -rf "$d2/hold-stale" "$d2"/run-98.*
   rm -f "$d2"/run-99.*
   nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"

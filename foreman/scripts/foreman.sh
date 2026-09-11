@@ -713,14 +713,25 @@ os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/
 
 hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
 hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+hold_cancel_queued() {  # <票目录> <hold 目录>
+  local dir="$1" hd="$2" q base n
+  for q in "$hd"/queue/run-*.request.json; do
+    [ -f "$q" ] || continue
+    base="${q##*/}"; n="${base#run-}"; n="${n%.request.json}"
+    rm -f "$q" "$dir/run-$n.pid" "$dir/run-$n.questions.json"
+    printf '130' > "$dir/run-$n.rc"
+    printf '线程被 release，排队轮次未开跑' > "$dir/run-$n.cancelled"
+    echo "  已丢弃 run #$n"
+  done
+}
 hold_release_wait() {  # <hold 目录> [秒]
   local hd="$1" secs="${2:-15}" pid i
   hold_alive "$hd" || return 0
-  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"
-  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')）"; return 0; }; sleep 1; done
-  kill -TERM "$pid" 2>/dev/null || true; sleep 2
-  hold_alive "$hd" && { echo "  !! 常驻执行体 pid $pid 没退出，手动 kill 它"; return 1; }
-  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，超时后 TERM）"
+  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"; kill -TERM "$pid" 2>/dev/null || true
+  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM）"; return 0; }; sleep 1; done
+  kill -KILL "$pid" 2>/dev/null || true
+  while hold_alive "$hd"; do sleep 0.1; kill -KILL "$pid" 2>/dev/null || true; done
+  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM 超时后 KILL）"
 }
 hold_dispatch() {  # <issue> <票目录> <n> <线程名> <detach> <timeout>
   local issue="$1" dir="$2" n="$3" tname="$4" detach="$5" timeout="$6"
@@ -790,7 +801,7 @@ cmd_release() {
     [ -d "$hd" ] || continue
     [ -z "$tname" ] || [ "$(basename "$hd")" = "hold-$tname" ] || continue
     hold_alive "$hd" || continue
-    any=1; hold_release_wait "$hd"
+    any=1; hold_cancel_queued "$dir" "$hd"; hold_release_wait "$hd"
   done
   [ "$any" -eq 1 ] || echo "$issue 没有被占着的线程"
 }
@@ -1542,8 +1553,12 @@ call_state() {
   fi
   if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    local tn; tn="$(cat "$f.thread" 2>/dev/null || true)"
-    if [ -n "$tn" ] && [ -f "$(dirname "$f")/hold-$tn/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
+    local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
+    if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
+    if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
+      active="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run", ""))' "$hd/active.json" 2>/dev/null || true)"
+      [ "$active" = "$(basename "$f")" ] || { printf 'DEAD'; return 0; }
+    fi
     if [ -f "$f.questions.json" ]; then printf 'WAITING'; else printf 'RUNNING'; fi
     return 0
   fi
@@ -1682,7 +1697,7 @@ EOF
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
     f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
     case "$st" in
-      DONE) echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")" ;;
+      DONE) if [ -f "$f.cancelled" ]; then echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")"; else echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")"; fi ;;
       ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障" ;;
       RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
       *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
