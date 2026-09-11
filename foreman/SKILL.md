@@ -295,7 +295,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 纠偏；把刚排队的改成立刻生效，turn 已结束自动转排队 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
-| `$FOREMAN status` / `wait [<id>...] [--timeout 300]` / `tail <id>` | 收敛与进度；`wait <id>` 等该票全部线程并逐线程打印状态，不给 id 才等全部票；返回 2 = 还在跑、3 = 执行者在提问；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
+| `$FOREMAN status` / `wait [<id>...] [--timeout 300]` / `tail <id>` | 收敛与进度；`wait <id>` 只等给定票的全部线程并逐线程打印状态，不给 id 才等全部票；WAITING 会先点名票 / 线程 / 问题摘要、照常打印全表再返回 3，仍在跑返回 2；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
 | `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
 | `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |

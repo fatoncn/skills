@@ -136,7 +136,13 @@ if [ -n "$req3" ]; then
   rm -f "$d2"/run-96.*
   rm -rf "$d2/hold-implement"; printf '{"questions":[{"id":"q1","text":"用哪张任务？"}]}' > "$d2/run-$nn.questions.json"
   expect_rc "wait 遇到提问返回 3" 3 "$F" wait 2 --timeout 30 --no-report
-  expect_grep "wait 遇到提问打出提示" "在等你回答提问" "$F" wait 2 --timeout 30 --no-report
+  expect_grep "wait 遇到提问首行给票、线程和摘要" "WAITING：票 2 / 线程 implement / 用哪张任务" "$F" wait 2 --timeout 30 --no-report
+  rm -f "$d2/run-$nn.questions.json"
+  d1="$(dirname "$req")"; printf 'implement' > "$d1/run-95.thread"; printf '%s' "$sp" > "$d1/run-95.pid"; : > "$d1/run-95.argv"; printf '{"questions":[{"text":"无关票问题"}]}' > "$d1/run-95.questions.json"
+  expect_rc "wait 指定票不受无关票 WAITING 影响" 2 "$F" wait 2 --timeout 1 --no-report
+  wait_all_out="$($F wait --timeout 1 --no-report 2>&1)"; wait_all_rc=$?
+  if [ "$wait_all_rc" = 3 ] && printf '%s' "$wait_all_out" | grep -q '^== 1 ' && printf '%s' "$wait_all_out" | grep -q '^== 2 '; then ok "wait 全票 WAITING 返回前照常打印全表"; else bad "wait 全票 WAITING 全表"; fi
+  rm -f "$d1"/run-95.*
   rm -rf "$d2/run-$nn".*
   kill "$sp" 2>/dev/null; rm -f "$d2"/run-99.*
   wtb="$(ls -t "$d2"/run-*.wt-before 2>/dev/null | head -1)"

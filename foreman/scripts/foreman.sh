@@ -1714,7 +1714,7 @@ EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
-  local waited=0 t left
+  local waited=0 t left waiting=0
   while [ "$waited" -lt "$timeout" ]; do
     left=0
     for t in "${targets[@]}"; do
@@ -1722,11 +1722,13 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ]; then
-        echo "   ⏳ $id $kind#$n 在等你回答提问，wait 先返回（rc=3）：foreman answer $id \"…\" 之后再 wait"
-        cmd_questions "$id" 2>/dev/null || true
-        return 3
+        local tn summary; tn="$(cat "$f.thread" 2>/dev/null || echo '?')"
+        summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
+        [ "$waiting" -eq 1 ] || echo "⏳ WAITING：票 $id / 线程 $tn / $summary；将照常打印全表后返回 rc=3"
+        waiting=1
       fi
     done
+    [ "$waiting" -eq 0 ] || break
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
@@ -1751,6 +1753,7 @@ EOF
       python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$f.jsonl" "$f.stderr" "$f.last.md" || true
     done
   fi
+  [ "$waiting" -eq 0 ] || return 3
   [ "$still" -eq 0 ] || return 2
   return 0
 }
