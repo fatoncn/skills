@@ -2112,7 +2112,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            --role 取 ~/.foreman/config.toml 的 [roles.<名>]（跨项目，可自定；项目 foreman.toml 同名可覆盖），默认 implement
                            --role research = 只读调研线程（排查 / 核事实 / 找锚点，交事实清单）；--role accept = 验收线程（产品真跑起来对清单看，只报不修）
                            两者都配 --writable <交付目录> 放开交付目录，探针把该目录当作内部
-                           --closeout = PR 收尾轮：默认续账本最后一轮 run 的线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
+                           --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
                            本机所有项目在跑的 codex 线程 ≥ 上限（项目 engines.concurrency，缺省本机 config.toml 的默认 5）时拒绝派发
                            codex-exec = pi-fleet 实测过的 `codex exec` 路径（每票一份 CODEX_HOME），app-server 出问题时的备用
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
