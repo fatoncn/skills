@@ -1476,20 +1476,41 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
   fi
 }
 cmd_report_inner() {
-  local issue="$1" n="${2:-}" kind=run
+  local issue="$1" n="${2:-}" prname="${3:-}" kind=run
   local dir; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
-    n="$(latest_n "$dir" "$kind")"
+    if [ -n "$prname" ]; then
+      n="$(python3 - "$dir" "$kind" "$prname" <<'PY'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); kind=sys.argv[2]; pr=sys.argv[3]; nums=[]
+for p in d.glob(f"{kind}-*.pr"):
+    m=re.fullmatch(rf"{re.escape(kind)}-(\d+)\.pr",p.name)
+    if m and p.read_text().strip()==pr: nums.append(int(m[1]))
+print(max(nums,default=0))
+PY
+)"
+    else n="$(latest_n "$dir" "$kind")"; fi
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
+  if [ -n "$prname" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$prname" ]; then die "$kind-$n 不属于 PR「$prname」"; fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
-  if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
+  if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
+    if [ ! -s "$dir/$kind-$n.last.md" ]; then
+      echo "run #$n 进行中；上一轮交付：foreman report $issue $((n-1))"
+    else echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
+  fi
   local role=""; [ -f "$dir/$kind-$n.role" ] && role="$(cat "$dir/$kind-$n.role")"
   python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md"
 }
-cmd_report() { init_repo_context; require_project; require_issue "$1"; cmd_report_inner "$@"; }
+cmd_report() {
+  local issue="${1:-}" n="" prname=""; [ -n "$issue" ] || die "用法: foreman report <票 id> [N|reviewN] [--pr <名>]"; shift || true
+  while [ $# -gt 0 ]; do case "$1" in --pr) prname="$2"; shift 2 ;; -*) die "report: 未知参数 $1" ;; *) [ -z "$n" ] && n="$1" || die "report: 多余参数 $1"; shift ;; esac; done
+  init_repo_context; require_project; require_issue "$issue"
+  [ -z "$prname" ] || resolve_pr "$issue" "$prname"
+  cmd_report_inner "$issue" "$n" "$prname"
+}
 
 cmd_tail() {
   local issue="${1:-}" count="${2:-20}"
@@ -1938,7 +1959,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
   wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑，3 = 执行者在提问（问题已打出，answer 后再 wait）
-  report <id> [N|reviewN]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
+  report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）
   pr <id> --title t --body-file f [--base b] [--draft|--ready] [--yes]   打印 push + gh pr create 命令；--yes 才执行

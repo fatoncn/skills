@@ -295,7 +295,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
 | `$FOREMAN status` / `wait [--timeout 300]` / `tail <id>` | 收敛与进度；wait 返回 2 = 还在跑、3 = 执行者在提问；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
 | `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
-| `$FOREMAN report <id> [N\|reviewN]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件 |
+| `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
 | `$FOREMAN release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
 | `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree（未提交 / 未推送会拒绝；票、线程与日志保留） |

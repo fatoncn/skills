@@ -80,6 +80,13 @@ req2="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev
 expect_rc   "review 2 --pr b（假 codex）" 4 "$F" review 2 --pr b --title "审 b" --timeout 30
 rreq="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/review-*.request.json 2>/dev/null | head -1)"
 [ -n "$rreq" ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["sandbox"]=="read-only" and r.get("ephemeral") is True' "$rreq" && ok "review 请求：只读 + ephemeral" || bad "review 请求"
+expect_grep "report 指定 run 轮次并组合 --pr" "run 摘要" "$F" report 2 1 --pr b
+expect_grep "report 指定 review 轮次并组合 --pr" "run 摘要" "$F" report 2 review1 --pr b
+sleep 300 & report_pid=$!; d2="$(dirname "$req2")"
+printf 'b' > "$d2/run-97.pr"; printf 'implement@b' > "$d2/run-97.thread"; printf '%s' "$report_pid" > "$d2/run-97.pid"; : > "$d2/run-97.argv"
+printf '{"_fleet":"thread","threadId":"t","workDir":"%s"}\n' "$T/proj/app/.claude/worktrees/foreman-2-b" > "$d2/run-97.jsonl"; : > "$d2/run-97.stderr"
+expect_grep "report 最新运行轮正文为空时提示上一轮" "run #97 进行中；上一轮交付" "$F" report 2 --pr b
+kill "$report_pid"; wait "$report_pid" 2>/dev/null || true; rm -f "$d2"/run-97.*
 expect_grep "check 命令通过" "ALL PASS" "$F" check 2 --pr b true
 expect_rc   "check 命令失败返回 1" 1 "$F" check 2 --pr b false
 expect_grep "diff 指明 PR" "PR「b」" "$F" diff 2 --pr b
