@@ -134,6 +134,7 @@ expect_grep "bootstrap 丢弃分支测试" "ready: 3" "$F" bootstrap 3 --slug di
 wt3="$T/proj/app/.claude/worktrees/foreman-3"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
 git -C "$wt3" remote set-url origin "$T/missing-origin"
 expect_grep "cleanup --discard-unpushed 强删本地分支" "已清理" "$F" cleanup 3 --force --discard-unpushed
+git -C "$T/proj/app" remote set-url origin "$T/bare"
 if git -C "$T/proj/app" show-ref --verify --quiet refs/heads/feat/$(date +%y-%m-%d)/discard; then bad "discard 后本地分支仍存在"; else ok "discard 后本地分支已 -D"; fi
 expect_grep "bootstrap 已合入 base 测试" "ready: 4" "$F" bootstrap 4 --slug merged --no-install
 wt4="$T/proj/app/.claude/worktrees/foreman-4"; echo merged > "$wt4/y"; git -C "$wt4" add y; git -C "$wt4" -c user.email=t@t -c user.name=t commit -q -m merged
