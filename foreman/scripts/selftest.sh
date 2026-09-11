@@ -55,6 +55,7 @@ PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
 expect_grep "位置块按环境写 rg 可用性" "执行环境：rg:" cat "${req%.request.json}.prompt.md"
 expect_grep "accept 角色把范围外失败归观察" "通过（范围外 N 条）" cat "$SKILL_DIR/assets/roles/accept.md"
+expect_grep "收尾契约禁用 CI 前台 watch" "不要用.*--watch" cat "$SKILL_DIR/assets/CLOSEOUT.md"
 expect_grep "release：没有占着的线程" "没有被占着" "$F" release 1
 if [ -n "$req" ]; then
   rd="$(dirname "$req")"; mkdir -p "$rd/hold-release-test/queue"
