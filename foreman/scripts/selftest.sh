@@ -243,8 +243,8 @@ python3 -c 'import json,sys; json.dump({"work_dir": sys.argv[2], "config_overrid
 if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q "工作目录之外"; then bad "--writable 目录不算越界"; else ok "--writable 目录不算越界（交付目录）"; fi
 sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/probe-tmp.jsonl"
 if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md" 2>&1 | grep -q "工作目录之外"; then bad "系统临时目录被误报越界"; else ok "系统临时目录不计工作目录之外"; fi
-expect_grep "复审改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
-expect_grep "验收改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+if python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q '/workspace/proj/other/b.ts'; then bad "accept 交付目录 fileChange 被列为模型改动"; else ok "accept 交付目录 fileChange 从模型改动列表排除"; fi
+if python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md" 2>&1 | grep -q '改了这轮作废'; then bad "fileChange 被用作只看不改判据"; else ok "fileChange 只列事实、不判只看不改角色作废"; fi
 python3 - "$T/steer-summary.jsonl" <<'PY2'
 import json,sys
 with open(sys.argv[1],"w") as f:

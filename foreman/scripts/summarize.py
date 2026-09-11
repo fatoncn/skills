@@ -181,6 +181,19 @@ def _files_outside_work_dir(state):
     return out
 
 
+def _visible_changed_files(state):
+    """交付目录里的 fileChange 是验收/调研产物，不混进“模型改代码”列表。"""
+    wd = state.get("work_dir")
+    if not wd:
+        return state.get("files") or []
+    root = os.path.realpath(wd)
+    delivery = [e for e in (state.get("writable_extra") or [])
+                if not _inside(root, e) and not _inside(e, root)]
+    return [(kind, path) for kind, path in (state.get("files") or [])
+            if not (isinstance(path, str) and os.path.isabs(path)
+                    and any(_inside(os.path.realpath(path), e) for e in delivery))]
+
+
 def probe_forbidden(state, blob: str, shown, role: str | None = None):
     if role == "closeout" and any(p.search(blob) for p in CLOSEOUT_ALLOW):
         # 放行清单命中的命令仍要过「硬禁」那几条（force push / merge / close）
@@ -465,6 +478,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         return 1
     state = scan(events, engine, role)
     state["writable_extra"] = _extra_writable_roots(log_path)
+    visible_files = _visible_changed_files(state)
     eng = state["engine"]
     codex_like = eng in ("codex", "appserver")
 
@@ -476,7 +490,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     extra = f"  effort={state['effort']}" if state.get("effort") else ""
     dur = f"  用时={state['duration_ms'] // 1000}s" if state.get("duration_ms") else ""
     print(f"{label}={state['id']}  model={state['model'] or '—'}{extra}  turns={state['turns']}  "
-          f"tools={state['tool_calls']}" + (f"  files={len(state['files'])}" if codex_like else "")
+          f"tools={state['tool_calls']}" + (f"  files={len(visible_files)}" if codex_like else "")
           + (f"  web_search={state['web_searches']}" if state["web_searches"] else "") + dur)
     if codex_like:
         print(f"tokens: in={state['in_tokens']} (cached {state['cached_tokens']})  out={state['out_tokens']}"
@@ -485,9 +499,8 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         print(f"cost=${state['cost']:.4f}  tokens={state['tokens']}")
 
     blockers = []
-    # 复审 / 验收契约：只看不改（复审是只读沙箱，写不进去；验收跑在 workspace-write 要能起服务、用浏览器，所以靠这里事后核）
-    if role in ("review", "accept") and state.get("files"):
-        blockers.append(f"{role} 改了 {len(state['files'])} 个文件（该角色只看不改，改了这轮作废）")
+    # accept / research 是否改了工作树只看 foreman.sh 的起跑前后 porcelain 探针；
+    # fileChange 事件可能是 --writable 交付物，这里只列事实，不据此判这轮作废。
     if state.get("thread_busy"):
         blockers.append("线程被占用：" + state["thread_busy"] + " —— 不是任务失败，这轮什么都没跑")
     if state.get("engine_down"):
@@ -575,12 +588,12 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         print(f"\n--- 工作目录之外的改动（{len(outside)} 个，需要编排者判断：项目根整体可写，但本轮只该改 {state['work_dir']}）---")
         for kind, path in outside[:40]:
             print(f"  {kind:<8} {path}")
-    if state["files"]:
+    if visible_files:
         print("\n--- 模型直接改动的文件（不含它经 shell 改的）---")
-        for kind, path in state["files"][:40]:
+        for kind, path in visible_files[:40]:
             print(f"  {kind:>6}  {path}")
-        if len(state["files"]) > 40:
-            print(f"  …(+{len(state['files']) - 40})")
+        if len(visible_files) > 40:
+            print(f"  …(+{len(visible_files) - 40})")
 
     print(f"\n--- {eng} 的交付报告（最后一条消息）---")
     final = state["final"]

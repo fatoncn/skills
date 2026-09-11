@@ -1472,7 +1472,7 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
   [ -n "$wtp" ] && [ -d "$wtp" ] || return 0
   now="$(git -C "$wtp" status --porcelain 2>/dev/null || true)"
   if [ "$now" != "$(cat "$f")" ]; then
-    echo "!!!! 探针：只看不改的角色改动了 worktree（$kind-$n 起跑前后的 git status 不一样，改了这轮作废）："
+    echo "!!!! 探针：只看不改的角色工作树有改动，需人工判（$kind-$n 起跑前后的 git status 不一样）："
     diff "$f" <(printf '%s\n' "$now") | grep -E '^[<>]' | sed 's/^/    /' | head -20
     echo
   fi
