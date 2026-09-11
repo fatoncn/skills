@@ -1603,7 +1603,17 @@ call_state() {
       active="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run", ""))' "$hd/active.json" 2>/dev/null || true)"
       if [ -n "$active" ] && [ "$active" != "$(basename "$f")" ]; then
         local active_n current_n; active_n="${active#*-}"; current_n="${f##*-}"
-        case "$active_n:$current_n" in *[!0-9:]*) ;; *) [ "$active_n" -gt "$current_n" ] && { printf 'DEAD'; return 0; } ;; esac
+        case "$active_n:$current_n" in
+          *[!0-9:]*) ;;
+          *) if [ "$active_n" -gt "$current_n" ]; then
+               [ -f "$f.cancelled" ] && { printf 'CANCELLED'; return 0; }
+               if [ -f "$f.rc" ]; then
+                 case "$(cat "$f.rc")" in 4) printf 'ENGINE_DOWN' ;; 5) printf 'THREAD_BUSY' ;; *) printf 'DONE' ;; esac
+                 return 0
+               fi
+               printf 'DEAD'; return 0
+             fi ;;
+        esac
       fi
     fi
     if [ -f "$f.questions.json" ]; then printf 'WAITING'; else printf 'RUNNING'; fi

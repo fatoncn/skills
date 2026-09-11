@@ -204,6 +204,14 @@ expect_grep "threads 记下 research 线程" "research" "$F" threads 2
 mkdir -p "$T/evidence"
 expect_rc   "run --role accept --writable（假 codex）" 4 "$F" run 2 --pr a --role accept --writable "$T/evidence" --prompt "$T/brief.md" --title "验收" --timeout 30
 expect_grep "threads 记下 accept 线程" "accept" "$F" threads 2
+expect_grep "DEAD TOCTOU 测试登记" "PR「here」" "$F" here 41
+toctou_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/41/meta.json' -print -quit)")"; sleep 300 & toctou_pid=$!
+make_hold_fixture "$toctou_dir" toctou 12 "$toctou_pid" here implement; rm -f "$toctou_dir/hold-toctou/queue/run-12.request.json" "$toctou_dir/hold-toctou/active.json"
+mkfifo "$toctou_dir/hold-toctou/active.json"; "$F" status 41 > "$T/toctou-status.out" 2>&1 & toctou_status_pid=$!
+sleep 1; printf 0 > "$toctou_dir/run-12.rc"; printf '{"run":"run-13"}' > "$toctou_dir/hold-toctou/active.json"; wait "$toctou_status_pid"
+toctou_line="$(grep 'run#12' "$T/toctou-status.out" | head -1)"; case " $toctou_line " in *" DONE "*) ok "active 读取期间落 rc 不误判 DEAD" ;; *) bad "DEAD TOCTOU 重读完成标记" "$toctou_line" ;; esac
+kill "$toctou_pid" 2>/dev/null; wait "$toctou_pid" 2>/dev/null || true; rm -rf "$toctou_dir/hold-toctou"; rm -f "$toctou_dir"/run-12.*
+expect_grep "DEAD TOCTOU 测试清理" "已删登记" "$F" cleanup 41 --force
 if [ -n "$req3" ]; then
   d2="$(dirname "$req3")"; sleep 300 & sp=$!
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"
