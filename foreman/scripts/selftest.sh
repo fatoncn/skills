@@ -111,6 +111,13 @@ expect_grep "diff 指明 PR" "PR「b」" "$F" diff 2 --pr b
 echo body > "$T/body.md"
 expect_grep "pr 只打印命令且带 --head" "\-\-head" "$F" pr 2 --pr b --title t --body-file "$T/body.md"
 expect_grep "cleanup 一个 PR，票保留" "剩余 PR: a" "$F" cleanup 2 --pr b --force
+expect_grep "bootstrap 稳定线程测试默认 PR" "ready: 6" "$F" bootstrap 6 --slug stable-a --no-install
+expect_grep "bootstrap 稳定线程测试第二 PR" "ready: 6" "$F" bootstrap 6 --slug stable-b --pr b --no-install
+expect_rc "第二 PR 首轮自动线程" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b1 --timeout 30
+stable_dir="$(dirname "$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/6/run-*.request.json | head -1)")"; stable_before="$(cat "$stable_dir/run-1.thread")"
+expect_grep "清理首个 PR" "剩余 PR: b" "$F" cleanup 6 --pr stable-a --force
+expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b2 --timeout 30
+[ "$stable_before" = "$(cat "$stable_dir/run-2.thread")" ] && ok "清理默认 PR 后自动线程名保持稳定" || bad "自动线程名漂移"
 expect_grep "bootstrap 丢弃分支测试" "ready: 3" "$F" bootstrap 3 --slug discard --no-install
 wt3="$T/proj/app/.claude/worktrees/foreman-3"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
 expect_grep "cleanup --discard-unpushed 强删本地分支" "已清理" "$F" cleanup 3 --force --discard-unpushed

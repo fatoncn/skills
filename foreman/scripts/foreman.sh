@@ -386,6 +386,12 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)' "$(issue_dir "$1")/meta.js
 }
 pr_names() { python3 -c 'import json,sys
 m=json.load(open(sys.argv[1])); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); print("\n".join(prs.keys()))' "$(issue_dir "$1")/meta.json"; }
+default_pr_name() {  # 旧票缺 default_pr 时按首个登记 PR 回填
+  python3 -c 'import json,sys
+p=sys.argv[1]; m=json.load(open(p)); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); name=m.get("default_pr") or (next(iter(prs),""));
+if name and not m.get("default_pr"): m["default_pr"]=name; json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
+print(name)' "$(issue_dir "$1")/meta.json"
+}
 # 选定这轮针对哪个 PR：给了名就用它；没给且只有一个就用那个；没有 PR 则全空（纯调研 / 无工作目录）；多个不给名就拒绝。
 # 设 PR_NAME PR_WT PR_BRANCH PR_BASE PR_HERE
 resolve_pr() {  # <issue> [<pr名>]
@@ -540,6 +546,7 @@ if ghi: meta["gh_issue"] = ghi
 json.dump(meta, open(path, "w"), indent=2, ensure_ascii=False)
 PY2
   pr_set "$issue" here worktree "$wt"; pr_set "$issue" here branch "$branch"; pr_set "$issue" here base "$base"; pr_set "$issue" here registered_here 1
+  default_pr_name "$issue" >/dev/null
   if [ "$IN_GIT" -eq 1 ]; then echo "==> 已登记 $issue 的 PR「here」→ 当前检出 ${wt}（分支 ${branch}，base ${base}）。线程 cwd 仍是项目根 ${PROJECT_ROOT}；cleanup 对 here 只删登记不删目录。"
   else echo "==> 已登记 $issue 的工作目录「here」→ ${wt}（非 git：只有 run / status / report / check / cleanup 可用）。"; fi
 }
@@ -630,6 +637,7 @@ if ghi: meta["gh_issue"] = ghi
 json.dump(meta, open(path, "w"), indent=2, ensure_ascii=False)
 PY
   pr_set "$issue" "$prname" worktree "$wt"; pr_set "$issue" "$prname" branch "$branch"; pr_set "$issue" "$prname" base "$base"; pr_set "$issue" "$prname" repo_slug "$REPO_SLUG"
+  default_pr_name "$issue" >/dev/null
   echo "==> ready: $issue  PR「${prname}」"
   echo "    线程 cwd 永远是项目根 ${PROJECT_ROOT}，不用 cd；这个 PR 的 worktree 会写进每轮 prompt 顶部的「本轮位置」"
   echo "    worktree: $wt"
@@ -1045,9 +1053,10 @@ cmd_run() {
         [ -n "$tname" ] || die "PR「${PR_NAME}」没有 implement / mechanical 实现轮；closeout 请显式给 --thread <实现线程>"
       fi
     else
-      tname="${role:-implement}"
-      local default_pr; default_pr="$(pr_names "$issue" | head -1)"
-      [ -z "$prname" ] || [ "$PR_NAME" = "$default_pr" ] || tname="${tname}@${PR_NAME}"
+      local desired_role existing_thread default_pr; desired_role="${role:-implement}"
+      existing_thread="$(thread_for_pr_role "$dir" "$PR_NAME" "$desired_role")"
+      if [ -n "$existing_thread" ]; then tname="$existing_thread"
+      else default_pr="$(default_pr_name "$issue")"; tname="$desired_role"; [ "$PR_NAME" = "$default_pr" ] || tname="${desired_role}@${PR_NAME}"; fi
     fi
   fi
   validate_thread_id "$tname"
@@ -1621,6 +1630,19 @@ for p in d.glob("run-*.pr"):
     if role not in ("implement","mechanical"): continue
     thread=(d/f"run-{n}.thread").read_text().strip() if (d/f"run-{n}.thread").is_file() else "implement"
     found.append((n,thread))
+print(max(found)[1] if found else "")
+PY2
+}
+thread_for_pr_role() {  # <票目录> <PR 名> <角色>
+  python3 - "$1" "$2" "$3" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); pr,role=sys.argv[2:]; found=[]
+for p in d.glob("run-*.pr"):
+    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
+    if not m or p.read_text().strip()!=pr: continue
+    n=int(m[1]); rr=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+    if rr!=role: continue
+    tf=d/f"run-{n}.thread"; found.append((n,tf.read_text().strip() if tf.is_file() else "implement"))
 print(max(found)[1] if found else "")
 PY2
 }
