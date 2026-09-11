@@ -78,6 +78,12 @@ expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-m
 expect_rc "closeout 默认续最后一条 run 的线程" 4 "$F" run 1 --closeout --prompt "$T/brief.md" --title "收尾" --timeout 30
 close_req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json | head -1)"
 [ "$(cat "${close_req%.request.json}.thread")" = closeout-mech ] && ok "closeout 续到最后 run 的线程" || bad "closeout 续错线程"
+expect_grep "here 登记 closeout 角色筛选测试" "PR「here」" "$F" here 5
+expect_rc "closeout 筛选测试 mechanical 轮" 4 "$F" run 5 --role mechanical --prompt "$T/brief.md" --title m --timeout 30
+expect_rc "closeout 筛选测试 accept 轮" 4 "$F" run 5 --role accept --prompt "$T/brief.md" --title a --timeout 30
+expect_rc "最后一轮 accept 时 closeout 仍续 mechanical" 4 "$F" run 5 --closeout --prompt "$T/brief.md" --title c --timeout 30
+close5="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/5/run-*.request.json | head -1)"
+[ "$(cat "${close5%.request.json}.thread")" = mechanical ] && ok "closeout 只选目标 PR 的实现角色" || bad "closeout 错续 accept"
 expect_grep "同名线程换角色被拒" "角色" "$F" run 1 --thread implement --role mechanical --prompt "$T/brief.md" --title x --timeout 30
 expect_grep "--new-thread 已取消" "已取消" "$F" run 1 --new-thread --prompt "$T/brief.md" --title x --timeout 30
 expect_grep "同名线程换引擎被拒" "引擎" "$F" run 1 --engine pi --prompt "$T/brief.md" --title x --timeout 30

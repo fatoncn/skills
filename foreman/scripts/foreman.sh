@@ -1041,8 +1041,8 @@ cmd_run() {
     if [ "$closeout" -eq 1 ]; then
       if [ -n "$role" ]; then tname="$role"
       else
-        local prev_run; prev_run="$(latest_n "$dir" run)"
-        tname="$(cat "$dir/run-$prev_run.thread" 2>/dev/null || true)"; [ -n "$tname" ] || tname="implement"
+        tname="$(last_implementation_thread "$dir" "$PR_NAME")"
+        [ -n "$tname" ] || die "PR「${PR_NAME}」没有 implement / mechanical 实现轮；closeout 请显式给 --thread <实现线程>"
       fi
     else
       tname="${role:-implement}"
@@ -1608,6 +1608,20 @@ latest_n() {
 import pathlib, re, sys
 pattern = re.compile(re.escape(sys.argv[2]) + r"-(\d+)\.(?:argv|jsonl)$")
 print(max((int(m[1]) for p in pathlib.Path(sys.argv[1]).iterdir() if (m := pattern.fullmatch(p.name))), default=0))
+PY2
+}
+last_implementation_thread() {  # <票目录> <PR 名>
+  python3 - "$1" "$2" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); pr=sys.argv[2]; found=[]
+for p in d.glob("run-*.pr"):
+    m=re.fullmatch(r"run-(\d+)\.pr",p.name)
+    if not m or p.read_text().strip()!=pr: continue
+    n=int(m[1]); role=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+    if role not in ("implement","mechanical"): continue
+    thread=(d/f"run-{n}.thread").read_text().strip() if (d/f"run-{n}.thread").is_file() else "implement"
+    found.append((n,thread))
+print(max(found)[1] if found else "")
 PY2
 }
 elapsed_of() {
