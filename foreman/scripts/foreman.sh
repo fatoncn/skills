@@ -1659,6 +1659,64 @@ for p in d.glob("run-*.pr"):
 print(max(found)[1] if found else "")
 PY2
 }
+round_pr() { # <票目录> <run-N|review-N>
+  if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_name "$1"; fi
+}
+hold_active_run() { # <票目录> <hold 目录>；兼容没有 active.json 的旧执行体
+  python3 - "$1" "$2" <<'PY2'
+import json,os,pathlib,re,sys
+d,hd=map(pathlib.Path,sys.argv[1:]); active=hd/"active.json"
+try:
+    run=json.load(open(active)).get("run","")
+    if re.fullmatch(r"(?:run|review)-\d+",run): print(run); raise SystemExit
+except (OSError,ValueError): pass
+try: bridge=int((hd/"bridge.pid").read_text())
+except (OSError,ValueError): raise SystemExit
+try: os.kill(bridge,0)
+except OSError: raise SystemExit
+thread=hd.name[5:]; found=[]
+for tf in d.glob("run-*.thread"):
+    m=re.fullmatch(r"run-(\d+)\.thread",tf.name)
+    if not m or tf.read_text().strip()!=thread: continue
+    stem=f"run-{m[1]}"
+    try: pid=int((d/(stem+".pid")).read_text())
+    except (OSError,ValueError): continue
+    if pid!=bridge or (d/(stem+".rc")).exists() or (d/(stem+".cancelled")).exists(): continue
+    if (hd/"queue"/(stem+".request.json")).exists(): continue
+    found.append((int(m[1]),stem))
+if found: print(max(found)[1])
+PY2
+}
+hold_cancel_queued_pr() { # <票目录> <hold 目录> <PR>
+  local dir="$1" hd="$2" pr="$3" q base n stem
+  lock_runs "$dir"
+  for q in "$hd"/queue/run-*.request.json; do
+    [ -f "$q" ] || continue; base="${q##*/}"; n="${base#run-}"; n="${n%.request.json}"; stem="run-$n"
+    [ "$(round_pr "$dir" "$stem")" = "$pr" ] || continue
+    rm -f "$q" "$dir/$stem.pid" "$dir/$stem.questions.json"
+    printf '130' > "$dir/$stem.rc"; printf '线程被 cleanup，排队轮次未开跑' > "$dir/$stem.cancelled"
+    echo "  已丢弃 run #$n"
+  done
+  unlock_runs
+}
+cleanup_holds_preflight() { # <票目录> <PR>
+  local dir="$1" pr="$2" hd active st
+  for hd in "$dir"/hold-*; do
+    [ -d "$hd" ] && hold_alive "$hd" || continue; active="$(hold_active_run "$dir" "$hd")"; [ -n "$active" ] || continue
+    [ "$(round_pr "$dir" "$active")" = "$pr" ] || continue; st="$(call_state "$dir/$active")"
+    case "$st" in RUNNING|WAITING) die "PR「${pr}」的 $active 仍在运行（$st），先 foreman release 释放线程再 cleanup" ;; esac
+  done
+}
+cleanup_holds_apply() { # <票目录> <PR>
+  local dir="$1" pr="$2" hd ht active
+  for hd in "$dir"/hold-*; do
+    [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
+    hold_cancel_queued_pr "$dir" "$hd" "$pr"
+    active="$(hold_active_run "$dir" "$hd")"
+    [ -n "$active" ] && continue
+    [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ] && hold_release_wait "$hd"
+  done
+}
 elapsed_of() {
   local f="$1" start now
   if [ ! -s "$f.started" ]; then printf '—'; return 0; fi
@@ -1894,17 +1952,15 @@ cmd_cleanup() {
   done
   [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--pr <名>] [--keep-branch] [--discard-unpushed]（squash 合并仓库请用 --discard-unpushed）"
   init_repo_context; require_project; require_issue "$issue"
-  local wt branch hd ht; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
+  local wt branch; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
   [ -n "$PR_NAME" ] || { echo "$issue 没有登记任何 PR / 工作目录，没有要清理的"; return 0; }
   if [ "$force" -ne 1 ]; then
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
   fi
+  cleanup_holds_preflight "$(issue_dir "$issue")" "$PR_NAME"
   if [ -n "$PR_HERE" ]; then
-    for hd in "$(issue_dir "$issue")"/hold-*; do
-      [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
-      [ "$(thread_last_pr "$(issue_dir "$issue")" "$ht")" = "$PR_NAME" ] && { hold_cancel_queued "$(issue_dir "$issue")" "$hd"; hold_release_wait "$hd"; }
-    done
+    cleanup_holds_apply "$(issue_dir "$issue")" "$PR_NAME"
     echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
     pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
   fi
@@ -1920,10 +1976,7 @@ cmd_cleanup() {
       [ "$unpushed" = "0" ] || die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
     fi
   fi
-  for hd in "$(issue_dir "$issue")"/hold-*; do
-    [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
-    [ "$(thread_last_pr "$(issue_dir "$issue")" "$ht")" = "$PR_NAME" ] && { hold_cancel_queued "$(issue_dir "$issue")" "$hd"; hold_release_wait "$hd"; }
-  done
+  cleanup_holds_apply "$(issue_dir "$issue")" "$PR_NAME"
   if [ -d "$wt" ]; then
     git -C "$MAIN_REPO" worktree remove "$wt"
   fi

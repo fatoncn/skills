@@ -165,6 +165,20 @@ echo dirty > "$T/proj/app/here-dirty.tmp"
 expect_grep "脏检出 here cleanup 只删登记" "已删登记" "$F" cleanup 31 --force
 [ -f "$T/proj/app/here-dirty.tmp" ] && ok "here cleanup 不动脏检出文件" || bad "here cleanup 动了检出文件"
 rm -f "$T/proj/app/here-dirty.tmp"
+expect_grep "cleanup 占用测试 PR A" "ready: 40" "$F" bootstrap 40 --slug cleanup-active-a --pr a --no-install
+expect_grep "cleanup 占用测试 PR B" "ready: 40" "$F" bootstrap 40 --slug cleanup-active-b --pr b --no-install
+cleanup40_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/40/meta.json' -print -quit)")"
+sleep 300 & cleanup40_pid=$!
+make_hold_fixture "$cleanup40_dir" shared-pr 301 "$cleanup40_pid" a implement
+make_hold_fixture "$cleanup40_dir" shared-pr 302 "$cleanup40_pid" b implement
+rm -f "$cleanup40_dir/hold-shared-pr/queue/run-301.request.json"; printf '{"run":"run-301"}' > "$cleanup40_dir/hold-shared-pr/active.json"
+expect_grep "cleanup 拒绝删除正在活动的 PR A" "先 foreman release" "$F" cleanup 40 --pr a --force
+cleanup40_a="$T/proj/app/.claude/worktrees/foreman-40-a"; [ -d "$cleanup40_a" ] && kill -0 "$cleanup40_pid" 2>/dev/null && ok "cleanup 拒绝后 PR A 工作树与执行体仍在" || bad "cleanup 误删活动 PR A"
+expect_grep "cleanup PR B 只取消排队轮次" "已丢弃 run #302" "$F" cleanup 40 --pr b --force
+if [ -f "$cleanup40_dir/run-302.cancelled" ] && kill -0 "$cleanup40_pid" 2>/dev/null && [ -d "$cleanup40_a" ]; then ok "cleanup PR B 不杀 PR A 执行体"; else bad "cleanup PR B 影响 PR A 执行体"; fi
+kill "$cleanup40_pid" 2>/dev/null; wait "$cleanup40_pid" 2>/dev/null || true
+rm -rf "$cleanup40_dir/hold-shared-pr"; rm -f "$cleanup40_dir"/run-301.* "$cleanup40_dir"/run-302.*
+expect_grep "cleanup 占用测试清理 PR A" "已清理" "$F" cleanup 40 --pr a --force
 git clone -q --bare "$T/bare" "$T/discard-private.git"; git clone -q "$T/discard-private.git" "$T/proj/discard-app"
 expect_grep "私有远程 bootstrap 丢弃分支测试" "ready: 30" bash -c "cd '$T/proj/discard-app' && '$F' bootstrap 30 --slug discard-private --no-install"
 wt3="$T/proj/discard-app/.claude/worktrees/foreman-30"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
