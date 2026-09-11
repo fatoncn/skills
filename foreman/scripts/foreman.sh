@@ -1883,8 +1883,8 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"
       case "$(call_state "$f")" in RUNNING|QUEUED|WAITING) continue ;; esac
       echo; echo "########## $id $kind#$n ##########"
-      if [ "$kind" = review ]; then cmd_report_inner "$id" "review$n" || true
-      else cmd_report_inner "$id" "$n" || true; fi
+      if [ "$kind" = review ]; then ( cmd_report_inner "$id" "review$n" ) || echo "$id review#$n（无日志，跳过摘要）"
+      else ( cmd_report_inner "$id" "$n" ) || echo "$id run#$n（无日志，跳过摘要）"; fi
     done
   fi
   [ "$waiting" -eq 0 ] || return 3
