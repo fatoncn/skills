@@ -17,6 +17,7 @@ CODEX_HOME_MODE=""
 GLOBAL_TOML="$FOREMAN_ROOT/config.toml"
 ROLES_DIR="$FOREMAN_ROOT/roles"   # 每个角色一份角色文件（契约），foreman setup 从 assets/roles/ 拷参考角色样例
 REQUIRED_ROLES="implement review mechanical"   # 三个参考角色全必需；再多的自定义可选。收尾不是角色：实现者续线程，见 assets/CLOSEOUT.md
+HOLD_TERM_GRACE=25  # 必须 >= codex_appserver.py INTERRUPT_GRACE(20) + 5，给执行体写 rc/last 的收尾窗口
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 
@@ -738,7 +739,7 @@ hold_cancel_queued() {  # <票目录> <hold 目录>
   unlock_runs
 }
 hold_release_wait() {  # <hold 目录> [秒]
-  local hd="$1" secs="${2:-15}" pid i
+  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i
   hold_alive "$hd" || return 0
   pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"; kill -TERM "$pid" 2>/dev/null || true
   for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM）"; return 0; }; sleep 1; done

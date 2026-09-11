@@ -63,7 +63,7 @@ DEFAULT_CANNED_ANSWER = (
 )
 
 START_TIMEOUT = 180       # initialize / thread.start / turn.start 的响应上限（秒）
-INTERRUPT_GRACE = 20      # 收到 SIGTERM 后等 turn/interrupt 生效的秒数
+INTERRUPT_GRACE = 20      # 收到 SIGTERM 后等 turn/interrupt；shell HOLD_TERM_GRACE 必须至少比这里多 5 秒
 QUESTION_POLL = 2         # 等编排者回答时的轮询间隔（秒）
 
 
