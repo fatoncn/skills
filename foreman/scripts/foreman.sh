@@ -1814,8 +1814,8 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"
       case "$(call_state "$f")" in RUNNING|QUEUED|WAITING) continue ;; esac
       echo; echo "########## $id $kind#$n ##########"
-      local role=""; [ -f "$f.role" ] && role="$(cat "$f.role")"
-      python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$f.jsonl" "$f.stderr" "$f.last.md" || true
+      if [ "$kind" = review ]; then cmd_report_inner "$id" "review$n" || true
+      else cmd_report_inner "$id" "$n" || true; fi
     done
   fi
   [ "$waiting" -eq 0 ] || return 3

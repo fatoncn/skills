@@ -188,6 +188,11 @@ if [ -n "$req3" ]; then
     nn="$(basename "$wtb" .wt-before)"; nn="${nn#run-}"; wt2="$T/proj/app/.claude/worktrees/foreman-2"
     echo dirty > "$wt2/dirty.txt"
     expect_grep "只看不改的角色改了 worktree 被标出" "工作树有改动，需人工判" "$F" report 2 "$nn"
+    : > "$d2/run-97.jsonl"; printf '{"_fleet":"thread","threadId":"t"}\n' > "$d2/run-97.jsonl"; : > "$d2/run-97.stderr"; : > "$d2/run-97.last.md"
+    printf 'accept' > "$d2/run-97.thread"; printf 'accept' > "$d2/run-97.role"; printf 'a' > "$d2/run-97.pr"; printf '%s' "$$" > "$d2/run-97.pid"; : > "$d2/run-97.argv"; cp "$wtb" "$d2/run-97.wt-before"
+    (sleep 1; printf 0 > "$d2/run-97.rc"; rm -f "$d2/run-97.pid") &
+    expect_grep "wait 摘要经过工作树 porcelain 探针" "工作树有改动，需人工判" "$F" wait 2 --timeout 3 --interval 1
+    rm -f "$d2"/run-97.*
     rm -f "$wt2/dirty.txt"
   else bad "只看不改的角色起跑前没记 wt-before"; fi
 fi
