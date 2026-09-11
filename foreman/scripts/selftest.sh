@@ -37,6 +37,21 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
 PY2
 }
 
+grep -P '' /dev/null >/dev/null 2>&1; grep_p_rc=$?
+if [ "$grep_p_rc" -ne 2 ]; then
+  bare_unicode_hits="$(grep -nP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' "$F" "$SKILL_DIR/scripts/selftest.sh" 2>/dev/null || true)"
+else
+  bare_unicode_hits="$(python3 - "$F" "$SKILL_DIR/scripts/selftest.sh" <<'PY2'
+import re,sys
+pattern=re.compile(r'\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]')
+for path in sys.argv[1:]:
+    for n,line in enumerate(open(path,encoding="utf-8"),1):
+        if pattern.search(line): print(f"{path}:{n}:{line.rstrip()}")
+PY2
+)"
+fi
+if [ -z "$bare_unicode_hits" ]; then ok "shell 禁止裸变量紧跟非 ASCII 字符"; else bad "shell 存在裸变量的 Unicode 边界"; printf '%s\n' "$bare_unicode_hits"; fi
+
 # ---- 布局：项目 proj（AGENTS.md）/ 仓库 app（origin = 本地 bare）----
 mkdir -p "$T/proj/app" "$T/bare"; echo "# rules" > "$T/proj/AGENTS.md"
 git init -q --bare "$T/bare"; git -C "$T/proj/app" init -q -b main
