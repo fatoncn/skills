@@ -718,6 +718,7 @@ hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
 hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 hold_cancel_queued() {  # <票目录> <hold 目录>
   local dir="$1" hd="$2" q base n
+  lock_runs "$dir"
   for q in "$hd"/queue/run-*.request.json; do
     [ -f "$q" ] || continue
     base="${q##*/}"; n="${base#run-}"; n="${n%.request.json}"
@@ -726,6 +727,7 @@ hold_cancel_queued() {  # <票目录> <hold 目录>
     printf '线程被 release，排队轮次未开跑' > "$dir/run-$n.cancelled"
     echo "  已丢弃 run #$n"
   done
+  unlock_runs
 }
 hold_release_wait() {  # <hold 目录> [秒]
   local hd="$1" secs="${2:-15}" pid i

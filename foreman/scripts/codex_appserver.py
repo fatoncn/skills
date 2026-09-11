@@ -840,6 +840,23 @@ class Holder:
             return []
         return [os.path.join(self.queue_dir, n) for n in names]
 
+    def _claim(self, path: str):
+        """与 shell 取消方共用 runs_lock；取消标记优先于领取。"""
+        with runs_lock(Path(self.dir).parent):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    req = json.load(fh)
+                cancelled = Path(req["out_rc"]).with_suffix(".cancelled") if req.get("out_rc") else None
+                if cancelled and cancelled.exists():
+                    os.remove(path)
+                    return None
+                write_json(Path(self.dir) / "active.json",
+                           {"run": Path(req["out_jsonl"]).stem, "turnId": None, "state": "claimed"})
+                os.remove(path)
+                return req
+            except FileNotFoundError:
+                return None
+
     def consume_steers(self, srv):
         inbox = Path(self.dir) / "steer"
         for path in sorted(inbox.glob("*.json")):
@@ -965,15 +982,9 @@ class Holder:
                     srv.dispatch(msg)
                     continue
                 path = queued[0]
-                with runs_lock(Path(self.dir).parent):
-                    try:
-                        with open(path, encoding="utf-8") as fh:
-                            req = json.load(fh)
-                        write_json(Path(self.dir) / "active.json",
-                                   {"run": Path(req["out_jsonl"]).stem, "turnId": None, "state": "claimed"})
-                        os.remove(path)
-                    except FileNotFoundError:  # 编排者刚把这轮转成引导
-                        continue
+                req = self._claim(path)
+                if req is None:  # 编排者刚把这轮取消或转成引导
+                    continue
                 r = Runner(req)
                 r.server = srv
                 r.thread_id = boot.thread_id

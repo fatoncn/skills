@@ -360,6 +360,14 @@ assert not list(d.glob("run-7.*")) and max(b.run_numbers(d))==10
 assert [pathlib.Path(p).name for p in h._queued()]==["run-9.request.json","run-10.request.json"]
 print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
 PY2
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体领取前尊重 shell 取消标记" || bad "取消与领取锁协议"
+import importlib.util,json,pathlib,sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+d=pathlib.Path(sys.argv[2])/"cancel-claim"; hd=d/"hold-implement"; (hd/"queue").mkdir(parents=True)
+rc=d/"run-1.rc"; (d/"run-1.cancelled").write_text("cancelled")
+req={"out_rc":str(rc),"out_jsonl":str(d/"run-1.jsonl")}; q=hd/"queue/run-1.request.json"; b.write_json(q,req)
+h=b.Holder(str(hd)); assert h._claim(str(q)) is None; assert not q.exists(); assert not (hd/"active.json").exists()
+PY2
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "app-server 实际 argv 默认开启、支持关闭且进程级抑制警告" || bad "app-server 提问功能位 argv"
 import importlib.util,pathlib,sys
 from unittest.mock import patch
