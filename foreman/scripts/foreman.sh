@@ -762,6 +762,9 @@ PY
   unlock_runs
   if [ -n "$active_n" ]; then
     echo "线程「${tname}」正在跑 run #${active_n}，这一轮 run #${n} 排队；要立刻纠偏：foreman steer ${issue} --from-queue ${n} --thread ${tname}"
+    if [ "$(cat "$dir/run-$active_n.pr" 2>/dev/null || true)" != "$(cat "$dir/run-$n.pr" 2>/dev/null || true)" ]; then
+      echo "    占着线程的是另一 PR 的轮次；另一 PR 想并行：--thread <角色>@<pr>"
+    fi
   fi
   if [ "$detach" -eq 1 ]; then
     echo "==> run #$n 已进线程队列（$dir/run-$n.jsonl 持续写入）"
@@ -1015,8 +1018,16 @@ cmd_run() {
   require_work_dir_in_project "$wt"
 
   # ---- 对象模型：票下若干线程，每条线程建立时绑定一个角色和一个引擎（用户 09-11） ----
-  # 线程名：显式 --thread > 收尾续 implement > 按角色命名（没给角色就是 implement）
-  if [ -z "$tname" ]; then if [ "$closeout" -eq 1 ]; then tname="implement"; else tname="${role:-implement}"; fi; fi
+  # 线程名：显式 --thread > 收尾所在线程 > 按角色命名；非默认 PR 自动加 @<pr>，避免多 PR 串行排队。
+  if [ -z "$tname" ]; then
+    if [ "$closeout" -eq 1 ]; then
+      tname="implement"
+    else
+      tname="${role:-implement}"
+      local default_pr; default_pr="$(pr_names "$issue" | head -1)"
+      [ -z "$prname" ] || [ "$PR_NAME" = "$default_pr" ] || tname="${tname}@${PR_NAME}"
+    fi
+  fi
   validate_id "$tname"
   require_pr_idle "$issue" "$PR_NAME" "$tname"
   local rec_role rec_engine; rec_role="$(thread_get "$issue" "$tname" role)"; rec_engine="$(thread_get "$issue" "$tname" engine)"

@@ -66,6 +66,7 @@ expect_grep "多 PR 不带 --pr 被拒" "有多个 PR" "$F" run 2 --prompt "$T/b
 expect_rc   "run 2 --pr b" 4 "$F" run 2 --pr b --prompt "$T/brief.md" --title "b 轮" --timeout 30
 req2="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev/null | head -1)"
 [ -n "$req2" ] && [ "$(cat "${req2%.request.json}.pr")" = "b" ] && ok "run-N.pr 记下针对的 PR" || bad "run-N.pr"
+[ -n "$req2" ] && [ "$(cat "${req2%.request.json}.thread")" = "implement@b" ] && ok "非默认 PR 自动使用 角色@PR 线程名" || bad "非默认 PR 自动线程名"
 expect_rc   "review 2 --pr b（假 codex）" 4 "$F" review 2 --pr b --title "审 b" --timeout 30
 rreq="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/review-*.request.json 2>/dev/null | head -1)"
 [ -n "$rreq" ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["sandbox"]=="read-only" and r.get("ephemeral") is True' "$rreq" && ok "review 请求：只读 + ephemeral" || bad "review 请求"
