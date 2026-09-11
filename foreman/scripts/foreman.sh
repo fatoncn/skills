@@ -869,6 +869,8 @@ POSITION_WRITABLE=""   # run --writable 放开的目录，写进位置块；revi
 position_block() {   # 只写事实（规矩在角色文件里说一遍，这里不重复）
   echo "# 本轮位置（foreman 生成，以此为准；规矩见角色文件）"; echo
   echo "- cwd：\`${PROJECT_ROOT}\`（项目根）"
+  if command -v rg >/dev/null 2>&1; then echo "- 执行环境：rg: 有"
+  else echo "- 执行环境：rg: 无（用 git grep）"; fi
   if [ -n "${PR_WT:-}" ]; then
     local loc="- 工作目录：\`${PR_WT}\`" extra=""
     [ -n "${PR_BRANCH:-}" ] && extra="分支 \`${PR_BRANCH}\`"

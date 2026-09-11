@@ -53,6 +53,7 @@ import pathlib,sys
 p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("\nrequest_user_input = false", "",1))
 PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
+expect_grep "位置块按环境写 rg 可用性" "执行环境：rg:" cat "${req%.request.json}.prompt.md"
 expect_grep "release：没有占着的线程" "没有被占着" "$F" release 1
 if [ -n "$req" ]; then
   rd="$(dirname "$req")"; mkdir -p "$rd/hold-release-test/queue"
