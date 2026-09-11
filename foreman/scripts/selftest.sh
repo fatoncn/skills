@@ -13,6 +13,29 @@ bad()  { fails+=("$1"); echo "  [!!]  $1${2:+ —— $2}"; }
 expect_grep() { local name="$1" pat="$2"; shift 2; local out; out="$("$@" 2>&1)"; if printf '%s' "$out" | grep -q -- "$pat"; then ok "$name"; else bad "$name" "没找到「${pat}」；输出尾行: $(printf '%s' "$out" | tail -1 | cut -c1-120)"; fi; }
 expect_no_grep() { local name="$1" pat="$2"; shift 2; local out rc; out="$("$@" 2>&1)"; rc=$?; if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q -- "$pat"; then ok "$name"; else bad "$name" "rc=${rc}，不应出现「${pat}」"; fi; }
 expect_rc()   { local name="$1" want="$2"; shift 2; "$@" >/dev/null 2>&1; local rc=$?; if [ "$rc" = "$want" ]; then ok "$name"; else bad "$name" "rc=${rc}，期望 ${want}"; fi; }
+make_hold_fixture() { # <票目录> <线程> <轮次> <bridge pid> <PR> <角色>
+  local dir="$1" thread="$2" n="$3" pid="$4" pr="$5" role="$6" hd="$1/hold-$2" prefix="$1/run-$3"
+  mkdir -p "$hd/queue"
+  printf '{"idle_seconds":3600}' > "$hd/hold.json"; printf '%s' "$pid" > "$hd/bridge.pid"
+  python3 - "$prefix.request.json" "$prefix" <<'PY2'
+import json,sys
+p,prefix=sys.argv[1:3]
+json.dump({"prompt":"# 本轮位置\n\n---\n\nfixture", "cwd":"/tmp", "timeout":60,
+           "out_jsonl":prefix+".jsonl", "out_stderr":prefix+".stderr",
+           "out_last":prefix+".last.md", "out_rc":prefix+".rc"}, open(p,"w"))
+PY2
+  cp "$prefix.request.json" "$hd/queue/run-$n.request.json"
+  printf '%s' "$thread" > "$prefix.thread"; printf '%s' "$pr" > "$prefix.pr"; printf '%s' "$role" > "$prefix.role"
+  printf '%s' "$pid" > "$prefix.pid"; printf '%s' "$(date +%s)" > "$prefix.started"; printf 'codex' > "$prefix.engine"
+  : > "$prefix.argv"; printf 'fixture' > "$prefix.prompt.md"
+  python3 - "$dir/meta.json" "$thread" "$role" "$n" <<'PY2'
+import json,sys
+p,thread,role,n=sys.argv[1:5]; m=json.load(open(p)); t=m.setdefault("threads",{}).setdefault(thread,{"engine":"codex","role":role,"runs":[]})
+t["engine"]="codex"; t["role"]=role
+if "run-"+n not in t.setdefault("runs",[]): t["runs"].append("run-"+n)
+json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
+PY2
+}
 
 # ---- 布局：项目 proj（AGENTS.md）/ 仓库 app（origin = 本地 bare）----
 mkdir -p "$T/proj/app" "$T/bare"; echo "# rules" > "$T/proj/AGENTS.md"
@@ -32,8 +55,16 @@ expect_rc   "setup --confirm" 0 "$F" setup --confirm
 echo "== 票 / PR / 线程 =="
 echo task > "$T/brief.md"
 expect_rc   "假 codex 下前台 run 返回 4（ENGINE_DOWN）" 4 "$F" run 1 --prompt "$T/brief.md" --title "自测" --timeout 30
-expect_grep "steer 保留路径变量边界正确" "消息已保留在 .*，用 run 起新一轮" "$F" steer 1 "纠偏"
 req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json 2>/dev/null | head -1)"
+steer_dir="$(dirname "$req")"; make_hold_fixture "$steer_dir" steer-path 90 999999 here implement
+rm -f "$steer_dir/hold-steer-path/hold.json" "$steer_dir/hold-steer-path/queue/run-90.request.json"
+steer_path_out="$("$F" steer 1 --thread steer-path "纠偏" 2>&1)"; steer_path_rc=$?
+if [ "$steer_path_rc" -ne 0 ] && printf '%s\n' "$steer_path_out" | grep -q "消息已保留在 .*，用 run 起新一轮"; then ok "steer 保留路径变量边界正确"; else bad "steer 保留路径变量边界正确" "rc=$steer_path_rc"; fi
+rm -rf "$steer_dir/hold-steer-path"; rm -f "$steer_dir"/run-90.*
+python3 - "$steer_dir/meta.json" <<'PY2'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m.get("threads",{}).pop("steer-path",None); json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
+PY2
 [ -n "$req" ] && python3 - "$req" "$T/proj" "$T/proj/app" <<'PY' && ok "run 请求：cwd = 项目根、work_dir = 票目录、可写根含票目录" || bad "run 请求：cwd / work_dir / 可写根"
 import json,sys,os
 r=json.load(open(sys.argv[1])); root=os.path.realpath(sys.argv[2]); wt=os.path.realpath(sys.argv[3])
