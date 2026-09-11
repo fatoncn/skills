@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import time
 
 # 越界命令探针：执行器侧靠角色文件（契约）约束，这里做事后检测，双保险。命中只是「需要编排者判断」，项目规则允许的由编排者放行。
 FORBIDDEN = [
@@ -127,6 +128,8 @@ def blank_state() -> dict:
         "forbidden": [],
         "approvals": [],           # appserver: 回到执行体的审批请求及决定
         "auto_reviews": [],        # appserver: Codex 自动审查（替我审批）的决定
+        "steers": [],
+        "requeued_steers": [],
         "questions": [],           # appserver: 向编排者提的问题
         "tool_calls": 0,
         "web_searches": 0,
@@ -317,6 +320,15 @@ def scan_appserver(events, role=None):
             continue
         if foreman == "answer":
             state["notices"].append("编排者" + ("已回答" if event.get("answered") else "未回答（用了兜底答复）") + "执行者的提问")
+            continue
+        if foreman == "steer":
+            state["steers"].append(event)
+            continue
+        if foreman == "steer_requeued":
+            state["requeued_steers"].append(event)
+            continue
+        if foreman == "steer_error":
+            state["errors"].append("steer: " + stringify(event.get("error"), 800))
             continue
         if foreman == "protocol_error":
             state["errors"].append("协议错误: " + stringify(event.get("error"), 600))
@@ -534,6 +546,16 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         for kind, decision, what in state["approvals"]:
             print(f"  [{kind} → {decision}] {what}")
 
+    for key, title in (("steers", "本轮收到的引导消息"), ("requeued_steers", "引导转排队（steer_requeued）")):
+        if state[key]:
+            print(f"\n--- {title} ---")
+            for entry in state[key]:
+                at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.get("at", 0) / 1000))
+                source = f"fromRun={entry.get('fromRun')}"
+                target = f" → run #{entry['run']}" if key == "requeued_steers" else ""
+                preview = (entry.get("text") or "")[:120].replace("\n", " ")
+                print(f"  {at}  {source}{target}  {preview}")
+
     if state["questions"]:
         print("\n--- 执行者的提问 ---")
         for q in state["questions"]:
@@ -589,7 +611,7 @@ def tail(log_path: str, count: int = 20) -> int:
     rows = []
     for event in events:
         foreman = event.get("_fleet")
-        if foreman in ("question", "approval", "interrupt", "protocol_error"):
+        if foreman in ("question", "approval", "interrupt", "protocol_error", "steer", "steer_error", "steer_requeued"):
             rows.append(f"[{foreman}] {stringify({k: v for k, v in event.items() if k != '_fleet'}, 200)}")
             continue
         if foreman or not event.get("method"):

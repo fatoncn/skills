@@ -25,6 +25,7 @@ expect_rc   "setup（生成角色表 + 角色文件）" 0 "$F" setup
 expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
+expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
 expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
 echo "== 票 / PR / 线程 =="
@@ -79,7 +80,8 @@ if [ -n "$req3" ]; then
   printf 'a' > "$d2/run-99.pr"; printf 'implement' > "$d2/run-99.thread"; printf '%s' "$sp" > "$d2/run-99.pid"; : > "$d2/run-99.argv"
   expect_grep "同一 PR 另一条线程在跑时 run 被拒" "只准一条线程" "$F" run 2 --pr a --role accept --prompt "$T/brief.md" --title x --timeout 30
   expect_grep "同一 PR 另一条线程在跑时 review 被拒" "只准一条线程" "$F" review 2 --pr a --title x --timeout 30
-  nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done   # wait 只枚举连续编号，伪造下一个
+  rm -f "$d2"/run-99.*
+  nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"
   mkdir -p "$d2/hold-implement/queue"; : > "$d2/hold-implement/queue/run-$nn.request.json"
   expect_grep "wait 把 QUEUED 轮次当在跑" "等待 1 个会话" "$F" wait 2 --timeout 1 --no-report
@@ -95,6 +97,64 @@ if [ -n "$req3" ]; then
     expect_grep "只看不改的角色改了 worktree 被标出" "改动了 worktree" "$F" report 2 "$nn"
     rm -f "$wt2/dirty.txt"
   else bad "只看不改的角色起跑前没记 wt-before"; fi
+fi
+echo "== 引导通道 =="
+if [ -n "$req" ]; then
+  sd="$(dirname "$req")"
+  sleep 300 & steer_pid=$!
+  mkdir -p "$sd/hold-implement/queue"
+  printf '%s' "$steer_pid" > "$sd/hold-implement/bridge.pid"
+  printf '%s' "$steer_pid" > "$sd/hold-implement/steer.pid"
+  cp "$req" "$sd/run-70.request.json"
+  cp "${req%.request.json}.prompt.md" "$sd/run-70.prompt.md"
+  printf 'implement' > "$sd/run-70.thread"; printf '%s' "$steer_pid" > "$sd/run-70.pid"; : > "$sd/run-70.argv"
+  "$F" steer 1 "direct-steer-token" >"$T/steer-direct.out" 2>&1 & steer_cli=$!
+  for _ in $(seq 1 100); do
+    pending="$(find "$sd/hold-implement/steer" -maxdepth 1 -name '*.json' 2>/dev/null | head -1)"
+    [ -z "$pending" ] || break
+    sleep 0.1
+  done
+  if [ -n "$pending" ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["text"] == "direct-steer-token"' "$pending"; then
+    ok "RUNNING 时 steer 文件落到 hold-implement/steer"
+  else bad "RUNNING 时 steer 文件落盘"; fi
+  # 给伪造进程补真实格式的回执，让 CLI 正常完成，而非杀掉等待器。
+  mkdir -p "$sd/hold-implement/steer/sent"
+  [ -z "$pending" ] || python3 - "$pending" <<'PY2'
+import json, pathlib, sys
+p=pathlib.Path(sys.argv[1]); (p.parent/"sent"/p.name).write_text(json.dumps({"_fleet":"steer", "turnId":"test-turn"})); p.unlink()
+PY2
+  wait "$steer_cli"; steer_rc=$?
+  [ "$steer_rc" = 0 ] && grep -q '已注入 turn test-turn' "$T/steer-direct.out" && ok "steer 成功回执" || bad "steer 成功回执"
+  cp "$req" "$sd/run-71.request.json"; cp "${req%.request.json}.prompt.md" "$sd/run-71.prompt.md"
+  printf 'implement' > "$sd/run-71.thread"; printf '%s' "$steer_pid" > "$sd/run-71.pid"; : > "$sd/run-71.argv"
+  cp "$sd/run-71.request.json" "$sd/hold-implement/queue/run-71.request.json"
+  python3 - "$sd/meta.json" <<'PY2'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m["threads"]["implement"]["runs"].append("run-71"); json.dump(m,open(p,"w"))
+PY2
+  "$F" steer 1 --from-queue 71 >"$T/steer-queue.out" 2>&1 & steer_cli=$!
+  pending=""
+  for _ in $(seq 1 100); do
+    pending="$(find "$sd/hold-implement/steer" -maxdepth 1 -name '*.json' 2>/dev/null | head -1)"
+    [ -z "$pending" ] || break
+    sleep 0.1
+  done
+  if [ -n "$pending" ] && [ ! -f "$sd/hold-implement/queue/run-71.request.json" ] && python3 - "$sd" "$pending" <<'PY2'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); event=json.load(open(sys.argv[2]))
+assert event["fromRun"] == 71 and event["text"] == "task\n", event["text"]
+assert not list(p.glob("run-71.*"))
+assert "run-71" not in json.load(open(p/"meta.json"))["threads"]["implement"]["runs"]
+PY2
+  then ok "QUEUED 转引导后 queue 为空、正文完整且账本清理"; else bad "QUEUED 转引导与账本清理"; fi
+  [ -z "$pending" ] || python3 - "$pending" <<'PY2'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); (p.parent/"sent"/p.name).write_text(json.dumps({"_fleet":"steer", "turnId":"test-turn"})); p.unlink()
+PY2
+  wait "$steer_cli"
+  expect_grep "已拿起轮次拒绝转换" "本来就是你要的效果" "$F" steer 1 --from-queue 70
+  rm -f "$sd"/run-70.* "$sd/hold-implement/bridge.pid"
+  kill "$steer_pid"; wait "$steer_pid" 2>/dev/null || true
 fi
 expect_grep "list 能跑" "线程" "$F" list
 echo "== 守卫 =="
@@ -128,6 +188,93 @@ python3 -c 'import json,sys; json.dump({"work_dir": sys.argv[2], "config_overrid
 if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q "工作目录之外"; then bad "--writable 目录不算越界"; else ok "--writable 目录不算越界（交付目录）"; fi
 expect_grep "复审改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_grep "验收改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+python3 - "$T/steer-summary.jsonl" <<'PY2'
+import json,sys
+with open(sys.argv[1],"w") as f:
+    for e in ({"_fleet":"steer","at":1789135200000,"fromRun":7,"text":"引导正文"},
+              {"_fleet":"steer_requeued","at":1789135200000,"fromRun":None,"run":9,"text":"结束后转排队"}):
+        f.write(json.dumps(e,ensure_ascii=False)+"\n")
+PY2
+expect_grep "report 展示引导来源与正文" "fromRun=7.*引导正文" python3 "$SKILL_DIR/scripts/summarize.py" "$T/steer-summary.jsonl"
+expect_grep "report 展示 steer_requeued" "steer_requeued" python3 "$SKILL_DIR/scripts/summarize.py" "$T/steer-summary.jsonl"
+echo "== 引导竞态与执行体 =="
+python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体引导：成功、WAITING、结束竞态、失败保留、旧正文、空号与 FIFO" || bad "执行体引导竞态"
+import importlib.util, json, os, pathlib, tempfile, types, sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+class Server:
+    def __init__(self, error=None): self.events=[]; self.calls=[]; self.error=error
+    def log_event(self,e): self.events.append(e)
+    def request(self,method,params,timeout):
+        self.calls.append((method,params))
+        if self.error: raise b.ProtocolError(self.error)
+        return {"turnId":"turn-A"}
+    def respond(self,*args,**kwargs): pass
+
+def fixture(active=True, error=None):
+    d=pathlib.Path(tempfile.mkdtemp(dir=sys.argv[2])); hd=d/"hold-implement"; hd.mkdir(); (hd/"queue").mkdir()
+    b.write_json(d/"meta.json",{"threads":{"implement":{"engine":"codex","runs":["run-1"]}}})
+    b.write_json(hd/"hold.json",{})
+    source=d/"original.md"; source.write_text("原任务书\n\n保留尾行\n")
+    req={"prompt":"# 本轮位置\n\n- cwd：x\n- 工作目录：x\n\n---\n\n"+source.read_text(),
+         "prompt_source":str(source),"cwd":str(d),"timeout":60,"out_jsonl":str(d/"run-1.jsonl")}
+    b.write_json(d/"run-1.request.json",req)
+    (d/"run-1.prompt.md").write_text(req["prompt"]); (d/"run-1.thread").write_text("implement")
+    (d/"run-1.role").write_text("mechanical"); (d/"run-1.engine").write_text("codex")
+    (d/"run-1.argv").write_bytes(b"python3\0")
+    (hd/"bridge.pid").write_text(str(os.getpid()))
+    r=b.Runner({"question_timeout":1,"questions_path":str(d/"questions.json"),"answer_path":str(d/"answer.json")})
+    r.turn_id="turn-A"; r.thread_id="thread-A"
+    srv=Server(error); r.server=srv
+    holder=b.Holder(str(hd)); holder.current=r if active else None
+    if active: b.write_json(hd/"active.json",{"turnId":"turn-A"})
+    return d, hd, holder, srv, r
+
+# Success: assert actual protocol shape and durable acknowledgement.
+d,hd,h,srv,r=fixture(); path=pathlib.Path(b.submit_steer(d,"implement","原文\n", "", None)); h.consume_steers(srv)
+assert srv.calls == [("turn/steer",{"threadId":"thread-A","expectedTurnId":"turn-A","input":[{"type":"text","text":"原文\n"}]})]
+assert json.loads((hd/"steer/sent"/path.name).read_text())["text"] == "原文\n"
+assert not path.exists() and not list((hd/"queue").iterdir())
+# WAITING: question polling still consumes steering and answers independently.
+d,hd,h,srv,r=fixture(); b.submit_steer(d,"implement","提问期间纠偏", "", None)
+def consume():
+    h.consume_steers(srv); b.write_json(d/"answer.json",{"all":"回答"})
+r.consume_steers=consume; r.handle_questions(1,{"questions":[{"id":"q","question":"问题"}]})
+assert any(e.get("_fleet")=="steer" for e in srv.events)
+assert any(e.get("_fleet")=="answer" and e["answered"] for e in srv.events)
+# Mismatch, completed before processing, idle, and next-turn race all requeue exactly once.
+for mode in ("mismatch","completed","idle","next-turn"):
+    d,hd,h,srv,r=fixture(active=mode!="idle", error="turn/steer 出错: expected active turn id `turn-A` but found `turn-B`" if mode=="mismatch" else None)
+    path=pathlib.Path(b.submit_steer(d,"implement",mode+"\n", "", None))
+    if mode=="completed": r.turn_status="completed"
+    if mode=="next-turn": r.turn_id="turn-B"
+    h.consume_steers(srv); h.consume_steers(srv)
+    ack=json.loads((hd/"steer/sent"/path.name).read_text()); assert ack["_fleet"]=="steer_requeued"
+    assert len(list((hd/"queue").glob("*.request.json")))==1
+    n=ack["run"]; req=json.loads((d/f"run-{n}.request.json").read_text())
+    assert req["title"]=="引导转排队" and req["prompt"].endswith(mode+"\n")
+    assert b.original_prompt(d,n,b.template_for(d,n))==mode+"\n"
+    assert json.loads((d/"meta.json").read_text())["threads"]["implement"]["runs"]==["run-1",f"run-{n}"]
+    for suffix in ("argv","prompt.md","request.json","role","thread","timeout","started","pid","jsonl"):
+        assert (d/f"run-{n}.{suffix}").is_file(), suffix
+    assert len(srv.calls)==(1 if mode=="mismatch" else 0)
+# A non-race error is not silently converted or dropped.
+d,hd,h,srv,r=fixture(error="turn/steer 出错: permission denied")
+path=pathlib.Path(b.submit_steer(d,"implement","失败保留", "", None)); h.consume_steers(srv)
+ack=json.loads((hd/"steer/failed"/path.name).read_text()); assert ack["error"]==srv.error and ack["text"]=="失败保留"
+assert not list((hd/"queue").iterdir())
+# Old prompt fallback strips the whole generated position block, not just its title.
+t=b.template_for(d,1); del t["request"]["prompt_source"]
+assert b.original_prompt(d,1,t)=="原任务书\n\n保留尾行\n"
+# Removing a middle queued run leaves later numbers visible; FIFO is numeric.
+for n in (7,9,10):
+    req=json.loads((d/"run-1.request.json").read_text()); b.write_json(d/f"run-{n}.request.json",req)
+    (d/f"run-{n}.thread").write_text("implement"); (d/f"run-{n}.argv").write_bytes(b"python3\0")
+    b.write_json(hd/"queue"/f"run-{n}.request.json",req)
+b.submit_steer(d,"implement","","",7)
+assert not list(d.glob("run-7.*")) and max(b.run_numbers(d))==10
+assert [pathlib.Path(p).name for p in h._queued()]==["run-9.request.json","run-10.request.json"]
+print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
+PY2
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"

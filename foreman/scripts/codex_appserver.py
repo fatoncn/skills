@@ -19,6 +19,10 @@
 from __future__ import annotations
 
 import json
+import fcntl
+from contextlib import contextmanager
+from pathlib import Path
+import uuid
 import re
 import os
 import queue
@@ -223,6 +227,189 @@ class AppServer:
         self._stderr.close()
 
 
+# ---------- steer：文件通道与轮次账本（同一票的写入共用短锁） ----------
+
+@contextmanager
+def runs_lock(issue_dir):
+    with open(Path(issue_dir) / ".runs.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_json(path, value):
+    """只发布完整的状态文件；源码文件的修改仍原地写入。"""
+    path = Path(path)
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def run_numbers(directory):
+    return sorted({int(m[1]) for p in Path(directory).glob("run-*.*")
+                   if (m := re.fullmatch(r"run-(\d+)\..+", p.name))})
+
+
+def position_parts(prompt):
+    # 当前脚本的位置块包含空行，必须跨过整个生成块，不能只删标题行。
+    if prompt.startswith("# 本轮位置"):
+        head, sep, body = prompt.partition("\n---\n")
+        if sep:
+            return head + sep + "\n", body[1:] if body.startswith("\n") else body
+        head, sep, body = prompt.partition("\n\n")
+        return head + sep, body
+    return "", prompt
+
+
+def template_for(directory, n):
+    prefix = Path(directory) / f"run-{n}"
+    req = json.loads(Path(str(prefix) + ".request.json").read_text(encoding="utf-8"))
+    fields = {}
+    for suffix in ("role", "pr", "cwd", "timeout", "rmwt", "engine", "home", "dev.md", "full-access"):
+        path = Path(str(prefix) + "." + suffix)
+        if path.is_file():
+            fields[suffix] = path.read_text(encoding="utf-8")
+    return {"request": req, "files": fields}
+
+
+def original_prompt(directory, n, template):
+    source = template["request"].get("prompt_source")
+    if source:
+        try:
+            return Path(source).read_text(encoding="utf-8")
+        except OSError:
+            pass
+    path = Path(directory) / f"run-{n}.prompt.md"
+    if path.is_file():
+        return position_parts(path.read_text(encoding="utf-8"))[1]
+    raise ValueError("原任务书和 run-N.prompt.md 都不可读，不能转引导")
+
+
+def enqueue_steer(directory, tname, message):
+    """调用者持有 runs_lock；沿用原轮次执行配置，建齐新轮次再发布队列。"""
+    directory = Path(directory)
+    pr = message["template"]["files"].get("pr", "")
+    # 转排队也遵守 run 的同 PR 单执行者守卫；业务拒绝保留到 failed 回执。
+    for mark in list(directory.glob("run-*.pr")) + list(directory.glob("review-*.pr")):
+        prefix = str(mark)[:-3]
+        if mark.read_text() != pr or Path(prefix + ".rc").exists():
+            continue
+        thread_file = Path(prefix + ".thread")
+        other = thread_file.read_text() if thread_file.exists() else Path(prefix).name
+        if other == tname:
+            continue
+        try:
+            os.kill(int(Path(prefix + ".pid").read_text()), 0)
+        except (OSError, ValueError):
+            continue
+        raise ValueError(f"PR「{pr}」上线程 '{other}' 仍在跑：同一 PR 同时只准一条线程；引导保留，请等它结束再重发")
+    n = max(run_numbers(directory), default=0) + 1
+    prefix = directory / f"run-{n}"
+    req = dict(message["template"]["request"])
+    files = dict(message["template"]["files"])
+    header, _ = position_parts(req["prompt"])
+    req["prompt"] = header + message["text"]
+    req["prompt_source"] = str(prefix) + ".source.md"
+    req["title"] = "引导转排队"
+    for key, suffix in (("out_jsonl", "jsonl"), ("out_stderr", "stderr"), ("out_last", "last.md"),
+                        ("out_rc", "rc"), ("questions_path", "questions.json"), ("answer_path", "answer.json")):
+        req[key] = str(prefix) + "." + suffix
+    files.update({"thread": tname, "engine": "codex", "prompt.md": req["prompt"],
+                  "source.md": message["text"], "started": str(int(time.time())),
+                  "timeout": str(req.get("timeout") or 1800)})
+    hd = directory / f"hold-{tname}"
+    pid = hd / "bridge.pid"
+    if pid.is_file():
+        files["pid"] = pid.read_text()
+    event = {"_fleet": "steer_requeued", "text": message["text"], "at": message["at"],
+             "fromRun": message.get("fromRun"), "run": n, "title": "引导转排队"}
+    files["jsonl"] = json.dumps(event, ensure_ascii=False) + "\n"
+    if files.get("role") in ("review", "accept", "research") and req.get("work_dir"):
+        before = subprocess.run(["git", "-C", req["work_dir"], "status", "--porcelain"],
+                                capture_output=True, text=True, check=True)
+        files["wt-before"] = before.stdout
+    for suffix, text in files.items():
+        Path(str(prefix) + "." + suffix).write_text(text, encoding="utf-8")
+    # argv 的契约是执行器 argv（NUL 分隔），并不是原 foreman 命令。
+    Path(str(prefix) + ".argv").write_bytes(("\0".join(
+        ["python3", str(Path(__file__).resolve()), "run", str(prefix) + ".request.json"]) + "\0").encode())
+    write_json(str(prefix) + ".request.json", req)
+    meta_path = directory / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["threads"][tname].setdefault("runs", []).append(f"run-{n}")
+    write_json(meta_path, meta)
+    (hd / "queue").mkdir(parents=True, exist_ok=True)
+    write_json(hd / "queue" / f"run-{n}.request.json", req)
+    return event
+
+
+def submit_steer(directory, tname, text, source_file, from_run):
+    directory = Path(directory)
+    hd = directory / f"hold-{tname}"
+    with runs_lock(directory):
+        candidates = [n for n in run_numbers(directory)
+                      if (directory / f"run-{n}.thread").is_file()
+                      and (directory / f"run-{n}.thread").read_text() == tname
+                      and (directory / f"run-{n}.request.json").is_file()]
+        if from_run is not None and not (hd / "queue" / f"run-{from_run}.request.json").is_file():
+            raise ValueError(f"run #{from_run} 已不在 queue：它已经在跑，本来就是你要的效果；另有纠偏用 steer <文本>")
+        if not candidates or (from_run is not None and from_run not in candidates):
+            raise ValueError("没有可续接的 codex 线程，用 run 起新一轮")
+        active = {}
+        try:
+            active = json.loads((hd / "active.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            pass
+        active_name = active.get("run", "")
+        active_n = int(active_name[4:]) if re.fullmatch(r"run-\d+", active_name) else None
+        template_n = from_run if from_run is not None else (active_n if active_n in candidates else candidates[-1])
+        template = template_for(directory, template_n)
+        if template["files"].get("engine", "codex") != "codex":
+            raise ValueError("steer 只支持 codex app-server 线程，用 run 起新一轮")
+        if from_run is not None:
+            text = original_prompt(directory, from_run, template)
+        elif source_file:
+            text = Path(source_file).read_text(encoding="utf-8")
+        if not text or not text.strip():
+            raise ValueError("steer: 引导消息不能为空")
+        message = {"text": text, "at": now_ms(), "fromRun": from_run, "template": template,
+                   "expectedTurnId": active.get("turnId")}
+        inbox = hd / "steer"
+        inbox.mkdir(parents=True, exist_ok=True)
+        path = inbox / f"{time.time_ns()}-{uuid.uuid4().hex}.json"
+        write_json(path, message)
+        if from_run is not None:
+            # Holder 取队列也持有同一把锁；检查到删除之间不会被拿起。
+            (hd / "queue" / f"run-{from_run}.request.json").unlink()
+            for old in directory.glob(f"run-{from_run}.*"):
+                old.unlink()
+            meta_path = directory / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            runs = meta["threads"][tname].get("runs", [])
+            meta["threads"][tname]["runs"] = [r for r in runs if r != f"run-{from_run}"]
+            write_json(meta_path, meta)
+    return str(path)
+
+
+def steer_result(path):
+    path = Path(path)
+    for state in ("sent", "failed"):
+        ack = path.parent / state / path.name
+        if ack.exists():
+            result = json.loads(ack.read_text(encoding="utf-8"))
+            if state == "failed":
+                print("引导失败：" + result["error"], file=sys.stderr)
+                return 1
+            if result.get("_fleet") == "steer_requeued":
+                print(f"turn 已结束，这条消息已转为 run #{result['run']} 排队")
+            else:
+                print(f"已注入 turn {result['turnId']}")
+            return 0
+    return None
+
+
 # ---------- run ----------
 
 class Runner:
@@ -244,6 +431,8 @@ class Runner:
         self.deadline: float | None = None   # hold 模式下这一轮的绝对截止（秒）
         self.timed_out = False
         self.boot_info: dict = {}
+        self.consume_steers = lambda: None
+        self.on_turn_started = lambda: None
 
     # ---- 服务端请求 ----
     def handle_server_request(self, msg: dict):
@@ -309,6 +498,7 @@ class Runner:
         if apath and timeout > 0:
             deadline = time.time() + timeout
             while time.time() < deadline and not self.interrupt_requested:
+                self.consume_steers()
                 if os.path.exists(apath):
                     try:
                         with open(apath, encoding="utf-8") as fh:
@@ -455,6 +645,7 @@ class Runner:
             turn_params["sandboxPolicy"] = req["sandbox_policy"]
         turn = srv.request("turn/start", turn_params, timeout=START_TIMEOUT)
         self.turn_id = (turn.get("turn") or {}).get("id")
+        self.on_turn_started()
 
         # 主循环：直到我们这一轮 turn/completed
         while self.turn_status is None:
@@ -474,6 +665,9 @@ class Runner:
                     if msg is None:
                         break
                     srv.dispatch(msg)
+                break
+            self.consume_steers()
+            if self.turn_status is not None:
                 break
             msg = srv.next_message(timeout=5.0)
             if msg is None:
@@ -537,19 +731,20 @@ class Runner:
         path = self.req.get("meta_path")
         if not path or not self.thread_id:
             return
-        try:
-            meta = json.load(open(path, encoding="utf-8"))
-        except Exception:
-            meta = {}
-        key = self.req.get("meta_thread_key", "codex_thread")
-        # 点路径（threads.<名>.ref）：票的账本里一条线程一条记录，引擎无关
-        node = meta
-        parts = key.split(".")
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = self.thread_id
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(meta, fh, ensure_ascii=False, indent=2)
+        with runs_lock(Path(path).parent):
+            try:
+                meta = json.load(open(path, encoding="utf-8"))
+            except Exception:
+                meta = {}
+            key = self.req.get("meta_thread_key", "codex_thread")
+            # 点路径（threads.<名>.ref）：票的账本里一条线程一条记录，引擎无关
+            node = meta
+            parts = key.split(".")
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = self.thread_id
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(meta, fh, ensure_ascii=False, indent=2)
 
     def mark_unavailable(self, srv, kind: str, detail):
         msg = _UNAVAILABLE_HINT.get(kind, "codex 不可用")
@@ -597,10 +792,57 @@ class Holder:
 
     def _queued(self) -> list[str]:
         try:
-            names = sorted(n for n in os.listdir(self.queue_dir) if n.endswith(".request.json"))
+            names = sorted((n for n in os.listdir(self.queue_dir) if re.fullmatch(r"run-\d+\.request\.json", n)),
+                           key=lambda n: int(n.split("-")[1].split(".")[0]))
         except FileNotFoundError:
             return []
         return [os.path.join(self.queue_dir, n) for n in names]
+
+    def consume_steers(self, srv):
+        inbox = Path(self.dir) / "steer"
+        for path in sorted(inbox.glob("*.json")):
+            processing = inbox / "processing" / path.name
+            with runs_lock(Path(self.dir).parent):
+                processing.parent.mkdir(exist_ok=True)
+                try:
+                    path.rename(processing)
+                except FileNotFoundError:
+                    continue
+            message = {}
+            try:
+                message = json.loads(processing.read_text(encoding="utf-8"))
+                r = self.current
+                target = message.get("expectedTurnId")
+                requeue = not r or r.turn_status is not None or not target or target != r.turn_id
+                if not requeue:
+                    try:
+                        result = srv.request("turn/steer", {"threadId": r.thread_id,
+                            "expectedTurnId": r.turn_id, "input": [{"type": "text", "text": message["text"]}]}, timeout=20)
+                    except ProtocolError as exc:
+                        # 仅明确的 turn 结束/前置条件失败可转排队；协议/鉴权等其它错误要可见。
+                        if r.turn_status is not None or re.search(
+                                r"expected active turn id|expected.?turn|turn.*mismatch|no active turn|not.*active turn|turn.*already.*(completed|finished)",
+                                str(exc), re.I):
+                            requeue = True
+                        else:
+                            raise
+                if requeue:
+                    with runs_lock(Path(self.dir).parent):
+                        event = enqueue_steer(Path(self.dir).parent, Path(self.dir).name[5:], message)
+                else:
+                    event = {"_fleet": "steer", "text": message["text"], "at": message["at"],
+                             "fromRun": message.get("fromRun"), "turnId": result["turnId"]}
+                srv.log_event(event)
+                destination = inbox / "sent" / path.name
+            except (OSError, ValueError, KeyError, ProtocolError, subprocess.SubprocessError) as exc:
+                event = {"_fleet": "steer_error", "text": message.get("text"), "at": message.get("at", now_ms()),
+                         "fromRun": message.get("fromRun"), "error": str(exc)}
+                srv.log_event(event)
+                destination = inbox / "failed" / path.name
+            destination.parent.mkdir(exist_ok=True)
+            # 失败保留原始消息及模板，便于明确恢复；成功回执只留结果。
+            write_json(destination, {**(message if event["_fleet"] == "steer_error" else {}), **event})
+            processing.unlink()
 
     def _fail_queued(self, rc: int, note: str):
         # 把 hold.jsonl 里的失败事件（protocol_error / engine_unavailable / thread_busy）抄给每个排队轮次，report 据此出横幅
@@ -613,30 +855,34 @@ class Holder:
         except OSError:
             pass
         for path in self._queued():
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    req = json.load(fh)
-                if req.get("out_jsonl"):
-                    with open(req["out_jsonl"], "a", encoding="utf-8") as fh:
-                        fh.writelines(events)
-                        fh.write(json.dumps({"_fleet": "turn_summary", "rc": rc, "status": "not_started", "error": note}, ensure_ascii=False) + "\n")
-                if req.get("out_stderr"):
-                    with open(req["out_stderr"], "a", encoding="utf-8") as fh:
-                        fh.write(note + "\n")
-                if req.get("out_rc"):
-                    with open(req["out_rc"], "w", encoding="utf-8") as fh:
-                        fh.write(str(rc))
-            finally:
+            with runs_lock(Path(self.dir).parent):
+                if not os.path.isfile(path):
+                    continue
                 try:
-                    os.remove(path)
-                except OSError:
-                    pass
+                    with open(path, encoding="utf-8") as fh:
+                        req = json.load(fh)
+                    if req.get("out_jsonl"):
+                        with open(req["out_jsonl"], "a", encoding="utf-8") as fh:
+                            fh.writelines(events)
+                            fh.write(json.dumps({"_fleet": "turn_summary", "rc": rc, "status": "not_started", "error": note}, ensure_ascii=False) + "\n")
+                    if req.get("out_stderr"):
+                        with open(req["out_stderr"], "a", encoding="utf-8") as fh:
+                            fh.write(note + "\n")
+                    if req.get("out_rc"):
+                        with open(req["out_rc"], "w", encoding="utf-8") as fh:
+                            fh.write(str(rc))
+                finally:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
 
     def serve(self) -> int:
         cfg = self.cfg
         pid_path = os.path.join(self.dir, "bridge.pid")
         with open(pid_path, "w", encoding="utf-8") as fh:
             fh.write(str(os.getpid()))
+        (Path(self.dir) / "steer.pid").write_text(str(os.getpid()))
 
         def on_term(signum, _frame):
             self.stop = True
@@ -661,6 +907,7 @@ class Holder:
             idle_seconds = int(cfg.get("idle_seconds") or 0)
             last_activity = time.time()
             while True:
+                self.consume_steers(srv)
                 queued = self._queued()
                 if not queued:
                     if self.stop or os.path.exists(os.path.join(self.dir, "release")):
@@ -676,9 +923,13 @@ class Holder:
                     srv.dispatch(msg)
                     continue
                 path = queued[0]
-                with open(path, encoding="utf-8") as fh:
-                    req = json.load(fh)
-                os.remove(path)
+                with runs_lock(Path(self.dir).parent):
+                    try:
+                        with open(path, encoding="utf-8") as fh:
+                            req = json.load(fh)
+                        os.remove(path)
+                    except FileNotFoundError:  # 编排者刚把这轮转成引导
+                        continue
                 r = Runner(req)
                 r.server = srv
                 r.thread_id = boot.thread_id
@@ -688,6 +939,9 @@ class Holder:
                 srv.set_log(req["out_jsonl"])
                 srv.log_event({**boot.boot_info, "workDir": req.get("work_dir") or None, "held": True})
                 self.current = r
+                r.consume_steers = lambda: self.consume_steers(srv)
+                r.on_turn_started = lambda: write_json(Path(self.dir) / "active.json",
+                    {"turnId": r.turn_id, "run": Path(req["out_jsonl"]).stem})
                 trc = 1
                 try:
                     trc = r.turn()
@@ -695,6 +949,7 @@ class Holder:
                     trc = r._classify_failure(exc)
                 finally:
                     self.current = None
+                    (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     r.finish(trc)
                     if req.get("out_rc"):
                         with open(req["out_rc"], "w", encoding="utf-8") as fh:
@@ -709,7 +964,7 @@ class Holder:
             srv.log_event({"_fleet": "hold_released", "threadId": boot.thread_id})
             srv.close()
         finally:
-            for name in ("bridge.pid", "release"):
+            for name in ("bridge.pid", "steer.pid", "active.json", "release"):
                 try:
                     os.remove(os.path.join(self.dir, name))
                 except OSError:
@@ -768,6 +1023,22 @@ def probe(argv: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "steer-submit":
+        try:
+            print(submit_steer(argv[1], argv[2], argv[3], argv[4], int(argv[5]) if argv[5] else None))
+            return 0
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"foreman: {exc}", file=sys.stderr)
+            return 1
+    if argv and argv[0] == "steer-wait":
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            rc = steer_result(argv[1])
+            if rc is not None:
+                return rc
+            time.sleep(0.2)
+        print(f"引导已提交，30 秒内未收到回执；消息保留在 {argv[1]}，请检查 sent / failed，勿重复发送", file=sys.stderr)
+        return 2
     if len(argv) >= 2 and argv[0] == "run":
         with open(argv[1], encoding="utf-8") as fh:
             req = json.load(fh)

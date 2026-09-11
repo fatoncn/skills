@@ -697,6 +697,20 @@ exec_call() {
 # 用户 2026-09-11：「foreman 管理的线程需要加锁，解锁最好是编排者明确结束工作再解锁」。每轮起一个进程、跑完就退的话，
 # 轮间锁是空的，桌面端一点开线程就抢走（already has an active writer）。现在一条线程一个常驻执行体（codex_appserver.py serve），
 # 每轮只往它的队列丢请求；release 文件出现才退；空闲超过 codex.hold_idle_minutes 也退（编排者会话没了不至于永久占着）。
+# fd 9 的 flock 与 Python 执行体共享；仅覆盖轮次/队列账本写入，不覆盖等待 turn。
+lock_runs() { exec 9>"$1/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9; }
+unlock_runs() { exec 9>&-; }
+
+hold_start() {  # <hold 目录>，调用者已确认没有活执行体
+  local hd="$1"
+  rm -f "$hd/release" "$hd/hold.rc" "$hd/active.json"
+  python3 -c 'import os, sys
+try: os.setsid()
+except OSError: pass
+os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/null >"$hd/driver.log" 2>&1 9>&- &
+  printf '%s' "$!" > "$hd/bridge.pid"; disown >/dev/null 2>&1 || true
+}
+
 hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
 hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 hold_release_wait() {  # <hold 目录> [秒]
@@ -711,13 +725,23 @@ hold_release_wait() {  # <hold 目录> [秒]
 hold_dispatch() {  # <issue> <票目录> <n> <线程名> <detach> <timeout>
   local issue="$1" dir="$2" n="$3" tname="$4" detach="$5" timeout="$6"
   local hd; hd="$(hold_dir "$dir" "$tname")"; mkdir -p "$hd/queue"
+  local active_n="" tf st
+  for tf in "$dir"/run-*.thread; do
+    [ -f "$tf" ] && [ "$(cat "$tf")" = "$tname" ] || continue
+    st="$(call_state "${tf%.thread}")"
+    case "$st" in RUNNING|WAITING) active_n="${tf##*/run-}"; active_n="${active_n%.thread}"; break ;; esac
+  done
   python3 - "$dir/run-$n.request.json" "$dir/run-$n.rc" "$timeout" <<'PY'
 import json, sys
 p, rc, t = sys.argv[1:4]; r = json.load(open(p)); r["out_rc"] = rc; r["timeout"] = int(t)
 json.dump(r, open(p, "w"), ensure_ascii=False, indent=1)
 PY
   rm -f "$dir/run-$n.rc"; date +%s > "$dir/run-$n.started"
-  cp "$dir/run-$n.request.json" "$hd/queue/run-$n.request.json"   # 先入队再起常驻执行体：它启动失败时会给队列里的轮次写 rc
+  python3 - "$PY_APPSERVER" "$dir/run-$n.request.json" "$hd/queue/run-$n.request.json" <<'PY2'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("bridge", sys.argv[1]); bridge = importlib.util.module_from_spec(spec); spec.loader.exec_module(bridge)
+bridge.write_json(sys.argv[3], json.load(open(sys.argv[2])))
+PY2
   local bpid=""
   if ! hold_alive "$hd"; then
     python3 - "$dir/run-$n.request.json" "$hd/hold.json" "$(cfg codex.hold_idle_minutes 360)" <<'PY'
@@ -729,16 +753,16 @@ keep = ["codex_bin", "home", "cwd", "config_overrides", "thread_id", "developer_
 h = {k: r[k] for k in keep if k in r}; h["idle_seconds"] = int(float(idle) * 60); h["ephemeral"] = False
 json.dump(h, open(dst, "w"), ensure_ascii=False, indent=1)
 PY
-    rm -f "$hd/release" "$hd/hold.rc"
-    python3 -c 'import os, sys
-try: os.setsid()
-except OSError: pass
-os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/null >"$hd/driver.log" 2>&1 &
-    bpid="$!"; printf '%s' "$bpid" > "$hd/bridge.pid"; disown >/dev/null 2>&1 || true
+    hold_start "$hd"
+    bpid="$(cat "$hd/bridge.pid")"
     echo "==> 常驻执行体已起：占着线程「${tname}」直到 foreman release / cleanup，或空闲 $(cfg codex.hold_idle_minutes 360) 分钟"
   fi
   [ -n "$bpid" ] || bpid="$(cat "$hd/bridge.pid" 2>/dev/null || true)"
   printf '%s' "$bpid" > "$dir/run-$n.pid"
+  unlock_runs
+  if [ -n "$active_n" ]; then
+    echo "线程「${tname}」正在跑 run #${active_n}，这一轮 run #${n} 排队；要立刻纠偏：foreman steer ${issue} --from-queue ${n} --thread ${tname}"
+  fi
   if [ "$detach" -eq 1 ]; then
     echo "==> run #$n 已进线程队列（$dir/run-$n.jsonl 持续写入）"
     echo "    进度: foreman status $issue   /   foreman tail $issue"
@@ -984,6 +1008,7 @@ cmd_run() {
   fi
 
   local dir wt; dir="$(issue_dir "$issue")"
+  lock_runs "$dir"
   resolve_pr "$issue" "$prname"; wt="$PR_WT"
   [ -z "$wt" ] || [ -d "$wt" ] || die "PR「${PR_NAME}」的 worktree 不存在（被清理过？）: $wt"
   require_work_dir_in_project "$wt"
@@ -1008,9 +1033,8 @@ cmd_run() {
   [ -n "$model" ] || model="$(role_cfg "$role" model)"
   [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
 
-  local n=1
-  while [ -f "$dir/run-$n.jsonl" ] || [ -f "$dir/run-$n.argv" ]; do n=$((n+1)); done
-  local orig_prompt="$prompt_file"
+  local n; n=$(( $(latest_n "$dir" run) + 1 ))
+  local orig_prompt; orig_prompt="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$prompt_file")"
   if [ "$closeout" -eq 1 ]; then
     # 收尾轮：prompt = 收尾阶段契约（skill 持有，只给实现者）+ 编排者写的收尾任务书
     local tmp_prompt; tmp_prompt="$(mktemp)"
@@ -1054,7 +1078,7 @@ cmd_run() {
       if [ "$full_access" -eq 1 ]; then sb="danger-full-access"; ap="never"; ar=""; fi
       write_request "$dir/run-$n.request.json" \
         "codex_bin=$CODEX_BIN" "home=$run_home" "cwd=$PROJECT_ROOT" "work_dir=$wt" \
-        "thread_name=$thread_name" \
+        "thread_name=$thread_name" "title=$title" "prompt_source=$orig_prompt" \
         "sandbox=$sb" "user_explicitly_approved_full_access=@json:$([ "$full_access" -eq 1 ] && echo true || echo false)" "full_access_reason=$full_access_reason" \
         "config_overrides=@json:$(config_overrides_json workspace-write "$wt" "$effort" "$wt $writable")" \
         "approval_policy=$ap" "approvals_reviewer=$ar" "approvals=$(cfg codex.approvals decline)" \
@@ -1124,10 +1148,15 @@ EOF
     *) die "run: --engine 只能是 codex / codex-exec / pi（收到 '$engine'）" ;;
   esac
 
-  case "$engine" in codex|codex-exec) require_concurrency_slot ;; esac
+  # 已在跑的 hold 只是追加队列，不新增并发线程。
+  case "$engine" in
+    codex) hold_alive "$(hold_dir "$dir" "$tname")" || require_concurrency_slot ;;
+    codex-exec) require_concurrency_slot ;;
+  esac
   if [ "$engine" = "codex" ]; then
     hold_dispatch "$issue" "$dir" "$n" "$tname" "$detach" "$timeout"
   else
+    unlock_runs
     launch_call "$issue" "$dir" run "$n" "$detach"
   fi
   if [ "$detach" -eq 0 ]; then
@@ -1187,10 +1216,9 @@ cmd_review() {
 $unclean"
 
 
-  local last=0 i=1
-  while [ -f "$dir/run-$i.prompt.md" ]; do last=$i; i=$((i+1)); done
-  local n=1
-  while [ -f "$dir/review-$n.jsonl" ] || [ -f "$dir/review-$n.argv" ]; do n=$((n+1)); done
+  lock_runs "$dir"
+  local last; last="$(latest_n "$dir" run)"
+  local n; n=$(( $(latest_n "$dir" review) + 1 ))
   require_pr_idle "$issue" "$PR_NAME" "review-$n"
 
   local inbox
@@ -1295,6 +1323,7 @@ EOF
   fi
 
   case "$engine" in codex|codex-exec) require_concurrency_slot ;; esac
+  unlock_runs
   launch_call "$issue" "$dir" review "$n" "$detach"
   if [ "$detach" -eq 0 ]; then
     local rc; rc="$(cat "$dir/review-$n.rc" 2>/dev/null || echo '?')"
@@ -1335,6 +1364,50 @@ for q in d.get("questions") or []:
 PY
   done
   [ "$any" -eq 1 ] || echo "（没有待回答的提问）"
+}
+
+cmd_steer() {
+  local issue="" tname="implement" text="" file="" from="" path hd
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --thread|--file|--from-queue)
+        [ $# -ge 2 ] || die "steer: $1 缺少参数"
+        case "$1" in --thread) tname="$2" ;; --file) file="$2" ;; --from-queue) from="$2" ;; esac
+        shift 2 ;;
+      -*) die "steer: 未知参数 $1" ;;
+      *) if [ -z "$issue" ]; then issue="$1"; elif [ -z "$text" ]; then text="$1"; else die "steer: 文本请放在同一组引号里"; fi; shift ;;
+    esac
+  done
+  [ -n "$issue" ] || die "用法: foreman steer <票 id> [--thread <名>] (<文本> | --file <f> | --from-queue N)"
+  validate_id "$tname"
+  if [ -n "$from" ]; then
+    case "$from" in *[!0-9]*|0) die "--from-queue 必须是正整数" ;; esac
+    [ -z "$text$file" ] || die "--from-queue 不能与文本 / --file 混用"
+  else
+    [ -z "$text" ] || [ -z "$file" ] || die "文本与 --file 只能选一个"
+    [ -n "$text$file" ] || die "steer: 引导消息不能为空"
+  fi
+  init_repo_context; require_project; require_issue "$issue"
+  local dir; dir="$(issue_dir "$issue")"; hd="$(hold_dir "$dir" "$tname")"
+  if hold_alive "$hd" && [ "$(cat "$hd/steer.pid" 2>/dev/null || true)" != "$(cat "$hd/bridge.pid")" ]; then
+    die "当前常驻执行体尚不支持 steer（升级前启动）；等它结束后 release，再用 run 新起执行体。队列未改动。"
+  fi
+  path="$(python3 "$PY_APPSERVER" steer-submit "$dir" "$tname" "$text" "$file" "$from")" || return $?
+  # 已结束且释放的线程也能恢复：执行体会把未命中活动 turn 的消息转排队。
+  if ! hold_alive "$hd"; then
+    [ -f "$hd/hold.json" ] || die "没有 hold 配置；消息已保留在 $path，用 run 起新一轮"
+    require_concurrency_slot
+    lock_runs "$dir"
+    if ! hold_alive "$hd"; then
+      python3 - "$hd/hold.json" "$(thread_get "$issue" "$tname" ref)" <<'PY2'
+import json,sys
+p,ref=sys.argv[1:]; cfg=json.load(open(p)); cfg["thread_id"]=ref; json.dump(cfg,open(p,"w"),ensure_ascii=False)
+PY2
+      hold_start "$hd"
+    fi
+    unlock_runs
+  fi
+  python3 "$PY_APPSERVER" steer-wait "$path"
 }
 
 cmd_answer() {
@@ -1384,8 +1457,7 @@ cmd_report_inner() {
   local dir; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
-    n=0; local i=1
-    while [ -f "$dir/$kind-$i.jsonl" ]; do n=$i; i=$((i+1)); done
+    n="$(latest_n "$dir" "$kind")"
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
@@ -1468,9 +1540,11 @@ call_state() {
   printf 'NONE'
 }
 latest_n() {
-  local dir="$1" kind="$2" n=0 i=1
-  while [ -f "$dir/$kind-$i.argv" ] || [ -f "$dir/$kind-$i.jsonl" ]; do n=$i; i=$((i+1)); done
-  printf '%s' "$n"
+  python3 - "$1" "$2" <<'PY2'
+import pathlib, re, sys
+pattern = re.compile(re.escape(sys.argv[2]) + r"-(\d+)\.(?:argv|jsonl)$")
+print(max((int(m[1]) for p in pathlib.Path(sys.argv[1]).iterdir() if (m := pattern.fullmatch(p.name))), default=0))
+PY2
 }
 elapsed_of() {
   local f="$1" start now
@@ -1822,6 +1896,9 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            codex-exec = pi-fleet 实测过的 `codex exec` 路径（每票一份 CODEX_HOME），app-server 出问题时的备用
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
+  steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
+                           run 是默认追加入口；已排队的 run 想立即生效用 --from-queue N，直接文本用于纠偏
+                           turn 已结束则转为新排队轮次，30 秒内等回执；默认线程 implement
   questions [<id>...]      执行者向编排者提的、还没回答的问题
   answer <id> [--qid q] <文本>|--file f
                            回答执行者的提问（超过 codex.question_timeout 没回会给兜底答复）
@@ -1856,6 +1933,7 @@ case "$sub" in
   review)    cmd_review "$@" ;;
   questions) cmd_questions "$@" ;;
   answer)    cmd_answer "$@" ;;
+  steer)     cmd_steer "$@" ;;
   status)    cmd_status "$@" ;;
   threads)   cmd_threads "$@" ;;
   wait)      cmd_wait "$@" ;;
@@ -1873,4 +1951,4 @@ case "$sub" in
   *) die "未知命令 '$sub'（-h 看用法）" ;;
 esac
 }
-main "$@"
+main "$@"; exit $?
