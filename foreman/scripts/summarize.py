@@ -680,12 +680,18 @@ def listing(issues_home: str) -> int:
         if not os.path.isfile(meta_path):
             continue
         meta = json.load(open(meta_path, encoding="utf-8"))
-        runs = sorted(f for f in os.listdir(issue_dir) if re.fullmatch(r"run-\d+\.jsonl", f))
+        runs = sorted({re.sub(r"\.cancelled$", ".jsonl", f) for f in os.listdir(issue_dir)
+                       if re.fullmatch(r"run-\d+\.(?:jsonl|cancelled)", f)})
         cost = 0.0
         cx_tokens = 0
         engines = []
         last = "—"
         for run in runs:
+            stem = os.path.join(issue_dir, run[:-len(".jsonl")])
+            if os.path.isfile(stem + ".cancelled"):
+                engines.append("-")
+                last = "CANCELLED: " + open(stem + ".cancelled", encoding="utf-8", errors="replace").read().strip()[:40]
+                continue
             events = load(os.path.join(issue_dir, run))
             if not events:
                 engines.append("?")

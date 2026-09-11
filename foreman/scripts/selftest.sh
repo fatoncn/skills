@@ -65,6 +65,10 @@ if [ -n "$req" ]; then
   printf 'release-test' > "$rd/run-88.thread"; : > "$rd/run-88.argv"
   expect_grep "release 丢弃排队轮次" "已丢弃 run #88" "$F" release 1 --thread release-test
   [ "$(cat "$rd/run-88.rc" 2>/dev/null)" = 130 ] && ! kill -0 "$release_pid" 2>/dev/null && ok "release TERM 超时后 KILL 且轮次可读为 CANCELLED" || bad "release 强杀 / CANCELLED 状态"
+  expect_grep "status 展示统一 CANCELLED 状态" "run#88.*CANCELLED.*release" "$F" status 1
+  expect_grep "report 对 CANCELLED 不报空日志" "run#88 CANCELLED.*release" "$F" report 1 88
+  expect_grep "list 展示 CANCELLED 原因" "CANCELLED:.*release" "$F" list
+  expect_grep "wait 展示 CANCELLED 终态" "run#88 CANCELLED.*release" "$F" wait 1 --timeout 1 --no-report
   rm -rf "$rd/hold-release-test" "$rd"/run-88.*
 fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status

@@ -1505,6 +1505,7 @@ PY
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
+  if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; return 0; fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
   if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
@@ -1579,6 +1580,7 @@ EOF
 
 call_state() {
   local f="$1" pid=""
+  [ -f "$f.cancelled" ] && { printf 'CANCELLED'; return 0; }
   if [ -f "$f.rc" ]; then
     case "$(cat "$f.rc")" in 4) printf 'ENGINE_DOWN' ;; 5) printf 'THREAD_BUSY' ;; *) printf 'DONE' ;; esac
     return 0
@@ -1683,6 +1685,7 @@ EOF
       local tn; tn="$(cat "$f.thread" 2>/dev/null || true)"; [ -n "$tn" ] && [ "$tn" != "$role" ] && role="$role@$tn"
       [ -f "$f.full-access" ] && role="$role!FULL"
       case "$st" in
+        CANCELLED)       printf '%-16s %-9s %-6s %-10s %-8s %s  %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.cancelled")" ;;
         RUNNING|WAITING) printf '%-16s %-9s %-6s %-10s %-8s %s  pid %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.pid")" ;;
         DONE)            printf '%-16s %-9s %-6s %-10s %-8s %s  rc=%s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.rc")" ;;
         ENGINE_DOWN)     printf '%-16s %-9s %-6s %-10s %-8s %s  执行器暂时不可用（看 report 顶部的原始报错），告知用户\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" ;;
@@ -1721,7 +1724,7 @@ EOF
     while IFS='|' read -r kind n; do
       [ -n "$kind" ] || continue
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      case "$st" in RUNNING|QUEUED|WAITING) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
+      case "$st" in RUNNING|QUEUED|WAITING|CANCELLED) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
     done <<EOF
 $(latest_calls_by_thread "$(issue_dir "$id")")
 EOF
@@ -1750,7 +1753,8 @@ EOF
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
     f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
     case "$st" in
-      DONE) if [ -f "$f.cancelled" ]; then echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")"; else echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")"; fi ;;
+      CANCELLED) echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")" ;;
+      DONE) echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")" ;;
       ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障" ;;
       RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
       *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
