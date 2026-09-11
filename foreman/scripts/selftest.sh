@@ -129,6 +129,9 @@ if [ -n "$req3" ]; then
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"
   mkdir -p "$d2/hold-implement/queue"; : > "$d2/hold-implement/queue/run-$nn.request.json"
   expect_grep "wait 把 QUEUED 轮次当在跑" "等待 1 个会话" "$F" wait 2 --timeout 1 --no-report
+  printf 'a' > "$d2/run-96.pr"; printf 'parallel' > "$d2/run-96.thread"; printf '%s' "$sp" > "$d2/run-96.pid"; : > "$d2/run-96.argv"
+  expect_grep "wait 等票下全部线程" "等待 2 个会话" "$F" wait 2 --timeout 1 --no-report
+  rm -f "$d2"/run-96.*
   rm -rf "$d2/hold-implement"; printf '{"questions":[{"id":"q1","text":"用哪张任务？"}]}' > "$d2/run-$nn.questions.json"
   expect_rc "wait 遇到提问返回 3" 3 "$F" wait 2 --timeout 30 --no-report
   expect_grep "wait 遇到提问打出提示" "在等你回答提问" "$F" wait 2 --timeout 30 --no-report

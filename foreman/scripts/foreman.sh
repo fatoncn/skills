@@ -1606,6 +1606,19 @@ all_issues() {
   local d
   for d in "$ISSUES_DIR"/*; do [ -f "$d/meta.json" ] && basename "$d"; done
 }
+latest_calls_by_thread() {  # <票目录>；每条线程只取最后一轮
+  python3 - "$1" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); latest={}
+for p in d.glob("*.thread"):
+    m=re.fullmatch(r"(run|review)-(\d+)\.thread",p.name)
+    if not m: continue
+    key=p.read_text().strip() or p.stem
+    item=(int(m[2]),m[1])
+    if key not in latest or item[0]>latest[key][0]: latest[key]=item
+for n,kind in latest.values(): print(f"{kind}|{n}")
+PY2
+}
 
 # 票下的全部线程（与引擎无关）
 cmd_threads() {
@@ -1689,11 +1702,13 @@ EOF
   local id kind n f st
   for id in ${ids[@]+"${ids[@]}"}; do
     require_issue "$id"
-    for kind in run review; do
-      n="$(latest_n "$(issue_dir "$id")" "$kind")"; [ "$n" -gt 0 ] || continue
+    while IFS='|' read -r kind n; do
+      [ -n "$kind" ] || continue
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
-    done
+    done <<EOF
+$(latest_calls_by_thread "$(issue_dir "$id")")
+EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
