@@ -191,7 +191,7 @@ make_hold_fixture "$cleanup40_dir" shared-pr 301 "$cleanup40_pid" a implement
 make_hold_fixture "$cleanup40_dir" shared-pr 302 "$cleanup40_pid" b implement
 rm -f "$cleanup40_dir/hold-shared-pr/queue/run-301.request.json"; printf '{"run":"run-301"}' > "$cleanup40_dir/hold-shared-pr/active.json"
 expect_grep "cleanup 拒绝删除正在活动的 PR A" "先 foreman release" "$F" cleanup 40 --pr a --force
-cleanup40_a="$T/proj/app/.claude/worktrees/foreman-40-a"; [ -d "$cleanup40_a" ] && kill -0 "$cleanup40_pid" 2>/dev/null && ok "cleanup 拒绝后 PR A 工作树与执行体仍在" || bad "cleanup 误删活动 PR A"
+cleanup40_a="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["prs"]["a"]["worktree"])' "$cleanup40_dir/meta.json")"; [ -d "$cleanup40_a" ] && kill -0 "$cleanup40_pid" 2>/dev/null && ok "cleanup 拒绝后 PR A 工作树与执行体仍在" || bad "cleanup 误删活动 PR A"
 expect_grep "cleanup PR B 只取消排队轮次" "已丢弃 run #302" "$F" cleanup 40 --pr b --force
 if [ -f "$cleanup40_dir/run-302.cancelled" ] && kill -0 "$cleanup40_pid" 2>/dev/null && [ -d "$cleanup40_a" ]; then ok "cleanup PR B 不杀 PR A 执行体"; else bad "cleanup PR B 影响 PR A 执行体"; fi
 kill "$cleanup40_pid" 2>/dev/null; wait "$cleanup40_pid" 2>/dev/null || true
