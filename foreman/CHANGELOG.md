@@ -2,6 +2,8 @@
 
 ## 1.2.2 — 2026-09-11
 
+- 调研配方加一句：有背景 issue 就 `bootstrap --gh-issue` 挂上，线程名 `{ids}` 才带号（cookie 09-11 在桌面端看到三条只有词没有号的调研线程）。调研不必先建 issue，这点不变。
+- 用法文案里的 `<issue-id>` 全改成 `<票 id>`（cookie 09-11 看到调研票的线程名没有 issue 号，追问「框架是不是定死了有 issue」）：1.1 起票的 id 是任意标识符、issue 可选，但脚本用词没跟着改；目录名 `issues/` 与 meta 键 `gh_issue` 不动，改了现有票就认不出来。
 - `wait` 遇到执行者提问（WAITING）立即打出问题并以 rc=3 返回（cookie 09-11 同意）：后台挂一个 `wait` 就同时覆盖「做完了」和「它在问你」两种叫醒，不用再另写轮询 status 的循环。selftest 加两项。
 - `question_timeout` 默认 600 → 1800（cookie 09-11「不要卡太紧」）：执行者用 `request_user_input` 提问时等编排者 30 分钟再兜底。
 - 验收任务书改名 `accept-brief-<id>.md`：原来叫 `accept-<id>.md`，与交付物 `ACCEPT-<PR>.md` 只差大小写，macOS 默认文件系统不区分大小写，验收者一落盘就把任务书覆盖了（#1606 实测）。

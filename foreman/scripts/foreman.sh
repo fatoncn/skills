@@ -512,7 +512,7 @@ cmd_here() {
       *) [ -z "$issue" ] && issue="$1" || die "here: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman here <issue-id> [--base <分支>] [--copy-env <文件>]... [--context <file>] [--gh-issue <n>]   把当前所在的 git 检出登记为这张票的执行目录（不建 worktree）"
+  [ -n "$issue" ] || die "用法: foreman here <票 id> [--base <分支>] [--copy-env <文件>]... [--context <file>] [--gh-issue <n>]   把当前所在的 git 检出登记为这张票的执行目录（不建 worktree）"
   validate_id "$issue"
   init_repo_context; require_project
   local wt branch=""
@@ -561,7 +561,7 @@ $2"; shift 2 ;;
       *) [ -z "$issue" ] && issue="$1" || die "bootstrap: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman bootstrap <issue-id> (--branch <b> | --slug <s> [--type feat]) [--pr <名>] [--base <分支>] [--context <file>] [--gh-issue <n>] [--no-install]   给这张票建一个 PR（worktree + 分支）；一票可多次 bootstrap 建多个 PR，用 --pr 起名"
+  [ -n "$issue" ] || die "用法: foreman bootstrap <票 id> (--branch <b> | --slug <s> [--type feat]) [--pr <名>] [--base <分支>] [--context <file>] [--gh-issue <n>] [--no-install]   给这张票建一个 PR（worktree + 分支）；一票可多次 bootstrap 建多个 PR，用 --pr 起名"
   validate_id "$issue"
   init_repo_context; require_git; require_project
   [ -n "$base" ] || base="$(base_of_repo)"
@@ -756,7 +756,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/
 cmd_release() {
   local issue="$1"; shift || true
   local tname=""; if [ "${1:-}" = "--thread" ]; then tname="$2"; shift 2; fi
-  [ -n "$issue" ] || die "用法: foreman release <issue-id> [--thread <线程名>]   释放常驻执行体占着的线程（编排者明确结束这轮工作时用；cleanup 也会做）"
+  [ -n "$issue" ] || die "用法: foreman release <票 id> [--thread <线程名>]   释放常驻执行体占着的线程（编排者明确结束这轮工作时用；cleanup 也会做）"
   init_repo_context; require_project; require_issue "$issue"
   local dir hd any=0; dir="$(issue_dir "$issue")"
   for hd in "$dir"/hold-*; do
@@ -968,7 +968,7 @@ cmd_run() {
       *) [ -z "$issue" ] && issue="$1" || die "run: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman run <issue-id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
+  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
   [ -n "$prompt_file" ] || die "必须给 --prompt <file>"
   [ -f "$prompt_file" ] || die "prompt 文件不存在: $prompt_file"
   # 完全权限的口子：只有用户在本会话明确要求时才用，且必须把用户原话作为理由传进来（进日志、进摘要横幅）。
@@ -1167,7 +1167,7 @@ cmd_review() {
       *) [ -z "$issue" ] && issue="$1" || die "review: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman review <issue-id> [--prompt REVIEW.md] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]"
+  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]"
   if [ -n "$focus" ]; then [ -f "$focus" ] || die "review: --prompt 文件不存在: ${focus}"; focus="$(cd "$(dirname "$focus")" && pwd)/$(basename "$focus")"; fi
   init_repo_context; require_git; require_project; require_issue "$issue"
   require_roles_confirmed
@@ -1347,7 +1347,7 @@ cmd_answer() {
       *) if [ -z "$issue" ]; then issue="$1"; else text="${text:+$text }$1"; fi; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman answer <issue-id> [--qid <id>] (<回答文本> | --file <f>)"
+  [ -n "$issue" ] || die "用法: foreman answer <票 id> [--qid <id>] (<回答文本> | --file <f>)"
   init_repo_context; require_project; require_issue "$issue"
   [ -n "$file" ] && text="$(cat "$file")"
   [ -n "$text" ] || die "answer: 回答不能为空"
@@ -1398,7 +1398,7 @@ cmd_report() { init_repo_context; require_project; require_issue "$1"; cmd_repor
 
 cmd_tail() {
   local issue="${1:-}" count="${2:-20}"
-  [ -n "$issue" ] || die "用法: foreman tail <issue-id> [N]"
+  [ -n "$issue" ] || die "用法: foreman tail <票 id> [N]"
   init_repo_context; require_project; require_issue "$issue"
   local dir; dir="$(issue_dir "$issue")"
   local kind n f
@@ -1487,7 +1487,7 @@ all_issues() {
 
 # 票下的全部线程（与引擎无关）
 cmd_threads() {
-  local issue="${1:-}"; [ -n "$issue" ] || die "用法: foreman threads <issue-id>"
+  local issue="${1:-}"; [ -n "$issue" ] || die "用法: foreman threads <票 id>"
   init_repo_context; require_project; require_issue "$issue"
   python3 - "$(issue_dir "$issue")" <<'PY2'
 import json, os, sys
@@ -1653,7 +1653,7 @@ cmd_pr() {
       *) [ -z "$issue" ] && issue="$1" || die "pr: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] && [ -n "$title" ] && [ -n "$body_file" ] || die "用法: foreman pr <issue-id> --title <t> --body-file <f> [--base <b>] [--draft|--ready] [--yes]"
+  [ -n "$issue" ] && [ -n "$title" ] && [ -n "$body_file" ] || die "用法: foreman pr <票 id> --title <t> --body-file <f> [--base <b>] [--draft|--ready] [--yes]"
   init_repo_context; require_git; require_project; require_issue "$issue"
   local wt branch gh; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"; gh="$(cfg github.gh gh)"
   [ -n "$wt" ] || die "pr: 票 $issue 没有登记 PR / 工作目录"
@@ -1684,7 +1684,7 @@ cmd_cleanup() {
       *) [ -z "$issue" ] && issue="$1" || die "cleanup: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman cleanup <issue-id> --force [--keep-branch] [--discard-unpushed]"
+  [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--keep-branch] [--discard-unpushed]"
   init_repo_context; require_project; require_issue "$issue"
   local hd; for hd in "$(issue_dir "$issue")"/hold-*; do [ -d "$hd" ] && hold_alive "$hd" && hold_release_wait "$hd"; done
   local wt branch; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
