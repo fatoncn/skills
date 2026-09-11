@@ -184,6 +184,8 @@ $FOREMAN run <id> --prompt <brief.md> --title "…" --detach --timeout 1800   # 
 $FOREMAN run <id> --prompt <rework.md> --title "…" --detach               # 返工自动续同一线程，它记得上一轮
 ```
 
+实现轮需要把工作树之外的交付物写到指定目录时，用 `run --writable <目录>` 显式放开并登记该目录。
+
 线程 cwd 永远是项目根，不用 `cd`；这轮针对哪个 PR、它的 worktree / 分支 / 基线由脚本写进 prompt 顶部的「本轮位置」。一票多 PR 时每条命令用 `--pr` 指定，只有一个时省略。
 
 **调研线程**（排查、核事实、找锚点、复现，交付物给你拆票、下判断）用同一套命令，只是没有 PR：
