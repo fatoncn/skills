@@ -129,9 +129,12 @@ if [ -n "$req3" ]; then
   expect_grep "同一 PR 另一条线程在跑时 run 被拒" "只准一条线程" "$F" run 2 --pr a --role accept --prompt "$T/brief.md" --title x --timeout 30
   expect_grep "同一 PR 另一条线程在跑时 review 被拒" "只准一条线程" "$F" review 2 --pr a --title x --timeout 30
   mkdir -p "$d2/hold-stale"; printf '%s' "$sp" > "$d2/hold-stale/bridge.pid"
+  printf 'a' > "$d2/run-97.pr"; printf 'stale' > "$d2/run-97.thread"; printf '%s' "$sp" > "$d2/run-97.pid"; : > "$d2/run-97.argv"
+  if "$F" status 2 | awk '$2=="run#97" && $5=="RUNNING" {ok=1} END{exit !ok}'; then ok "bridge 存活且 active 缺失的交接窗口仍为 RUNNING"; else bad "交接窗口被误判 DEAD"; fi
   printf 'a' > "$d2/run-98.pr"; printf 'stale' > "$d2/run-98.thread"; printf '%s' "$sp" > "$d2/run-98.pid"; : > "$d2/run-98.argv"
-  expect_grep "守卫把 hold 存活但轮次已死判 DEAD" "DEAD" "$F" status 2
-  rm -rf "$d2/hold-stale" "$d2"/run-98.*
+  printf '{"run":"run-99"}' > "$d2/hold-stale/active.json"
+  if "$F" status 2 | awk '$2=="run#98" && $5=="DEAD" {ok=1} END{exit !ok}'; then ok "active 指向更大轮次时旧轮精确判 DEAD"; else bad "旧轮未判 DEAD"; fi
+  rm -rf "$d2/hold-stale" "$d2"/run-97.* "$d2"/run-98.*
   rm -f "$d2"/run-99.*
   nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"

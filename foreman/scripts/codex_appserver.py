@@ -969,6 +969,8 @@ class Holder:
                     try:
                         with open(path, encoding="utf-8") as fh:
                             req = json.load(fh)
+                        write_json(Path(self.dir) / "active.json",
+                                   {"run": Path(req["out_jsonl"]).stem, "turnId": None, "state": "claimed"})
                         os.remove(path)
                     except FileNotFoundError:  # 编排者刚把这轮转成引导
                         continue
@@ -991,11 +993,11 @@ class Holder:
                     trc = r._classify_failure(exc)
                 finally:
                     self.current = None
-                    (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     r.finish(trc)
                     if req.get("out_rc"):
                         with open(req["out_rc"], "w", encoding="utf-8") as fh:
                             fh.write(str(trc))
+                    (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     srv.set_log(hold_log)
                     srv.log_event({"_fleet": "hold_turn_done", "run": os.path.basename(req.get("out_jsonl") or ""), "rc": trc})
                 last_activity = time.time()

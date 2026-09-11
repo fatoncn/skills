@@ -1587,7 +1587,10 @@ call_state() {
     if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
     if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
       active="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run", ""))' "$hd/active.json" 2>/dev/null || true)"
-      [ "$active" = "$(basename "$f")" ] || { printf 'DEAD'; return 0; }
+      if [ -n "$active" ] && [ "$active" != "$(basename "$f")" ]; then
+        local active_n current_n; active_n="${active#*-}"; current_n="${f##*-}"
+        case "$active_n:$current_n" in *[!0-9:]*) ;; *) [ "$active_n" -gt "$current_n" ] && { printf 'DEAD'; return 0; } ;; esac
+      fi
     fi
     if [ -f "$f.questions.json" ]; then printf 'WAITING'; else printf 'RUNNING'; fi
     return 0
