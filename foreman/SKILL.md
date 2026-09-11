@@ -66,11 +66,11 @@ codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 forem
 
 | 角色 | 干什么 | 档位描述 | 今天的对应（2026-09-11） |
 |---|---|---|---|
-| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + low～medium | gpt-6-astra / low |
+| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + medium | gpt-5.6-sol / medium |
 | `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | 旗舰 + high | gpt-6-astra / high |
 | `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | 次旗舰 + low～medium，便宜但精准 | gpt-5.6-terra / medium |
-| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 与实现者同级（旗舰或次旗舰）+ high 及以上 | gpt-6-astra / high |
-| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 与实现者同级 + medium（比实现者高一档，假「通过」最贵） | gpt-6-astra / medium |
+| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 旗舰 + high 及以上 | gpt-6-astra / high |
+| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 旗舰或次旗舰 + high（比实现者高一档，假「通过」最贵；多是浏览器脏活） | gpt-5.6-sol / high |
 
 **角色文件只写契约**：位置、沙箱事实、分工边界（探针会查什么）、提问方式、输出格式。怎么干活不写在里面，每轮由你写进任务书（模板有可选「工作纪律」段）、复审关注点用 `review --prompt`、收尾规则写在收尾任务书里；角色文件与项目规则或任务书冲突时以后者为准。**收尾不是角色**：由实现者带着原口径续同一线程做（`run --closeout`）。并发上限：本机 `engines.concurrency` 是默认（5），项目 `foreman.toml` 同名键可覆盖；计数是本机所有项目合计在跑的 codex 线程（run 与 review 都算），因为执行者和用户自己的 Codex 抢同一份订阅额度。
 

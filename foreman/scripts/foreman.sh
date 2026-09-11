@@ -125,22 +125,22 @@ concurrency = 5
 # 角色分工（跨项目）：按活分档，每个角色 = 执行器 + 模型 + 推理档 + 角色文件。
 # 三个参考角色 implement / review / mechanical 都必需（foreman setup --confirm 会查）；再多的自己起名，foreman run --role <名> 取用。
 # 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
-#   implement  = 旗舰或次旗舰 + low～medium
+#   implement  = 旗舰或次旗舰 + medium
 #   review     = 旗舰 + high
 #   mechanical = 次旗舰 + low～medium（便宜但精准）
-#   research   = 与实现者同级（旗舰或次旗舰）+ high 及以上（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
-#   accept     = 与实现者同级 + medium，比实现者高一档（验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept）
-# 下面的 model 是 2026-09-11 的对应：旗舰 gpt-6-astra、次旗舰 gpt-5.6-terra。
+#   research   = 旗舰 + high 及以上（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
+#   accept     = 旗舰或次旗舰 + high，比实现者高一档（验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept）
+# 下面的 model 是 2026-09-12 的对应：旗舰 gpt-6-astra；日常写码与验收用 gpt-5.6-sol（cookie 09-12：验收多是浏览器脏活、实现日常量，gpt-6 太奢侈）；轻活 gpt-5.6-terra。
 # 收尾不是角色：PR 收尾由实现者带着原口径续同一线程做（foreman run --closeout），skill 会把收尾阶段契约放进那一轮的 prompt。
 # 项目文件里写同名 [roles.<名>] 可以覆盖。可用模型与推理档用 foreman doctor 看。
 # 每个角色还有一份「角色文件」= 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律），
 # 默认在 ~/.foreman/roles/<名>.md，foreman setup 会从 skill 的 assets/roles/ 拷五份参考角色样例，可随意改；要用别的路径就写 prompt = "<路径>"。
 # 干活纪律不写在角色文件里，每轮由编排者写进任务书。
 [roles.implement]
-# 实现 + 测试等一切写码活；foreman run 的默认角色。档位：旗舰或次旗舰 + low～medium
+# 实现 + 测试等一切写码活；foreman run 的默认角色。档位：旗舰或次旗舰 + medium
 engine = "codex"
-model = "gpt-6-astra"
-effort = "low"
+model = "gpt-5.6-sol"
+effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 
 [roles.review]
@@ -156,16 +156,16 @@ model = "gpt-5.6-terra"
 effort = "medium"
 
 [roles.research]
-# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：与实现者同级（旗舰或次旗舰）+ high 及以上
+# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + high 及以上
 engine = "codex"
 model = "gpt-6-astra"
 effort = "high"
 
 [roles.accept]
-# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：与实现者同级（旗舰或次旗舰）+ medium，比实现者高一档（假「通过」最贵）
+# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high，比实现者高一档（假「通过」最贵）
 engine = "codex"
-model = "gpt-6-astra"
-effort = "medium"
+model = "gpt-5.6-sol"
+effort = "high"
 
 # 再多的角色照样子加，名字自定，foreman run --role <名> 取用。
 
