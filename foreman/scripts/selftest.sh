@@ -223,16 +223,18 @@ mkdir -p "$T/other/proj/r"; echo "# rules" > "$T/other/proj/AGENTS.md"; git -C "
 expect_grep "同名项目目录撞车被拒" "撞车" bash -c "cd '$T/other/proj/r' && '$F' here 9"
 echo "== 摘要器探针 =="
 cat > "$T/probe.jsonl" <<EOF2
-{"_fleet":"thread","threadId":"t1","model":"m","reasoningEffort":"low","cwd":"$T/proj","workDir":"$T/proj/app"}
-{"method":"item/completed","params":{"item":{"type":"fileChange","status":"completed","changes":[{"kind":"update","path":"$T/proj/app/a.ts"},{"kind":"add","path":"$T/proj/other/b.ts"}]}}}
+{"_fleet":"thread","threadId":"t1","model":"m","reasoningEffort":"low","cwd":"/workspace/proj","workDir":"/workspace/proj/app"}
+{"method":"item/completed","params":{"item":{"type":"fileChange","status":"completed","changes":[{"kind":"update","path":"/workspace/proj/app/a.ts"},{"kind":"add","path":"/workspace/proj/other/b.ts"}]}}}
 {"_fleet":"thread_busy","hint":"桌面端占着","error":"already has an active writer"}
 EOF2
 : > "$T/probe.stderr"; echo done > "$T/probe.last.md"
 expect_grep "工作目录之外的改动被标出" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_grep "THREAD_BUSY 横幅" "THREAD_BUSY" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 cp "$T/probe.jsonl" "$T/probe2.jsonl"; : > "$T/probe2.stderr"; echo done > "$T/probe2.last.md"
-python3 -c 'import json,sys; json.dump({"work_dir": sys.argv[2], "config_overrides": [["sandbox_workspace_write.writable_roots", json.dumps([sys.argv[2], sys.argv[3]])]]}, open(sys.argv[1],"w"))' "$T/probe2.request.json" "$T/proj/app" "$T/proj/other"
+python3 -c 'import json,sys; json.dump({"work_dir": sys.argv[2], "config_overrides": [["sandbox_workspace_write.writable_roots", json.dumps([sys.argv[2], sys.argv[3]])]]}, open(sys.argv[1],"w"))' "$T/probe2.request.json" "/workspace/proj/app" "/workspace/proj/other"
 if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md" 2>&1 | grep -q "工作目录之外"; then bad "--writable 目录不算越界"; else ok "--writable 目录不算越界（交付目录）"; fi
+sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/probe-tmp.jsonl"
+if python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md" 2>&1 | grep -q "工作目录之外"; then bad "系统临时目录被误报越界"; else ok "系统临时目录不计工作目录之外"; fi
 expect_grep "复审改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_grep "验收改了文件被标出" "只看不改" python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 python3 - "$T/steer-summary.jsonl" <<'PY2'

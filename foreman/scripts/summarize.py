@@ -169,12 +169,14 @@ def _files_outside_work_dir(state):
         return []
     root = os.path.realpath(wd)
     extra = state.get("writable_extra") or []
+    temp_roots = {os.path.realpath(p) for p in (os.environ.get("TMPDIR"), "/tmp", "/private/tmp") if p}
     out = []
     for kind, path in state.get("files") or []:
         if not isinstance(path, str) or not os.path.isabs(path):
             continue
         real = os.path.realpath(path)
-        if not _inside(real, root) and not any(_inside(real, e) for e in extra):
+        if (not _inside(real, root) and not any(_inside(real, e) for e in extra)
+                and not any(_inside(real, t) for t in temp_roots)):
             out.append((kind, path))
     return out
 
