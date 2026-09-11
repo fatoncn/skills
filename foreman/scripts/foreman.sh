@@ -1999,7 +1999,7 @@ cmd_cleanup() {
   fi
   if [ "$keep_branch" -ne 1 ]; then
     if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch" || die "cleanup: 强制删除分支失败: $branch"
-    else git -C "$MAIN_REPO" branch -d "$branch" || die "cleanup: 分支未合并，拒绝删除: $branch"; fi
+    else git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（本地看不到它已合并，squash 合并很常见）：需要时手动 git branch -D ${branch}，登记照常删"; fi
   fi
   pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
   unlock_runs
