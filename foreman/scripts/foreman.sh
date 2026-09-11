@@ -647,7 +647,6 @@ watchdog() {
   done
   kill -TERM "$target" 2>/dev/null || true
 }
-
 # 一次调用的全部输入先落盘，后台执行体只认这些文件。文件族: <kind>-<n>.{argv,cwd,timeout,rmwt,engine,started,pid,rc,jsonl,stderr}
 stage_call() {
   local dir="$1" kind="$2" n="$3" cwd="$4" timeout="$5" rmwt="$6" engine="$7"; shift 7
@@ -1502,7 +1501,7 @@ PY
     else n="$(latest_n "$dir" "$kind")"; fi
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
-  if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「$filter_pr」"; fi
+  if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
   if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
@@ -1694,6 +1693,8 @@ EOF
 cmd_wait() {
   init_repo_context; require_project
   local timeout=300 interval=20 report=1 ids=() targets=()
+  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0
+  local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
@@ -1708,7 +1709,6 @@ cmd_wait() {
 $(all_issues)
 EOF
   fi
-  local id kind n f st
   for id in ${ids[@]+"${ids[@]}"}; do
     require_issue "$id"
     while IFS='|' read -r kind n; do
@@ -1721,18 +1721,16 @@ EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
-  local waited=0 t left waiting=0
   while [ "$waited" -lt "$timeout" ]; do
     left=0
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
-      if [ "$st" = "WAITING" ]; then
-        local wait_thread="" question_summary=""
-        wait_thread="$(cat "$f.thread" 2>/dev/null || echo '?')"
-        question_summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
-        [ "$waiting" -eq 1 ] || echo "⏳ WAITING：票 $id / 线程 $wait_thread / $question_summary；将照常打印全表后返回 rc=3"
+      if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
+        waiting_id="$id"
+        waiting_thread="$(cat "$f.thread" 2>/dev/null || echo '?')"
+        waiting_summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
         waiting=1
       fi
     done
@@ -1740,7 +1738,7 @@ EOF
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
-  local still=0
+  [ "$waiting" -eq 0 ] || echo "⏳ WAITING：票 $waiting_id / 线程 $waiting_thread / ${waiting_summary}；将照常打印全表后返回 rc=3"
   for t in "${targets[@]}"; do
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
     f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
@@ -1851,7 +1849,7 @@ cmd_cleanup() {
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
     local unpushed
-    git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin $PR_BASE，未能可靠判断是否已推送"
+    git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
     if git -C "$wt" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then
       unpushed=0
     elif git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
