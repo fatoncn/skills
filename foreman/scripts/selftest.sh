@@ -160,6 +160,11 @@ stable_dir="$(dirname "$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/6/run-*.re
 expect_grep "清理首个 PR" "剩余 PR: b" "$F" cleanup 6 --pr stable-a --force
 expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b2 --timeout 30
 [ "$stable_before" = "$(cat "$stable_dir/run-2.thread")" ] && ok "清理默认 PR 后自动线程名保持稳定" || bad "自动线程名漂移"
+expect_grep "登记脏检出 here cleanup 测试" "PR「here」" "$F" here 31
+echo dirty > "$T/proj/app/here-dirty.tmp"
+expect_grep "脏检出 here cleanup 只删登记" "已删登记" "$F" cleanup 31 --force
+[ -f "$T/proj/app/here-dirty.tmp" ] && ok "here cleanup 不动脏检出文件" || bad "here cleanup 动了检出文件"
+rm -f "$T/proj/app/here-dirty.tmp"
 git clone -q --bare "$T/bare" "$T/discard-private.git"; git clone -q "$T/discard-private.git" "$T/proj/discard-app"
 expect_grep "私有远程 bootstrap 丢弃分支测试" "ready: 30" bash -c "cd '$T/proj/discard-app' && '$F' bootstrap 30 --slug discard-private --no-install"
 wt3="$T/proj/discard-app/.claude/worktrees/foreman-30"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard

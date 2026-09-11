@@ -1894,11 +1894,19 @@ cmd_cleanup() {
   done
   [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--pr <名>] [--keep-branch] [--discard-unpushed]（squash 合并仓库请用 --discard-unpushed）"
   init_repo_context; require_project; require_issue "$issue"
-  local wt branch; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
+  local wt branch hd ht; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
   [ -n "$PR_NAME" ] || { echo "$issue 没有登记任何 PR / 工作目录，没有要清理的"; return 0; }
   if [ "$force" -ne 1 ]; then
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
+  fi
+  if [ -n "$PR_HERE" ]; then
+    for hd in "$(issue_dir "$issue")"/hold-*; do
+      [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
+      [ "$(thread_last_pr "$(issue_dir "$issue")" "$ht")" = "$PR_NAME" ] && { hold_cancel_queued "$(issue_dir "$issue")" "$hd"; hold_release_wait "$hd"; }
+    done
+    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
+    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
   fi
   if [ -d "$wt" ]; then
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
@@ -1912,14 +1920,10 @@ cmd_cleanup() {
       [ "$unpushed" = "0" ] || die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
     fi
   fi
-  local hd ht; for hd in "$(issue_dir "$issue")"/hold-*; do
+  for hd in "$(issue_dir "$issue")"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
     [ "$(thread_last_pr "$(issue_dir "$issue")" "$ht")" = "$PR_NAME" ] && { hold_cancel_queued "$(issue_dir "$issue")" "$hd"; hold_release_wait "$hd"; }
   done
-  if [ -n "$PR_HERE" ]; then
-    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
-    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
-  fi
   if [ -d "$wt" ]; then
     git -C "$MAIN_REPO" worktree remove "$wt"
   fi
