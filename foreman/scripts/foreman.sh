@@ -1729,9 +1729,10 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ]; then
-        local tn summary; tn="$(cat "$f.thread" 2>/dev/null || echo '?')"
-        summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
-        [ "$waiting" -eq 1 ] || echo "⏳ WAITING：票 $id / 线程 $tn / $summary；将照常打印全表后返回 rc=3"
+        local wait_thread="" question_summary=""
+        wait_thread="$(cat "$f.thread" 2>/dev/null || echo '?')"
+        question_summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
+        [ "$waiting" -eq 1 ] || echo "⏳ WAITING：票 $id / 线程 $wait_thread / $question_summary；将照常打印全表后返回 rc=3"
         waiting=1
       fi
     done
