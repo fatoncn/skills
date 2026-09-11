@@ -1439,7 +1439,7 @@ cmd_steer() {
   path="$(python3 "$PY_APPSERVER" steer-submit "$dir" "$tname" "$text" "$file" "$from")" || return $?
   # 已结束且释放的线程也能恢复：执行体会把未命中活动 turn 的消息转排队。
   if ! hold_alive "$hd"; then
-    [ -f "$hd/hold.json" ] || die "没有 hold 配置；消息已保留在 $path，用 run 起新一轮"
+    [ -f "$hd/hold.json" ] || die "没有 hold 配置；消息已保留在 ${path}，用 run 起新一轮"
     require_concurrency_slot
     lock_runs "$dir"
     if ! hold_alive "$hd"; then

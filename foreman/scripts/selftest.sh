@@ -25,7 +25,7 @@ expect_rc   "setup（生成角色表 + 角色文件）" 0 "$F" setup
 expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
-expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
+expect_grep "无可续接 turn 时 steer 保留路径边界正确" "消息已保留在 .*\uff0c用 run 起新一轮" "$F" steer 1 "纠偏"
 expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
 echo "== 票 / PR / 线程 =="
