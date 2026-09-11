@@ -68,7 +68,7 @@ if [ -n "$req" ]; then
   rm -rf "$rd/hold-release-test" "$rd"/run-88.*
 fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
-expect_grep "status 说明用时从 request / turn 起算" "request 写入 / turn 开始算" "$F" status
+expect_grep "status 说明用时从派发起算且交接不归零" "QUEUED→RUNNING 不归零" "$F" status
 expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
 expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-mech --role mechanical --prompt "$T/brief.md" --title "机械实现" --timeout 30
 expect_rc "closeout 默认续最后一条 run 的线程" 4 "$F" run 1 --closeout --prompt "$T/brief.md" --title "收尾" --timeout 30
@@ -136,7 +136,15 @@ if [ -n "$req3" ]; then
   nn=1; while [ -f "$d2/run-$nn.argv" ] || [ -f "$d2/run-$nn.jsonl" ]; do nn=$((nn+1)); done
   printf 'implement' > "$d2/run-$nn.thread"; printf '%s' "$sp" > "$d2/run-$nn.pid"; : > "$d2/run-$nn.argv"
   mkdir -p "$d2/hold-implement/queue"; : > "$d2/hold-implement/queue/run-$nn.request.json"
+  old_started=$(( $(date +%s) - 65 )); printf '%s' "$old_started" > "$d2/run-$nn.started"
   expect_grep "wait 把 QUEUED 轮次当在跑" "等待 1 个会话" "$F" wait 2 --timeout 1 --no-report
+  queued_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $6}')"
+  rm -f "$d2/hold-implement/queue/run-$nn.request.json"; printf '{"run":"run-%s"}' "$nn" > "$d2/hold-implement/active.json"
+  running_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $6}')"
+  elapsed_seconds() { case "$1" in *m*s) printf '%s' "$1" | awk -F'm|s' '{print $1*60+$2}' ;; *) return 1 ;; esac; }
+  qsec="$(elapsed_seconds "$queued_elapsed")"; rsec="$(elapsed_seconds "$running_elapsed")"
+  if [ "$rsec" -ge "$qsec" ] && [ "$(cat "$d2/run-$nn.started")" = "$old_started" ]; then ok "QUEUED→RUNNING 主用时沿用派发时间不归零"; else bad "QUEUED→RUNNING 用时归零"; fi
+  rm -f "$d2/hold-implement/active.json"
   printf 'a' > "$d2/run-96.pr"; printf 'parallel' > "$d2/run-96.thread"; printf '%s' "$sp" > "$d2/run-96.pid"; : > "$d2/run-96.argv"
   expect_grep "wait 等票下全部线程" "等待 2 个会话" "$F" wait 2 --timeout 1 --no-report
   rm -f "$d2"/run-96.*

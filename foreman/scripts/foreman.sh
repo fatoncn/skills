@@ -647,6 +647,7 @@ watchdog() {
   done
   kill -TERM "$target" 2>/dev/null || true
 }
+mark_dispatched() { [ -s "$1.started" ] || date +%s > "$1.started"; }
 # 一次调用的全部输入先落盘，后台执行体只认这些文件。文件族: <kind>-<n>.{argv,cwd,timeout,rmwt,engine,started,pid,rc,jsonl,stderr}
 stage_call() {
   local dir="$1" kind="$2" n="$3" cwd="$4" timeout="$5" rmwt="$6" engine="$7"; shift 7
@@ -669,7 +670,7 @@ exec_call() {
   engine="$(cat "$f.engine" 2>/dev/null || true)"; [ -n "$engine" ] || engine=codex
   local argv=() a
   while IFS= read -r -d '' a; do argv[${#argv[@]}]="$a"; done < "$f.argv"
-  if [ ! -s "$f.started" ]; then date +%s > "$f.started"; fi
+  mark_dispatched "$f"
   rm -f "$f.rc"
   local rc=0 pid wd
   if [ "$engine" = "pi" ]; then
@@ -749,7 +750,7 @@ import json, sys
 p, rc, t = sys.argv[1:4]; r = json.load(open(p)); r["out_rc"] = rc; r["timeout"] = int(t)
 json.dump(r, open(p, "w"), ensure_ascii=False, indent=1)
 PY
-  rm -f "$dir/run-$n.rc"; date +%s > "$dir/run-$n.started"
+  rm -f "$dir/run-$n.rc"; mark_dispatched "$dir/run-$n"
   python3 - "$PY_APPSERVER" "$dir/run-$n.request.json" "$hd/queue/run-$n.request.json" <<'PY2'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("bridge", sys.argv[1]); bridge = importlib.util.module_from_spec(spec); spec.loader.exec_module(bridge)
@@ -817,7 +818,7 @@ try: os.setsid()
 except OSError: pass
 os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$dir" "$kind" "$n" </dev/null >/dev/null 2>&1 &
   printf '%s' "$!" > "$dir/$kind-$n.pid"
-  date +%s > "$dir/$kind-$n.started"
+  mark_dispatched "$dir/$kind-$n"
   disown >/dev/null 2>&1 || true
   echo "==> $kind #$n 已在后台启动（$dir/$kind-$n.jsonl 持续写入）"
   echo "    进度: foreman status $issue   /   foreman tail $issue"
@@ -1685,7 +1686,7 @@ EOF
     done
   done
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
-  echo "状态: RUNNING 在跑（用时从本轮 request 写入 / turn 开始算）| WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
+  echo "状态: RUNNING 在跑（主用时从本轮派发、即 request 写入账本起算，QUEUED→RUNNING 不归零）| WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
   local hd hid; for hd in "$ISSUES_DIR"/*/hold-*; do [ -d "$hd" ] && hold_alive "$hd" || continue; hid="$(basename "$(dirname "$hd")")"; echo "HOLD   $hid  线程「$(basename "$hd" | sed 's/^hold-//')」由常驻执行体占着（pid $(cat "$hd/bridge.pid")；桌面端此时打不开它；foreman release $hid 释放）"; done
   echo "本机 codex 线程在跑（所有项目合计）: $(active_codex_runs) / 本项目派发上限 $(concurrency_limit)"
 }
