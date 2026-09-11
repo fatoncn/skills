@@ -160,12 +160,13 @@ stable_dir="$(dirname "$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/6/run-*.re
 expect_grep "清理首个 PR" "剩余 PR: b" "$F" cleanup 6 --pr stable-a --force
 expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b2 --timeout 30
 [ "$stable_before" = "$(cat "$stable_dir/run-2.thread")" ] && ok "清理默认 PR 后自动线程名保持稳定" || bad "自动线程名漂移"
-expect_grep "bootstrap 丢弃分支测试" "ready: 3" "$F" bootstrap 3 --slug discard --no-install
-wt3="$T/proj/app/.claude/worktrees/foreman-3"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
-git -C "$wt3" remote set-url origin "$T/missing-origin"
-expect_grep "cleanup --discard-unpushed 强删本地分支" "已清理" "$F" cleanup 3 --force --discard-unpushed
-git -C "$T/proj/app" remote set-url origin "$T/bare"
-if git -C "$T/proj/app" show-ref --verify --quiet refs/heads/feat/$(date +%y-%m-%d)/discard; then bad "discard 后本地分支仍存在"; else ok "discard 后本地分支已 -D"; fi
+git clone -q --bare "$T/bare" "$T/discard-private.git"; git clone -q "$T/discard-private.git" "$T/proj/discard-app"
+expect_grep "私有远程 bootstrap 丢弃分支测试" "ready: 30" bash -c "cd '$T/proj/discard-app' && '$F' bootstrap 30 --slug discard-private --no-install"
+wt3="$T/proj/discard-app/.claude/worktrees/foreman-30"; echo discard > "$wt3/x"; git -C "$wt3" add x; git -C "$wt3" -c user.email=t@t -c user.name=t commit -q -m discard
+discard_branch="$(git -C "$wt3" branch --show-current)"; mv "$T/discard-private.git" "$T/discard-private.offline"
+expect_grep "cleanup --discard-unpushed 不 fetch 且打印已清理" "已清理" bash -c "cd '$T/proj/discard-app' && '$F' cleanup 30 --force --discard-unpushed"
+if git -C "$T/proj/discard-app" show-ref --verify --quiet "refs/heads/$discard_branch"; then bad "discard 后本地分支仍存在"; else ok "discard 后本地分支已 -D"; fi
+mv "$T/discard-private.offline" "$T/discard-private.git"
 expect_grep "bootstrap 已合入 base 测试" "ready: 4" "$F" bootstrap 4 --slug merged --no-install
 wt4="$T/proj/app/.claude/worktrees/foreman-4"; echo merged > "$wt4/y"; git -C "$wt4" add y; git -C "$wt4" -c user.email=t@t -c user.name=t commit -q -m merged
 git -C "$T/proj/app" -c user.email=t@t -c user.name=t merge --no-ff "$(git -C "$wt4" branch --show-current)" -m merged >/dev/null; git -C "$T/proj/app" push -q origin main
