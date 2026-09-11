@@ -387,12 +387,13 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)' "$(issue_dir "$1")/meta.js
 }
 pr_names() { python3 -c 'import json,sys
 m=json.load(open(sys.argv[1])); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); print("\n".join(prs.keys()))' "$(issue_dir "$1")/meta.json"; }
-default_pr_name() {  # 旧票缺 default_pr 时按首个登记 PR 回填
+default_pr_of_dir() {  # 旧票缺 default_pr 时按首个登记 PR 回填
   python3 -c 'import json,sys
 p=sys.argv[1]; m=json.load(open(p)); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); name=m.get("default_pr") or (next(iter(prs),""));
 if name and not m.get("default_pr"): m["default_pr"]=name; json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
-print(name)' "$(issue_dir "$1")/meta.json"
+print(name)' "$1/meta.json"
 }
+default_pr_name() { default_pr_of_dir "$(issue_dir "$1")"; }
 # 选定这轮针对哪个 PR：给了名就用它；没给且只有一个就用那个；没有 PR 则全空（纯调研 / 无工作目录）；多个不给名就拒绝。
 # 设 PR_NAME PR_WT PR_BRANCH PR_BASE PR_HERE
 resolve_pr() {  # <issue> [<pr名>]
@@ -1637,7 +1638,7 @@ print(max((int(m[1]) for p in pathlib.Path(sys.argv[1]).iterdir() if (m := patte
 PY2
 }
 last_implementation_thread() {  # <票目录> <PR 名>
-  python3 - "$1" "$2" "$(default_pr_name "$1")" <<'PY2'
+  python3 - "$1" "$2" "$(default_pr_of_dir "$1")" <<'PY2'
 import pathlib,re,sys
 d=pathlib.Path(sys.argv[1]); pr,default=sys.argv[2:]; found=[]
 numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
@@ -1652,7 +1653,7 @@ print(max(found)[1] if found else "")
 PY2
 }
 thread_for_pr_role() {  # <票目录> <PR 名> <角色>
-  python3 - "$1" "$2" "$3" "$(default_pr_name "$1")" <<'PY2'
+  python3 - "$1" "$2" "$3" "$(default_pr_of_dir "$1")" <<'PY2'
 import pathlib,re,sys
 d=pathlib.Path(sys.argv[1]); pr,role,default=sys.argv[2:]; found=[]
 numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
@@ -1666,7 +1667,7 @@ print(max(found)[1] if found else "")
 PY2
 }
 thread_last_pr() {  # <票目录> <线程名>
-  python3 - "$1" "$2" "$(default_pr_name "$1")" <<'PY2'
+  python3 - "$1" "$2" "$(default_pr_of_dir "$1")" <<'PY2'
 import pathlib,re,sys
 d=pathlib.Path(sys.argv[1]); wanted,default=sys.argv[2:]; found=[]
 numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
@@ -1678,7 +1679,7 @@ print(max(found)[1] if found else "")
 PY2
 }
 round_pr() { # <票目录> <run-N|review-N>
-  if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_name "$1"; fi
+  if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_of_dir "$1"; fi
 }
 hold_active_run() { # <票目录> <hold 目录>；兼容没有 active.json 的旧执行体
   python3 - "$1" "$2" <<'PY2'
@@ -1718,7 +1719,7 @@ hold_cancel_queued_pr() { # <票目录> <hold 目录> <PR>
   unlock_runs
 }
 cleanup_holds_preflight() { # <票目录> <PR>
-  local dir="$1" pr="$2" hd active st
+  local dir="$1" pr="$2" hd="" active="" st=""
   for hd in "$dir"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; active="$(hold_active_run "$dir" "$hd")"; [ -n "$active" ] || continue
     [ "$(round_pr "$dir" "$active")" = "$pr" ] || continue; st="$(call_state "$dir/$active")"

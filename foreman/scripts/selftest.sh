@@ -222,7 +222,7 @@ make_hold_fixture "$wait42_dir" done-no-log 21 "$wait42_done_pid" here implement
 make_hold_fixture "$wait42_dir" still-running 22 "$wait42_running_pid" here implement; rm -f "$wait42_dir/hold-still-running/queue/run-22.request.json"; printf '{"run":"run-22"}' > "$wait42_dir/hold-still-running/active.json"
 ( sleep 1; printf 0 > "$wait42_dir/run-21.rc"; kill "$wait42_done_pid" 2>/dev/null ) &
 wait42_out="$("$F" wait 42 --timeout 2 --interval 1 2>&1)"; wait42_rc=$?
-if [ "$wait42_rc" -eq 2 ] && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#21 ' && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#22 ' && printf '%s\n' "$wait42_out" | grep -q '无日志，跳过摘要'; then ok "wait 缺日志摘要不覆盖 rc=2 且全表保留"; else bad "wait 摘要 die 隔离" "rc=$wait42_rc"; fi
+if [ "$wait42_rc" -eq 2 ] && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#21 ' && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#22 ' && printf '%s\n' "$wait42_out" | grep -q '无日志，跳过摘要'; then ok "wait 缺日志摘要不覆盖 rc=2 且全表保留"; else bad "wait 摘要 die 隔离" "rc=$wait42_rc，尾行: $(printf '%s\n' "$wait42_out" | tail -1)"; fi
 kill "$wait42_running_pid" 2>/dev/null; wait "$wait42_done_pid" 2>/dev/null || true; wait "$wait42_running_pid" 2>/dev/null || true
 rm -rf "$wait42_dir/hold-done-no-log" "$wait42_dir/hold-still-running"; rm -f "$wait42_dir"/run-21.* "$wait42_dir"/run-22.*
 expect_grep "wait 摘要隔离测试清理" "已删登记" "$F" cleanup 42 --force
