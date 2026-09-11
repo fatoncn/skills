@@ -1039,7 +1039,7 @@ cmd_run() {
       assemble_dev_instructions "$role_file" "$issue" "$extra_ctx" "$dir/run-$n.dev.md" 1
       # 上一轮若是 --detach 且没走过 wait，thread_id 已由执行体直接写进 meta；这里只需读
       local thread; thread="$(thread_get "$issue" "$tname" ref)"
-      [ -n "$qtimeout" ] || qtimeout="$(cfg codex.question_timeout 10800)"
+      [ -n "$qtimeout" ] || qtimeout="$(cfg codex.question_timeout 1800)"
       local thread_name; thread_name="$(build_thread_name "$issue" "$title" "$orig_prompt" "$( [ "$closeout" -eq 1 ] && echo 收尾 || { [ "$n" -gt 1 ] && echo "返工 第${n}轮" || echo 实现; } )")"
       local run_home="$CODEX_HOME_DIR"
       if [ -n "$thread" ]; then
