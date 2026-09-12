@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -125,6 +126,7 @@ def blank_state() -> dict:
         "turns": 0,
         "errors": [],
         "tool_errors": [],
+        "command_results": {},       # sha256(完整命令 + cwd) → 展示、末次结果、历史失败数
         "forbidden": [],
         "approvals": [],           # appserver: 回到执行体的审批请求及决定
         "auto_reviews": [],        # appserver: Codex 自动审查（替我审批）的决定
@@ -169,14 +171,29 @@ def _files_outside_work_dir(state):
         return []
     root = os.path.realpath(wd)
     extra = state.get("writable_extra") or []
+    temp_roots = {os.path.realpath(p) for p in (os.environ.get("TMPDIR"), "/tmp", "/private/tmp") if p}
     out = []
     for kind, path in state.get("files") or []:
         if not isinstance(path, str) or not os.path.isabs(path):
             continue
         real = os.path.realpath(path)
-        if not _inside(real, root) and not any(_inside(real, e) for e in extra):
+        if (not _inside(real, root) and not any(_inside(real, e) for e in extra)
+                and not any(_inside(real, t) for t in temp_roots)):
             out.append((kind, path))
     return out
+
+
+def _visible_changed_files(state):
+    """交付目录里的 fileChange 是验收/调研产物，不混进“模型改代码”列表。"""
+    wd = state.get("work_dir")
+    if not wd:
+        return state.get("files") or []
+    root = os.path.realpath(wd)
+    delivery = [e for e in (state.get("writable_extra") or [])
+                if not _inside(root, e) and not _inside(e, root)]
+    return [(kind, path) for kind, path in (state.get("files") or [])
+            if not (isinstance(path, str) and os.path.isabs(path)
+                    and any(_inside(os.path.realpath(path), e) for e in delivery))]
 
 
 def probe_forbidden(state, blob: str, shown, role: str | None = None):
@@ -401,9 +418,17 @@ def scan_appserver(events, role=None):
                 command = item.get("command") or ""
                 exit_code = item.get("exitCode")
                 status = item.get("status")
-                if status in ("failed", "declined") or exit_code not in (0, None):
-                    state["tool_errors"].append((f"exit {exit_code} {status or ''}".strip(),
-                                                 f"{stringify(command, 200)}\n      {stringify(item.get('aggregatedOutput'), 300)}"))
+                cwd = item.get("cwd") or ""
+                identity = json.dumps([command, cwd], ensure_ascii=False, sort_keys=True, default=str)
+                command_key = hashlib.sha256(identity.encode()).hexdigest()
+                failed = status in ("failed", "declined") or exit_code not in (0, None)
+                previous = state["command_results"].get(command_key, {})
+                state["command_results"][command_key] = {
+                    "command": stringify(command, 500), "cwd": stringify(cwd, 160),
+                    "exit": exit_code, "status": status,
+                    "output": stringify(item.get("aggregatedOutput"), 300),
+                    "failures": previous.get("failures", 0) + int(failed),
+                }
                 probe_forbidden(state, command, stringify(command, 300), role)
             elif itype == "fileChange":
                 for change in item.get("changes") or []:
@@ -432,7 +457,7 @@ def scan_appserver(events, role=None):
             ))
         elif method == "warning":
             msg = stringify(params.get("message") or params, 300)
-            if "Automatic approval review" not in msg:
+            if "Automatic approval review" not in msg and "Skill descriptions were shortened" not in msg:
                 state["notices"].append("warning: " + msg)
         elif method == "thread/tokenUsage/updated":
             usage = (params.get("tokenUsage") or {}).get("total") or {}
@@ -463,6 +488,10 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         return 1
     state = scan(events, engine, role)
     state["writable_extra"] = _extra_writable_roots(log_path)
+    visible_files = _visible_changed_files(state)
+    final_command_errors = [result for result in state["command_results"].values()
+                            if result["status"] in ("failed", "declined") or result["exit"] not in (0, None)]
+    historical_command_failures = sum(result["failures"] for result in state["command_results"].values())
     eng = state["engine"]
     codex_like = eng in ("codex", "appserver")
 
@@ -474,7 +503,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     extra = f"  effort={state['effort']}" if state.get("effort") else ""
     dur = f"  用时={state['duration_ms'] // 1000}s" if state.get("duration_ms") else ""
     print(f"{label}={state['id']}  model={state['model'] or '—'}{extra}  turns={state['turns']}  "
-          f"tools={state['tool_calls']}" + (f"  files={len(state['files'])}" if codex_like else "")
+          f"tools={state['tool_calls']}" + (f"  files={len(visible_files)}" if codex_like else "")
           + (f"  web_search={state['web_searches']}" if state["web_searches"] else "") + dur)
     if codex_like:
         print(f"tokens: in={state['in_tokens']} (cached {state['cached_tokens']})  out={state['out_tokens']}"
@@ -482,10 +511,18 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     else:
         print(f"cost=${state['cost']:.4f}  tokens={state['tokens']}")
 
+    if final_command_errors:
+        print("\n--- 最后仍失败的命令（同一命令仅末次结果）---")
+        for result in final_command_errors[:10]:
+            print(f"  [exit {result['exit']} {result['status'] or ''}] {result['command']}  cwd={result['cwd'] or '—'}")
+            if result["output"]:
+                print(f"      {result['output']}")
+    if historical_command_failures:
+        print(f"迭代中命令失败 {historical_command_failures} 次；上节仅列各完整命令 + cwd 的末次仍失败结果")
+
     blockers = []
-    # 复审 / 验收契约：只看不改（复审是只读沙箱，写不进去；验收跑在 workspace-write 要能起服务、用浏览器，所以靠这里事后核）
-    if role in ("review", "accept") and state.get("files"):
-        blockers.append(f"{role} 改了 {len(state['files'])} 个文件（该角色只看不改，改了这轮作废）")
+    # accept / research 是否改了工作树只看 foreman.sh 的起跑前后 porcelain 探针；
+    # fileChange 事件可能是 --writable 交付物，这里只列事实，不据此判这轮作废。
     if state.get("thread_busy"):
         blockers.append("线程被占用：" + state["thread_busy"] + " —— 不是任务失败，这轮什么都没跑")
     if state.get("engine_down"):
@@ -499,9 +536,9 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
             blockers.append("会话没有正常结束（无 agent_settled）：可能超时被杀、崩溃或被中断")
     if state["errors"]:
         blockers.append(f"模型侧 / 协议错误 {len(state['errors'])} 条")
-    if state["tool_errors"]:
-        blockers.append(f"命令非零退出或被拒 {len(state['tool_errors'])} 次（迭代中出现属正常，看下面清单判断）"
-                        if codex_like else f"工具执行失败 {len(state['tool_errors'])} 次")
+    if final_command_errors or state["tool_errors"]:
+        blockers.append(f"最后仍失败的命令 {len(final_command_errors)} 条；其它工具失败 {len(state['tool_errors'])} 条"
+                        if codex_like else f"工具执行失败 {len(final_command_errors) + len(state['tool_errors'])} 次")
     if state["forbidden"]:
         blockers.append(f"命中越界命令探针 {len(state['forbidden'])} 次")
     outside = _files_outside_work_dir(state)
@@ -562,7 +599,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
             print(f"  ? {q}")
 
     if state["tool_errors"]:
-        print("\n--- 工具/命令失败（最多 10 条）---")
+        print("\n--- 其它工具失败明细（最多 10 条）---")
         for name, result in state["tool_errors"][:10]:
             print(f"  [{name}] {result}")
         if codex_like and any("xcrun_db" in r for _, r in state["tool_errors"]):
@@ -573,12 +610,12 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         print(f"\n--- 工作目录之外的改动（{len(outside)} 个，需要编排者判断：项目根整体可写，但本轮只该改 {state['work_dir']}）---")
         for kind, path in outside[:40]:
             print(f"  {kind:<8} {path}")
-    if state["files"]:
+    if visible_files:
         print("\n--- 模型直接改动的文件（不含它经 shell 改的）---")
-        for kind, path in state["files"][:40]:
+        for kind, path in visible_files[:40]:
             print(f"  {kind:>6}  {path}")
-        if len(state["files"]) > 40:
-            print(f"  …(+{len(state['files']) - 40})")
+        if len(visible_files) > 40:
+            print(f"  …(+{len(visible_files) - 40})")
 
     print(f"\n--- {eng} 的交付报告（最后一条消息）---")
     final = state["final"]
@@ -655,12 +692,18 @@ def listing(issues_home: str) -> int:
         if not os.path.isfile(meta_path):
             continue
         meta = json.load(open(meta_path, encoding="utf-8"))
-        runs = sorted(f for f in os.listdir(issue_dir) if re.fullmatch(r"run-\d+\.jsonl", f))
+        runs = sorted({re.sub(r"\.cancelled$", ".jsonl", f) for f in os.listdir(issue_dir)
+                       if re.fullmatch(r"run-\d+\.(?:jsonl|cancelled)", f)})
         cost = 0.0
         cx_tokens = 0
         engines = []
         last = "—"
         for run in runs:
+            stem = os.path.join(issue_dir, run[:-len(".jsonl")])
+            if os.path.isfile(stem + ".cancelled"):
+                engines.append("-")
+                last = "CANCELLED: " + open(stem + ".cancelled", encoding="utf-8", errors="replace").read().strip()[:40]
+                continue
             events = load(os.path.join(issue_dir, run))
             if not events:
                 engines.append("?")

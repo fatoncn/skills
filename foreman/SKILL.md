@@ -2,7 +2,7 @@
 name: foreman
 description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.2.6"
+  version: "1.3.0"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码
@@ -184,6 +184,8 @@ $FOREMAN run <id> --prompt <brief.md> --title "…" --detach --timeout 1800   # 
 $FOREMAN run <id> --prompt <rework.md> --title "…" --detach               # 返工自动续同一线程，它记得上一轮
 ```
 
+实现轮需要把工作树之外的交付物写到指定目录时，用 `run --writable <目录>` 显式放开并登记该目录。
+
 线程 cwd 永远是项目根，不用 `cd`；这轮针对哪个 PR、它的 worktree / 分支 / 基线由脚本写进 prompt 顶部的「本轮位置」。一票多 PR 时每条命令用 `--pr` 指定，只有一个时省略。
 
 **调研线程**（排查、核事实、找锚点、复现，交付物给你拆票、下判断）用同一套命令，只是没有 PR：
@@ -195,7 +197,7 @@ $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writ
 
 调研不必先建 issue，票 id 用一个词就行；但**有背景 issue 就 `--gh-issue` 挂上**，线程名的 `{ids}` 才带号，桌面端一眼能认出它归哪张票。交付目录放项目约定的中间产物目录（项目没规定就 `~/.foreman/projects/<项目>/batches/<批次>/`）；`--writable` 把它放开，`report` 的越界探针把它当作内部，改到检出里的文件照样标出。调研票不走 `check` / `diff` / `pr`，验收就是你逐条核交付物（阶段 4）。追问续同一线程（`run` 不带 `--role` 自动取记录）；用完 `cleanup <id> --force`（分支没有提交，直接删）。任务书模板 `research-<id>.md` 见 `references/issue-pr-flow.md`：问事实不问方案。
 
-- **线程按对象模型走**：`run` 默认开或续 `implement` 线程，`--role mechanical` 走 `mechanical` 线程，`--role research` 走 `research` 线程（调研，见上），`--role accept` 走 `accept` 线程（验收，见阶段 4），`--closeout` 续 `implement` 并把 `assets/CLOSEOUT.md`「收尾阶段契约」（放行对自己这张 PR 的 push / gh 写、本轮输出格式）放在 prompt 顶部、探针按收尾白名单判；`--thread <名>` 另起；续线程不用再给角色和引擎。同名线程不覆盖，要重开就 `release` 旧的再 `--thread <新名>` 另起（旧线程的账本保留）；换引擎只能另起线程，它不记得旧线程干过什么，返工上下文要在 prompt 里补。复审每次新开 `review-N`。`threads <id>` 看全表；没有这本账，隔几个小时或换个会话回来就找不到之前的线程。
+- **线程按对象模型走**：`run` 默认开或续 `implement` 线程；一票多 PR 时，非默认 PR 的 `run --pr <名>` 会自动用 `<角色>@<pr>`（如 `implement@b`）并行，仍可显式 `--thread` 覆盖。`--role mechanical` 走 `mechanical` 线程，`--role research` 走 `research` 线程（调研，见上），`--role accept` 走 `accept` 线程（验收，见阶段 4）。`--closeout` 默认续目标 PR 最近的 `implement` / `mechanical` 实现线程，显式 `--role` / `--thread` 优先，并把 `assets/CLOSEOUT.md`「收尾阶段契约」放在 prompt 顶部、探针按收尾白名单判；`--thread <名>` 另起；续线程不用再给角色和引擎。同名线程不覆盖，要重开就 `release` 旧的再 `--thread <新名>` 另起（旧线程的账本保留）；换引擎只能另起线程，它不记得旧线程干过什么，返工上下文要在 prompt 里补。复审每次新开 `review-N`。`threads <id>` 看全表；没有这本账，隔几个小时或换个会话回来就找不到之前的线程。
 - **档位**来自全局 `[roles.*]`（项目同名可覆盖），单次 `--model` / `--effort` 可覆盖；派活后看 `report` 首行的 `model= effort=` 确认，不要等验收才发现。到并发上限脚本拒绝派发，`status` 尾行显示当前在跑数。
 - **线程由常驻执行体占着（写锁）**：第一次 `run` 起一个常驻执行体载入线程并一直持有它的写锁，之后每轮只是往它的队列丢请求（同一线程的轮次排队，`status` 里 `QUEUED`）；桌面端在此期间打不开这条线程，也就不会再出现「already has an active writer」。**编排者明确结束这轮工作时 `release <id>` 释放**，`cleanup` 也会释放；空闲超过 `codex.hold_idle_minutes`（默认 360）自动释放，免得编排者会话没了还永久占着。
 - **并发派活一律 `--detach`**：宿主 shell 有 10 分钟上限，一轮 20～40 分钟正常。前台档只适合几分钟的小活。
@@ -248,7 +250,7 @@ $FOREMAN run <id> --role accept --prompt <accept-id.md> --title "…" --writable
 
 ## 阶段 5 · 收口：PR、review 闭环、报可合
 
-执行者只在 worktree 里 commit；**首次 push / 建 draft PR / 建 issue 由你直接做，不用先问**（cookie 09-11：每张票都要走的常规对外动作、没有破坏性，编排者自己拍板；仍要人按的只有项目规则点名的：合并由人、生产 / 动钱 / 部署平台的写操作、改写共享历史、删远端分支）；之后收尾轮的 push、回复 review 由实现者按收尾契约做（`run --closeout`）：
+执行者只在 worktree 里 commit；**首次 push / 建 draft PR / 建 issue 由你直接做，不用先问**（cookie 09-11：每张票都要走的常规对外动作、没有破坏性，编排者自己拍板；仍要人按的只有项目规则点名的：合并由人、生产 / 动钱 / 部署平台的写操作、改写共享历史、删远端分支）；之后收尾轮的 push、回复 review 由实现者按收尾契约做（`run --closeout` 默认续目标 PR 最近的 `implement` / `mechanical` 实现线程，显式 `--role` / `--thread` 优先）：
 
 ```bash
 git -C <wt> log --oneline origin/<base>..HEAD          # 提交历史干净
@@ -290,15 +292,15 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
 | `$FOREMAN here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
 | `$FOREMAN run <id> --prompt f --title 内容 [--pr 名] [--role 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|codex-exec\|pi] [--model] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮；并发一律 `--detach`；`--role research` / `--role accept` 配 `--writable <交付目录>` = 调研 / 验收线程 |
-| `$FOREMAN review <id> [--pr 名] [--prompt f] [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
+| `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 纠偏；把刚排队的改成立刻生效，turn 已结束自动转排队 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
-| `$FOREMAN status` / `wait [--timeout 300]` / `tail <id>` | 收敛与进度；wait 返回 2 = 还在跑、3 = 执行者在提问；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
+| `$FOREMAN status` / `wait [<id>...] [--timeout 300]` / `tail <id>` | 收敛与进度；`wait <id>` 只等给定票的全部线程并逐线程打印状态，不给 id 才等全部票；同一线程若有被取消的尾轮会另列一行；WAITING 会先点名票 / 线程 / 问题摘要、照常打印全表再返回 3，仍在跑返回 2；**wait 阻塞会话，放后台跑**；`ENGINE_DOWN` = 执行器不可用，告知用户 |
 | `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
-| `$FOREMAN report <id> [N\|reviewN]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件 |
+| `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
 | `$FOREMAN release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
-| `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree（未提交 / 未推送会拒绝；票、线程与日志保留） |
+| `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree；目标 PR 有在跑 / 排队轮次时拒绝，先 `release`；未提交 / 未推送也会拒绝，票、线程与日志保留 |
 
 ## 参考
 

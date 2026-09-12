@@ -17,6 +17,7 @@ CODEX_HOME_MODE=""
 GLOBAL_TOML="$FOREMAN_ROOT/config.toml"
 ROLES_DIR="$FOREMAN_ROOT/roles"   # 每个角色一份角色文件（契约），foreman setup 从 assets/roles/ 拷参考角色样例
 REQUIRED_ROLES="implement review mechanical"   # 三个参考角色全必需；再多的自定义可选。收尾不是角色：实现者续线程，见 assets/CLOSEOUT.md
+HOLD_TERM_GRACE=25  # 必须 >= codex_appserver.py INTERRUPT_GRACE(20) + 5，给执行体写 rc/last 的收尾窗口
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 
@@ -386,6 +387,13 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)' "$(issue_dir "$1")/meta.js
 }
 pr_names() { python3 -c 'import json,sys
 m=json.load(open(sys.argv[1])); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); print("\n".join(prs.keys()))' "$(issue_dir "$1")/meta.json"; }
+default_pr_of_dir() {  # 旧票缺 default_pr 时按首个登记 PR 回填
+  python3 -c 'import json,sys
+p=sys.argv[1]; m=json.load(open(p)); prs=m.get("prs") or ({"default":{}} if m.get("worktree") else {}); name=m.get("default_pr") or (next(iter(prs),""));
+if name and not m.get("default_pr"): m["default_pr"]=name; json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
+print(name)' "$1/meta.json"
+}
+default_pr_name() { default_pr_of_dir "$(issue_dir "$1")"; }
 # 选定这轮针对哪个 PR：给了名就用它；没给且只有一个就用那个；没有 PR 则全空（纯调研 / 无工作目录）；多个不给名就拒绝。
 # 设 PR_NAME PR_WT PR_BRANCH PR_BASE PR_HERE
 resolve_pr() {  # <issue> [<pr名>]
@@ -406,6 +414,9 @@ m=json.load(open(sys.argv[1])); print(" ".join(str(v.get("gh_pr")) for v in (m.g
 
 validate_id() {
   case "$1" in *[!a-zA-Z0-9._-]*|'') die "issue id 只能用字母数字和 . _ -（收到 '$1'）" ;; esac
+}
+validate_thread_id() {
+  case "$1" in *[!a-zA-Z0-9._@-]*|'') die "线程名只能用字母数字和 . _ @ -（收到 '$1'）" ;; esac
 }
 
 # ---------- init / config ----------
@@ -537,6 +548,7 @@ if ghi: meta["gh_issue"] = ghi
 json.dump(meta, open(path, "w"), indent=2, ensure_ascii=False)
 PY2
   pr_set "$issue" here worktree "$wt"; pr_set "$issue" here branch "$branch"; pr_set "$issue" here base "$base"; pr_set "$issue" here registered_here 1
+  default_pr_name "$issue" >/dev/null
   if [ "$IN_GIT" -eq 1 ]; then echo "==> 已登记 $issue 的 PR「here」→ 当前检出 ${wt}（分支 ${branch}，base ${base}）。线程 cwd 仍是项目根 ${PROJECT_ROOT}；cleanup 对 here 只删登记不删目录。"
   else echo "==> 已登记 $issue 的工作目录「here」→ ${wt}（非 git：只有 run / status / report / check / cleanup 可用）。"; fi
 }
@@ -627,6 +639,7 @@ if ghi: meta["gh_issue"] = ghi
 json.dump(meta, open(path, "w"), indent=2, ensure_ascii=False)
 PY
   pr_set "$issue" "$prname" worktree "$wt"; pr_set "$issue" "$prname" branch "$branch"; pr_set "$issue" "$prname" base "$base"; pr_set "$issue" "$prname" repo_slug "$REPO_SLUG"
+  default_pr_name "$issue" >/dev/null
   echo "==> ready: $issue  PR「${prname}」"
   echo "    线程 cwd 永远是项目根 ${PROJECT_ROOT}，不用 cd；这个 PR 的 worktree 会写进每轮 prompt 顶部的「本轮位置」"
   echo "    worktree: $wt"
@@ -644,7 +657,7 @@ watchdog() {
   done
   kill -TERM "$target" 2>/dev/null || true
 }
-
+mark_dispatched() { [ -s "$1.started" ] || date +%s > "$1.started"; }
 # 一次调用的全部输入先落盘，后台执行体只认这些文件。文件族: <kind>-<n>.{argv,cwd,timeout,rmwt,engine,started,pid,rc,jsonl,stderr}
 stage_call() {
   local dir="$1" kind="$2" n="$3" cwd="$4" timeout="$5" rmwt="$6" engine="$7"; shift 7
@@ -667,7 +680,7 @@ exec_call() {
   engine="$(cat "$f.engine" 2>/dev/null || true)"; [ -n "$engine" ] || engine=codex
   local argv=() a
   while IFS= read -r -d '' a; do argv[${#argv[@]}]="$a"; done < "$f.argv"
-  if [ ! -s "$f.started" ]; then date +%s > "$f.started"; fi
+  mark_dispatched "$f"
   rm -f "$f.rc"
   local rc=0 pid wd
   if [ "$engine" = "pi" ]; then
@@ -698,7 +711,13 @@ exec_call() {
 # 轮间锁是空的，桌面端一点开线程就抢走（already has an active writer）。现在一条线程一个常驻执行体（codex_appserver.py serve），
 # 每轮只往它的队列丢请求；release 文件出现才退；空闲超过 codex.hold_idle_minutes 也退（编排者会话没了不至于永久占着）。
 # fd 9 的 flock 与 Python 执行体共享；仅覆盖轮次/队列账本写入，不覆盖等待 turn。
-lock_runs() { exec 9>"$1/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9; }
+lock_runs() {
+  exec 9>"$1/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9
+  if [ -n "${FOREMAN_SELFTEST_LOCK_READY:-}" ] && [ -n "${FOREMAN_SELFTEST_LOCK_RELEASE:-}" ]; then
+    : > "$FOREMAN_SELFTEST_LOCK_READY"
+    while [ ! -f "$FOREMAN_SELFTEST_LOCK_RELEASE" ]; do sleep 0.05; done
+  fi
+}
 unlock_runs() { exec 9>&-; }
 
 hold_start() {  # <hold 目录>，调用者已确认没有活执行体
@@ -713,14 +732,27 @@ os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/
 
 hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
 hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+hold_cancel_queued() {  # <票目录> <hold 目录>
+  local dir="$1" hd="$2" q base n
+  lock_runs "$dir"
+  for q in "$hd"/queue/run-*.request.json; do
+    [ -f "$q" ] || continue
+    base="${q##*/}"; n="${base#run-}"; n="${n%.request.json}"
+    rm -f "$q" "$dir/run-$n.pid" "$dir/run-$n.questions.json"
+    printf '130' > "$dir/run-$n.rc"
+    printf '线程被 release，排队轮次未开跑' > "$dir/run-$n.cancelled"
+    echo "  已丢弃 run #$n"
+  done
+  unlock_runs
+}
 hold_release_wait() {  # <hold 目录> [秒]
-  local hd="$1" secs="${2:-15}" pid i
+  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i
   hold_alive "$hd" || return 0
-  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"
-  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')）"; return 0; }; sleep 1; done
-  kill -TERM "$pid" 2>/dev/null || true; sleep 2
-  hold_alive "$hd" && { echo "  !! 常驻执行体 pid $pid 没退出，手动 kill 它"; return 1; }
-  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，超时后 TERM）"
+  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"; kill -TERM "$pid" 2>/dev/null || true
+  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM）"; return 0; }; sleep 1; done
+  kill -KILL "$pid" 2>/dev/null || true
+  while hold_alive "$hd"; do sleep 0.1; kill -KILL "$pid" 2>/dev/null || true; done
+  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM 超时后 KILL）"
 }
 hold_dispatch() {  # <issue> <票目录> <n> <线程名> <detach> <timeout>
   local issue="$1" dir="$2" n="$3" tname="$4" detach="$5" timeout="$6"
@@ -736,7 +768,7 @@ import json, sys
 p, rc, t = sys.argv[1:4]; r = json.load(open(p)); r["out_rc"] = rc; r["timeout"] = int(t)
 json.dump(r, open(p, "w"), ensure_ascii=False, indent=1)
 PY
-  rm -f "$dir/run-$n.rc"; date +%s > "$dir/run-$n.started"
+  rm -f "$dir/run-$n.rc"; mark_dispatched "$dir/run-$n"
   python3 - "$PY_APPSERVER" "$dir/run-$n.request.json" "$hd/queue/run-$n.request.json" <<'PY2'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("bridge", sys.argv[1]); bridge = importlib.util.module_from_spec(spec); spec.loader.exec_module(bridge)
@@ -762,6 +794,9 @@ PY
   unlock_runs
   if [ -n "$active_n" ]; then
     echo "线程「${tname}」正在跑 run #${active_n}，这一轮 run #${n} 排队；要立刻纠偏：foreman steer ${issue} --from-queue ${n} --thread ${tname}"
+    if [ "$(cat "$dir/run-$active_n.pr" 2>/dev/null || true)" != "$(cat "$dir/run-$n.pr" 2>/dev/null || true)" ]; then
+      echo "    占着线程的是另一 PR 的轮次；另一 PR 想并行：--thread <角色>@<pr>"
+    fi
   fi
   if [ "$detach" -eq 1 ]; then
     echo "==> run #$n 已进线程队列（$dir/run-$n.jsonl 持续写入）"
@@ -787,7 +822,7 @@ cmd_release() {
     [ -d "$hd" ] || continue
     [ -z "$tname" ] || [ "$(basename "$hd")" = "hold-$tname" ] || continue
     hold_alive "$hd" || continue
-    any=1; hold_release_wait "$hd"
+    any=1; hold_cancel_queued "$dir" "$hd"; hold_release_wait "$hd"
   done
   [ "$any" -eq 1 ] || echo "$issue 没有被占着的线程"
 }
@@ -801,7 +836,7 @@ try: os.setsid()
 except OSError: pass
 os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$dir" "$kind" "$n" </dev/null >/dev/null 2>&1 &
   printf '%s' "$!" > "$dir/$kind-$n.pid"
-  date +%s > "$dir/$kind-$n.started"
+  mark_dispatched "$dir/$kind-$n"
   disown >/dev/null 2>&1 || true
   echo "==> $kind #$n 已在后台启动（$dir/$kind-$n.jsonl 持续写入）"
   echo "    进度: foreman status $issue   /   foreman tail $issue"
@@ -855,6 +890,8 @@ POSITION_WRITABLE=""   # run --writable 放开的目录，写进位置块；revi
 position_block() {   # 只写事实（规矩在角色文件里说一遍，这里不重复）
   echo "# 本轮位置（foreman 生成，以此为准；规矩见角色文件）"; echo
   echo "- cwd：\`${PROJECT_ROOT}\`（项目根）"
+  if command -v rg >/dev/null 2>&1; then echo "- 执行环境：rg: 有"
+  else echo "- 执行环境：rg: 无（用 git grep）"; fi
   if [ -n "${PR_WT:-}" ]; then
     local loc="- 工作目录：\`${PR_WT}\`" extra=""
     [ -n "${PR_BRANCH:-}" ] && extra="分支 \`${PR_BRANCH}\`"
@@ -1015,9 +1052,22 @@ cmd_run() {
   require_work_dir_in_project "$wt"
 
   # ---- 对象模型：票下若干线程，每条线程建立时绑定一个角色和一个引擎（用户 09-11） ----
-  # 线程名：显式 --thread > 收尾续 implement > 按角色命名（没给角色就是 implement）
-  if [ -z "$tname" ]; then if [ "$closeout" -eq 1 ]; then tname="implement"; else tname="${role:-implement}"; fi; fi
-  validate_id "$tname"
+  # 线程名：显式 --thread > 收尾所在线程 > 按角色命名；非默认 PR 自动加 @<pr>，避免多 PR 串行排队。
+  if [ -z "$tname" ]; then
+    if [ "$closeout" -eq 1 ]; then
+      if [ -n "$role" ]; then tname="$role"
+      else
+        tname="$(last_implementation_thread "$dir" "$PR_NAME")"
+        [ -n "$tname" ] || die "PR「${PR_NAME}」没有 implement / mechanical 实现轮；closeout 请显式给 --thread <实现线程>"
+      fi
+    else
+      local desired_role existing_thread default_pr; desired_role="${role:-implement}"
+      existing_thread="$(thread_for_pr_role "$dir" "$PR_NAME" "$desired_role")"
+      if [ -n "$existing_thread" ]; then tname="$existing_thread"
+      else default_pr="$(default_pr_name "$issue")"; tname="$desired_role"; [ "$PR_NAME" = "$default_pr" ] || tname="${desired_role}@${PR_NAME}"; fi
+    fi
+  fi
+  validate_thread_id "$tname"
   require_pr_idle "$issue" "$PR_NAME" "$tname"
   local rec_role rec_engine; rec_role="$(thread_get "$issue" "$tname" role)"; rec_engine="$(thread_get "$issue" "$tname" engine)"
   if [ -n "$rec_role" ]; then
@@ -1380,7 +1430,7 @@ cmd_steer() {
     esac
   done
   [ -n "$issue" ] || die "用法: foreman steer <票 id> [--thread <名>] (<文本> | --file <f> | --from-queue N)"
-  validate_id "$tname"
+  validate_thread_id "$tname"
   if [ -n "$from" ]; then
     case "$from" in *[!0-9]*|0) die "--from-queue 必须是正整数" ;; esac
     [ -z "$text$file" ] || die "--from-queue 不能与文本 / --file 混用"
@@ -1396,7 +1446,7 @@ cmd_steer() {
   path="$(python3 "$PY_APPSERVER" steer-submit "$dir" "$tname" "$text" "$file" "$from")" || return $?
   # 已结束且释放的线程也能恢复：执行体会把未命中活动 turn 的消息转排队。
   if ! hold_alive "$hd"; then
-    [ -f "$hd/hold.json" ] || die "没有 hold 配置；消息已保留在 $path，用 run 起新一轮"
+    [ -f "$hd/hold.json" ] || die "没有 hold 配置；消息已保留在 ${path}，用 run 起新一轮"
     require_concurrency_slot
     lock_runs "$dir"
     if ! hold_alive "$hd"; then
@@ -1448,26 +1498,48 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
   [ -n "$wtp" ] && [ -d "$wtp" ] || return 0
   now="$(git -C "$wtp" status --porcelain 2>/dev/null || true)"
   if [ "$now" != "$(cat "$f")" ]; then
-    echo "!!!! 探针：只看不改的角色改动了 worktree（$kind-$n 起跑前后的 git status 不一样，改了这轮作废）："
+    echo "!!!! 探针：只看不改的角色工作树有改动，需人工判（$kind-$n 起跑前后的 git status 不一样）："
     diff "$f" <(printf '%s\n' "$now") | grep -E '^[<>]' | sed 's/^/    /' | head -20
     echo
   fi
 }
 cmd_report_inner() {
-  local issue="$1" n="${2:-}" kind=run
+  local issue="$1" n="${2:-}" filter_pr="${3:-}" kind=run
   local dir; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
-    n="$(latest_n "$dir" "$kind")"
+    if [ -n "$filter_pr" ]; then
+      n="$(python3 - "$dir" "$kind" "$filter_pr" <<'PY'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); kind=sys.argv[2]; pr=sys.argv[3]; nums=[]
+for p in d.glob(f"{kind}-*.pr"):
+    m=re.fullmatch(rf"{re.escape(kind)}-(\d+)\.pr",p.name)
+    if m and p.read_text().strip()==pr: nums.append(int(m[1]))
+print(max(nums,default=0))
+PY
+)"
+    else n="$(latest_n "$dir" "$kind")"; fi
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
+  if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
+  if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; return 0; fi
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
-  if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
+  if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
+    if [ ! -s "$dir/$kind-$n.last.md" ]; then
+      echo "run #$n 进行中；上一轮交付：foreman report $issue $((n-1))"
+    else echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
+  fi
   local role=""; [ -f "$dir/$kind-$n.role" ] && role="$(cat "$dir/$kind-$n.role")"
   python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md"
 }
-cmd_report() { init_repo_context; require_project; require_issue "$1"; cmd_report_inner "$@"; }
+cmd_report() {
+  local issue="${1:-}" n="" prname=""; [ -n "$issue" ] || die "用法: foreman report <票 id> [N|reviewN] [--pr <名>]"; shift || true
+  while [ $# -gt 0 ]; do case "$1" in --pr) prname="$2"; shift 2 ;; -*) die "report: 未知参数 $1" ;; *) [ -z "$n" ] && n="$1" || die "report: 多余参数 $1"; shift ;; esac; done
+  init_repo_context; require_project; require_issue "$issue"
+  [ -z "$prname" ] || resolve_pr "$issue" "$prname"
+  cmd_report_inner "$issue" "$n" "$prname"
+}
 
 cmd_tail() {
   local issue="${1:-}" count="${2:-20}"
@@ -1508,7 +1580,6 @@ EOF
   [ ${#cmds[@]} -gt 0 ] || die "check: 没有验收命令（foreman.toml 的 verify.commands 为空且当前仓库 package.json 没有 type-check / lint），请显式给命令"
   local dir out failed=0 c rc tmp
   dir="$(issue_dir "$issue")"; out="$dir/check-$(date +%Y%m%dT%H%M%S).log"; tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' RETURN
   for c in "${cmds[@]}"; do
     echo "=== $c ==="; rc=0
     ( cd "$wt" && eval "$c" ) >"$tmp" 2>&1 || rc=$?
@@ -1518,6 +1589,7 @@ EOF
   done
   echo; echo "完整输出: $out"
   [ "$failed" -eq 0 ] && echo "RESULT: ALL PASS" || echo "RESULT: FAIL"
+  rm -f "$tmp"
   return "$failed"
 }
 
@@ -1525,14 +1597,32 @@ EOF
 
 call_state() {
   local f="$1" pid=""
+  [ -f "$f.cancelled" ] && { printf 'CANCELLED'; return 0; }
   if [ -f "$f.rc" ]; then
     case "$(cat "$f.rc")" in 4) printf 'ENGINE_DOWN' ;; 5) printf 'THREAD_BUSY' ;; *) printf 'DONE' ;; esac
     return 0
   fi
   if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    local tn; tn="$(cat "$f.thread" 2>/dev/null || true)"
-    if [ -n "$tn" ] && [ -f "$(dirname "$f")/hold-$tn/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
+    local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
+    if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
+    if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
+      active="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run", ""))' "$hd/active.json" 2>/dev/null || true)"
+      if [ -n "$active" ] && [ "$active" != "$(basename "$f")" ]; then
+        local active_n current_n; active_n="${active#*-}"; current_n="${f##*-}"
+        case "$active_n:$current_n" in
+          *[!0-9:]*) ;;
+          *) if [ "$active_n" -gt "$current_n" ]; then
+               [ -f "$f.cancelled" ] && { printf 'CANCELLED'; return 0; }
+               if [ -f "$f.rc" ]; then
+                 case "$(cat "$f.rc")" in 4) printf 'ENGINE_DOWN' ;; 5) printf 'THREAD_BUSY' ;; *) printf 'DONE' ;; esac
+                 return 0
+               fi
+               printf 'DEAD'; return 0
+             fi ;;
+        esac
+      fi
+    fi
     if [ -f "$f.questions.json" ]; then printf 'WAITING'; else printf 'RUNNING'; fi
     return 0
   fi
@@ -1547,6 +1637,97 @@ pattern = re.compile(re.escape(sys.argv[2]) + r"-(\d+)\.(?:argv|jsonl)$")
 print(max((int(m[1]) for p in pathlib.Path(sys.argv[1]).iterdir() if (m := pattern.fullmatch(p.name))), default=0))
 PY2
 }
+last_implementation_thread() {  # <票目录> <PR 名>
+  python3 - "$1" "$2" "$(default_pr_of_dir "$1")" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); pr,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if actual!=pr: continue
+    role=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+    if role not in ("implement","mechanical"): continue
+    thread=(d/f"run-{n}.thread").read_text().strip() if (d/f"run-{n}.thread").is_file() else "implement"
+    found.append((n,thread))
+print(max(found)[1] if found else "")
+PY2
+}
+thread_for_pr_role() {  # <票目录> <PR 名> <角色>
+  python3 - "$1" "$2" "$3" "$(default_pr_of_dir "$1")" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); pr,role,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if actual!=pr: continue
+    rr=(d/f"run-{n}.role").read_text().strip() if (d/f"run-{n}.role").is_file() else "implement"
+    if rr!=role: continue
+    tf=d/f"run-{n}.thread"; found.append((n,tf.read_text().strip() if tf.is_file() else "implement"))
+print(max(found)[1] if found else "")
+PY2
+}
+thread_last_pr() {  # <票目录> <线程名>
+  python3 - "$1" "$2" "$(default_pr_of_dir "$1")" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); wanted,default=sys.argv[2:]; found=[]
+numbers={int(m[1]) for p in d.iterdir() if (m:=re.match(r"run-(\d+)\.",p.name))}
+for n in numbers:
+    tf=d/f"run-{n}.thread"; thread=tf.read_text().strip() if tf.is_file() else "implement"
+    pf=d/f"run-{n}.pr"; actual=pf.read_text().strip() if pf.is_file() else default
+    if thread==wanted: found.append((n,actual))
+print(max(found)[1] if found else "")
+PY2
+}
+round_pr() { # <票目录> <run-N|review-N>
+  if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_of_dir "$1"; fi
+}
+hold_active_run() { # <票目录> <hold 目录>；兼容没有 active.json 的旧执行体
+  python3 - "$1" "$2" <<'PY2'
+import json,os,pathlib,re,sys
+d,hd=map(pathlib.Path,sys.argv[1:]); active=hd/"active.json"
+try:
+    run=json.load(open(active)).get("run","")
+    if re.fullmatch(r"(?:run|review)-\d+",run): print(run); raise SystemExit
+except (OSError,ValueError): pass
+try: bridge=int((hd/"bridge.pid").read_text())
+except (OSError,ValueError): raise SystemExit
+try: os.kill(bridge,0)
+except OSError: raise SystemExit
+thread=hd.name[5:]; found=[]
+for tf in d.glob("run-*.thread"):
+    m=re.fullmatch(r"run-(\d+)\.thread",tf.name)
+    if not m or tf.read_text().strip()!=thread: continue
+    stem=f"run-{m[1]}"
+    try: pid=int((d/(stem+".pid")).read_text())
+    except (OSError,ValueError): continue
+    if pid!=bridge or (d/(stem+".rc")).exists() or (d/(stem+".cancelled")).exists(): continue
+    if (hd/"queue"/(stem+".request.json")).exists(): continue
+    found.append((int(m[1]),stem))
+if found: print(max(found)[1])
+PY2
+}
+cleanup_require_pr_idle() { # <票目录> <PR>；调用者已持 runs lock
+  local dir="$1" pr="$2" p="" stem="" st="" seen=""
+  for p in "$dir"/run-*.* "$dir"/review-*.*; do
+    [ -f "$p" ] || continue; stem="${p%.*}"
+    case " $seen " in *" ${stem} "*) continue ;; esac; seen="$seen $stem"
+    [ "$(round_pr "$dir" "${stem##*/}")" = "$pr" ] || continue; st="$(call_state "$stem")"
+    case "$st" in RUNNING|WAITING|QUEUED) die "PR「${pr}」还有轮次在跑 / 排队（${stem##*/}: ${st}），先 foreman release 释放线程再 cleanup" ;; esac
+  done
+  return 0
+}
+cleanup_release_idle_holds() { # <票目录> <PR>；调用者已持 runs lock
+  local dir="$1" pr="$2" hd="" ht="" active="" q=""
+  for hd in "$dir"/hold-*; do
+    [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
+    active="$(hold_active_run "$dir" "$hd")"
+    if [ -z "$active" ]; then
+      q="$(find "$hd/queue" -type f -name 'run-*.request.json' -print -quit 2>/dev/null || true)"
+      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then hold_release_wait "$hd"; fi
+    fi
+  done
+  return 0
+}
 elapsed_of() {
   local f="$1" start now
   if [ ! -s "$f.started" ]; then printf '—'; return 0; fi
@@ -1558,6 +1739,25 @@ all_issues() {
   [ -d "$ISSUES_DIR" ] || return 0
   local d
   for d in "$ISSUES_DIR"/*; do [ -f "$d/meta.json" ] && basename "$d"; done
+}
+latest_calls_by_thread() {  # <票目录>；每条线程只取最后一轮
+  python3 - "$1" <<'PY2'
+import pathlib,re,sys
+d=pathlib.Path(sys.argv[1]); calls={}
+for p in d.iterdir():
+    m=re.match(r"^(run|review)-(\d+)\.",p.name)
+    if not m: continue
+    kind,n=m[1],int(m[2]); stem=f"{kind}-{n}"; tf=d/(stem+".thread")
+    key=tf.read_text().strip() if tf.is_file() else (stem if kind=="review" else "implement")
+    calls.setdefault(key,{})[(kind,n)]=(d/(stem+".cancelled")).is_file()
+for items in calls.values():
+    live=[(n,kind) for (kind,n),cancelled in items.items() if not cancelled]
+    cancelled=[(n,kind) for (kind,n),is_cancelled in items.items() if is_cancelled]
+    if live:
+        n,kind=max(live); print(f"{kind}|{n}")
+    if cancelled:
+        n,kind=max(cancelled); print(f"{kind}|{n}")
+PY2
 }
 
 # 票下的全部线程（与引擎无关）
@@ -1608,6 +1808,7 @@ EOF
       local tn; tn="$(cat "$f.thread" 2>/dev/null || true)"; [ -n "$tn" ] && [ "$tn" != "$role" ] && role="$role@$tn"
       [ -f "$f.full-access" ] && role="$role!FULL"
       case "$st" in
+        CANCELLED)       printf '%-16s %-9s %-6s %-10s %-8s %s  %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.cancelled")" ;;
         RUNNING|WAITING) printf '%-16s %-9s %-6s %-10s %-8s %s  pid %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.pid")" ;;
         DONE)            printf '%-16s %-9s %-6s %-10s %-8s %s  rc=%s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" "$(cat "$f.rc")" ;;
         ENGINE_DOWN)     printf '%-16s %-9s %-6s %-10s %-8s %s  执行器暂时不可用（看 report 顶部的原始报错），告知用户\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$(elapsed_of "$f")" ;;
@@ -1617,7 +1818,7 @@ EOF
     done
   done
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
-  echo "状态: RUNNING 在跑 | WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
+  echo "状态: RUNNING 在跑（主用时从本轮派发、即 request 写入账本起算，QUEUED→RUNNING 不归零）| WAITING 执行者在等编排者回答（foreman questions / answer）| DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
   local hd hid; for hd in "$ISSUES_DIR"/*/hold-*; do [ -d "$hd" ] && hold_alive "$hd" || continue; hid="$(basename "$(dirname "$hd")")"; echo "HOLD   $hid  线程「$(basename "$hd" | sed 's/^hold-//')」由常驻执行体占着（pid $(cat "$hd/bridge.pid")；桌面端此时打不开它；foreman release $hid 释放）"; done
   echo "本机 codex 线程在跑（所有项目合计）: $(active_codex_runs) / 本项目派发上限 $(concurrency_limit)"
 }
@@ -1625,6 +1826,8 @@ EOF
 cmd_wait() {
   init_repo_context; require_project
   local timeout=300 interval=20 report=1 ids=() targets=()
+  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0
+  local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
@@ -1639,38 +1842,41 @@ cmd_wait() {
 $(all_issues)
 EOF
   fi
-  local id kind n f st
   for id in ${ids[@]+"${ids[@]}"}; do
     require_issue "$id"
-    for kind in run review; do
-      n="$(latest_n "$(issue_dir "$id")" "$kind")"; [ "$n" -gt 0 ] || continue
+    while IFS='|' read -r kind n; do
+      [ -n "$kind" ] || continue
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      case "$st" in RUNNING|QUEUED|WAITING) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
-    done
+      case "$st" in RUNNING|QUEUED|WAITING|CANCELLED) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
+    done <<EOF
+$(latest_calls_by_thread "$(issue_dir "$id")")
+EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
-  local waited=0 t left
   while [ "$waited" -lt "$timeout" ]; do
     left=0
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
-      if [ "$st" = "WAITING" ]; then
-        echo "   ⏳ $id $kind#$n 在等你回答提问，wait 先返回（rc=3）：foreman answer $id \"…\" 之后再 wait"
-        cmd_questions "$id" 2>/dev/null || true
-        return 3
+      if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
+        waiting_id="$id"
+        waiting_thread="$(cat "$f.thread" 2>/dev/null || echo '?')"
+        waiting_summary="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); q=(d.get("questions") or [{}])[0]; print((q.get("question") or q.get("text") or "无题目文本").replace("\n"," ")[:100])' "$f.questions.json" 2>/dev/null || echo 无题目文本)"
+        waiting=1
       fi
     done
+    [ "$waiting" -eq 0 ] || break
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
-  local still=0
+  [ "$waiting" -eq 0 ] || echo "⏳ WAITING：票 $waiting_id / 线程 $waiting_thread / ${waiting_summary}；将照常打印全表后返回 rc=3"
   for t in "${targets[@]}"; do
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
     f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
     case "$st" in
+      CANCELLED) echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")" ;;
       DONE) echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")" ;;
       ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障" ;;
       RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
@@ -1683,10 +1889,11 @@ EOF
       f="$(issue_dir "$id")/$kind-$n"
       case "$(call_state "$f")" in RUNNING|QUEUED|WAITING) continue ;; esac
       echo; echo "########## $id $kind#$n ##########"
-      local role=""; [ -f "$f.role" ] && role="$(cat "$f.role")"
-      python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$f.jsonl" "$f.stderr" "$f.last.md" || true
+      if [ "$kind" = review ]; then ( cmd_report_inner "$id" "review$n" ) || echo "$id review#${n}（无日志，跳过摘要）"
+      else ( cmd_report_inner "$id" "$n" ) || echo "$id run#${n}（无日志，跳过摘要）"; fi
     done
   fi
+  [ "$waiting" -eq 0 ] || return 3
   [ "$still" -eq 0 ] || return 2
   return 0
 }
@@ -1759,35 +1966,43 @@ cmd_cleanup() {
       *) [ -z "$issue" ] && issue="$1" || die "cleanup: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--keep-branch] [--discard-unpushed]"
+  [ -n "$issue" ] || die "用法: foreman cleanup <票 id> --force [--pr <名>] [--keep-branch] [--discard-unpushed]（squash 合并仓库请用 --discard-unpushed）"
   init_repo_context; require_project; require_issue "$issue"
-  local hd; for hd in "$(issue_dir "$issue")"/hold-*; do [ -d "$hd" ] && hold_alive "$hd" && hold_release_wait "$hd"; done
   local wt branch; resolve_pr "$issue" "$prname"; wt="$PR_WT"; branch="$PR_BRANCH"
   [ -n "$PR_NAME" ] || { echo "$issue 没有登记任何 PR / 工作目录，没有要清理的"; return 0; }
-  if [ -n "$PR_HERE" ]; then
-    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
-    pr_del "$issue" "$PR_NAME"; echo "已删登记（线程与日志保留）"; return 0
-  fi
   if [ "$force" -ne 1 ]; then
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
   fi
-  if [ -d "$wt" ]; then
+  if [ -z "$PR_HERE" ] && [ -d "$wt" ]; then
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
-    local unpushed
-    if git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      unpushed="$(git -C "$wt" rev-list --count "origin/$branch..HEAD")"
-    else
-      unpushed="$(git -C "$wt" rev-list --count "origin/${PR_BASE}..HEAD" 2>/dev/null || echo 0)"
+    if [ "$discard" -ne 1 ]; then
+      local unpushed
+      git -C "$wt" fetch --prune origin "$PR_BASE" --quiet || die "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
+      if git -C "$wt" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then unpushed=0
+      elif git -C "$wt" show-ref --verify --quiet "refs/remotes/origin/$branch"; then unpushed="$(git -C "$wt" rev-list --count "origin/$branch..HEAD")"
+      else unpushed="$(git -C "$wt" rev-list --count "origin/${PR_BASE}..HEAD" 2>/dev/null || echo 0)"; fi
+      [ "$unpushed" = "0" ] || die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
     fi
-    if [ "$unpushed" != "0" ] && [ "$discard" -ne 1 ]; then
-      die "分支 $branch 有 $unpushed 个未推送的提交（git -C '$wt' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
-    fi
-    git -C "$MAIN_REPO" worktree remove "$wt"
   fi
-  [ "$keep_branch" -eq 1 ] || git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（可能未合并），需要时手动 git branch -D $branch"
-  pr_del "$issue" "$PR_NAME"
+  local dir; dir="$(issue_dir "$issue")"; lock_runs "$dir"
+  cleanup_require_pr_idle "$dir" "$PR_NAME"
+  cleanup_release_idle_holds "$dir" "$PR_NAME"
+  if [ -n "$PR_HERE" ]; then
+    echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
+    pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
+    unlock_runs; echo "已删登记（线程与日志保留）"; return 0
+  fi
+  if [ -d "$wt" ]; then
+    git -C "$MAIN_REPO" worktree remove "$wt" || die "cleanup: 删除 worktree 失败: $wt"
+  fi
+  if [ "$keep_branch" -ne 1 ]; then
+    if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch" || die "cleanup: 强制删除分支失败: $branch"
+    else git -C "$MAIN_REPO" branch -d "$branch" || echo "分支未删除（本地看不到它已合并，squash 合并很常见）：需要时手动 git branch -D ${branch}，登记照常删"; fi
+  fi
+  pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
+  unlock_runs
   echo "已清理 ${issue} 的 PR「${PR_NAME}」（票、线程与日志保留；剩余 PR: $(pr_names "$issue" | tr '\n' ' ')）"
 }
 
@@ -1892,7 +2107,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            --role 取 ~/.foreman/config.toml 的 [roles.<名>]（跨项目，可自定；项目 foreman.toml 同名可覆盖），默认 implement
                            --role research = 只读调研线程（排查 / 核事实 / 找锚点，交事实清单）；--role accept = 验收线程（产品真跑起来对清单看，只报不修）
                            两者都配 --writable <交付目录> 放开交付目录，探针把该目录当作内部
-                           --closeout = PR 收尾轮：同一实现者续同一线程，prompt 顶部自动加收尾阶段契约（放行对自己 PR 的 push / gh 写）
+                           --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
                            本机所有项目在跑的 codex 线程 ≥ 上限（项目 engines.concurrency，缺省本机 config.toml 的默认 5）时拒绝派发
                            codex-exec = pi-fleet 实测过的 `codex exec` 路径（每票一份 CODEX_HOME），app-server 出问题时的备用
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
@@ -1906,7 +2121,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
   wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑，3 = 执行者在提问（问题已打出，answer 后再 wait）
-  report <id> [N|reviewN]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
+  report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）
   pr <id> --title t --body-file f [--base b] [--draft|--ready] [--yes]   打印 push + gh pr create 命令；--yes 才执行
@@ -1948,6 +2163,7 @@ case "$sub" in
   release)   cmd_release "$@" ;;
   # 内部：--detach 的执行体，由 launch_call 重入调用；参数: <main-repo> <dir> <kind> <n>
   __exec)    MAIN_REPO="$1"; shift; exec_call "$@" ;;
+  __hold_active_run) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; hold_active_run "$@" ;;
   -h|--help|help) usage ;;
   *) die "未知命令 '$sub'（-h 看用法）" ;;
 esac

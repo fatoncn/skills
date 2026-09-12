@@ -13,6 +13,8 @@
 - `gh pr edit`（改标题 / 描述）、`gh pr ready`
 - `gh pr view` / `gh pr checks` / `gh run view` / `gh api` 的读操作
 
+等 CI 时用轮询加 `sleep`，单次等待不超过 5 分钟；每次醒来先看 foreman 是否送来新一轮或引导消息再继续。不要用 `gh pr checks --watch` 长时间占住前台。
+
 ## 仍然禁止
 
 `gh pr merge`、`gh pr close`、任何 force push、动别人的分支或 worktree、DDL、部署命令、外发消息、`git stash` / `reset --hard`、rebase。**合并永远由人点。** 编排者会用探针扫描你的命令，上面白名单之外的远端动作会被标出；项目规则或任务书明确允许的由编排者放行，其余命中即判失败。
@@ -50,4 +52,3 @@ READY | BLOCKED_ON_DECISION | PARTIAL
 ```
 
 ---
-

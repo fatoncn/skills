@@ -63,7 +63,7 @@ DEFAULT_CANNED_ANSWER = (
 )
 
 START_TIMEOUT = 180       # initialize / thread.start / turn.start 的响应上限（秒）
-INTERRUPT_GRACE = 20      # 收到 SIGTERM 后等 turn/interrupt 生效的秒数
+INTERRUPT_GRACE = 20      # 收到 SIGTERM 后等 turn/interrupt；shell HOLD_TERM_GRACE 必须至少比这里多 5 秒
 QUESTION_POLL = 2         # 等编排者回答时的轮询间隔（秒）
 
 
@@ -840,6 +840,23 @@ class Holder:
             return []
         return [os.path.join(self.queue_dir, n) for n in names]
 
+    def _claim(self, path: str):
+        """与 shell 取消方共用 runs_lock；取消标记优先于领取。"""
+        with runs_lock(Path(self.dir).parent):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    req = json.load(fh)
+                cancelled = Path(req["out_rc"]).with_suffix(".cancelled") if req.get("out_rc") else None
+                if cancelled and cancelled.exists():
+                    os.remove(path)
+                    return None
+                write_json(Path(self.dir) / "active.json",
+                           {"run": Path(req["out_jsonl"]).stem, "turnId": None, "state": "claimed"})
+                os.remove(path)
+                return req
+            except FileNotFoundError:
+                return None
+
     def consume_steers(self, srv):
         inbox = Path(self.dir) / "steer"
         for path in sorted(inbox.glob("*.json")):
@@ -965,13 +982,9 @@ class Holder:
                     srv.dispatch(msg)
                     continue
                 path = queued[0]
-                with runs_lock(Path(self.dir).parent):
-                    try:
-                        with open(path, encoding="utf-8") as fh:
-                            req = json.load(fh)
-                        os.remove(path)
-                    except FileNotFoundError:  # 编排者刚把这轮转成引导
-                        continue
+                req = self._claim(path)
+                if req is None:  # 编排者刚把这轮取消或转成引导
+                    continue
                 r = Runner(req)
                 r.server = srv
                 r.thread_id = boot.thread_id
@@ -991,11 +1004,11 @@ class Holder:
                     trc = r._classify_failure(exc)
                 finally:
                     self.current = None
-                    (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     r.finish(trc)
                     if req.get("out_rc"):
                         with open(req["out_rc"], "w", encoding="utf-8") as fh:
                             fh.write(str(trc))
+                    (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     srv.set_log(hold_log)
                     srv.log_event({"_fleet": "hold_turn_done", "run": os.path.basename(req.get("out_jsonl") or ""), "rc": trc})
                 last_activity = time.time()
