@@ -262,10 +262,10 @@ def real_question_steer_chain():
     question = {"jsonrpc": "2.0", "id": 500, "method": "item/tool/requestUserInput",
                 "params": {"questions": [{"id": "q", "question": "continue?"}]}}
     steps = [
-        {"method": "turn/start", "emit": [{"message": question}]},
+        {"method": "outer", "emit": [{"message": question}]},
         {"method": "turn/steer", "emit": [
-            {"message": {"id": 1, "result": {"turn": {"id": "root-turn"}}}},
-            {"message": {"id": 2, "result": {"ok": True}}},
+            {"message": {"id": 1, "result": {"outer": True}}},
+            {"message": {"id": 2, "result": {"turnId": "root-turn"}}},
         ]},
         {"responseId": 500},
     ]
@@ -275,13 +275,23 @@ def real_question_steer_chain():
         runner = bridge.Runner({"thread_id": "root-thread", "prompt": "fixture",
                                 "question_timeout": 1, "answer_path": str(answer)})
         runner.server = server
+        runner.turn_id = "root-turn"
+        hold_dir = server.replay_root / "hold-fixture"
+        (hold_dir / "steer").mkdir(parents=True)
+        (hold_dir / "hold.json").write_text("{}", encoding="utf-8")
+        (hold_dir / "steer" / "001.json").write_text(json.dumps({
+            "text": "queued steering", "at": 1, "fromRun": "fixture",
+            "expectedTurnId": "root-turn"}), encoding="utf-8")
+        holder = bridge.Holder(str(hold_dir))
+        holder.current = runner
         server.on_server_request = runner.handle_server_request
-        runner.consume_steers = lambda: server.request("turn/steer", {
-            "threadId": "root-thread", "turnId": "root-turn", "input": []}, 3)
-        return server.request("turn/start", {"threadId": "root-thread"}, 3)
+        runner.consume_steers = lambda: holder.consume_steers(server)
+        result = server.request("outer", {}, 3)
+        assert (hold_dir / "steer" / "sent" / "001.json").exists()
+        return result
     result, record = Replay(steps).run(client)
-    assert result["turn"]["id"] == "root-turn"
-    assert record["methods"] == ["turn/start", "turn/steer", None]
+    assert result == {"outer": True}
+    assert record["methods"] == ["outer", "turn/steer", None]
     print("request routing: request_user_input -> consume_steers -> turn/steer PASS")
 
 
