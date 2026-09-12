@@ -5,6 +5,19 @@ set -uo pipefail
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"; F="$SKILL_DIR/scripts/foreman.sh"
 KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1
 T="$(mktemp -d "${TMPDIR:-/tmp}/foreman-selftest.XXXXXX")"
+REAL_PYTHON="$(command -v python3)"; export REAL_PYTHON
+mkdir -p "$T/bin"
+cat > "$T/bin/python3" <<'SH'
+#!/bin/sh
+case "${1:-} ${2:-}" in
+  *codex_appserver.py\ serve)
+    { printf '%s\0' python3; for arg in "$@"; do printf '%s\0' "$arg"; done; } > "$3/start.argv"
+    ;;
+esac
+exec "$REAL_PYTHON" "$@"
+SH
+chmod +x "$T/bin/python3"
+export PATH="$T/bin:$PATH"
 export FOREMAN_HOME="$T/home" FOREMAN_CODEX_BIN="$T/fake-codex"
 printf '#!/bin/sh\necho "fake codex: connection refused" >&2\nexit 1\n' > "$T/fake-codex"; chmod +x "$T/fake-codex"
 pass=0; fails=()
@@ -608,8 +621,6 @@ PY2
 command_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/command-dedup.jsonl")"
 if printf '%s' "$command_out" | grep -q '最后仍失败的命令' && printf '%s' "$command_out" | grep -q 'still-bad' && ! printf '%s' "$command_out" | grep -q 'retry-me'; then ok "report 命令失败按命令去重且末次成功消除失败"; else bad "report 命令失败去重"; fi
 if printf '%s' "$command_out" | grep -q '最后仍失败的命令 3 条' && printf '%s' "$command_out" | grep -q '迭代中命令失败 4 次'; then ok "摘要去重键区分 cwd 与 500 字后缀并保留失败次数"; else bad "摘要完整命令 cwd 去重键"; fi
-echo "== claude 摘要器 =="
-python3 -B "$SKILL_DIR/tests/claude_events_replay.py" --selftest && ok "claude 事件夹具与旧引擎黄金输出" || bad "claude 事件夹具与旧引擎黄金输出"
 echo "== 引导竞态与执行体 =="
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体引导：成功、WAITING、结束竞态、失败保留、旧正文、空号与 FIFO" || bad "执行体引导竞态"
 import importlib.util, json, os, pathlib, tempfile, types, sys
@@ -1009,15 +1020,18 @@ manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; FO
 manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 [ "$manual_after" -eq $((manual_before+2)) ] && ok "手动 check 同秒日志名唯一" || bad "手动 check 日志覆盖"
 
-echo "== Claude 引擎 =="
+echo "== claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in success mcp_private_cleanup first_line_paths deny eof no_session bad_json unknown question_timeout signal mcp_missing invalid_decision forbidden closeout non_closeout_graphql success_stderr_warning full_access; do
+for claude_case in success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean full_access; do
   if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
     ok "Claude 回放：${claude_case}"
   else
     bad "Claude 回放：${claude_case}" "$(printf '%s\n' "$claude_replay_out" | tail -3 | tr '\n' ' ')"
   fi
 done
+
+echo "== claude 摘要器 =="
+python3 -B "$SKILL_DIR/tests/claude_events_replay.py" --selftest && ok "claude 事件夹具与旧引擎黄金输出" || bad "claude 事件夹具与旧引擎黄金输出"
 
 expect_rc "Claude --model haiku 可单次覆盖" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --engine claude --model haiku --effort low --prompt "$T/brief.md" --title haiku --timeout 30 --no-check
 claude_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
@@ -1076,9 +1090,14 @@ p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\
 PY2
 
 # 快照夹具在基线生成，保存完整归一化 JSON；失败直接打印逐字段 unified diff。
-snapshot_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" --compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" 2>&1)"; snapshot_rc=$?
+snapshot_mode=(--compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json")
+[ "${FOREMAN_UPDATE_CODEX_SNAPSHOT:-}" = 1 ] && snapshot_mode=(--write "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json")
+snapshot_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" "${snapshot_mode[@]}" 2>&1)"; snapshot_rc=$?
 if [ "$snapshot_rc" -eq 0 ]; then ok "Codex 分发完整快照：run / resume / writable / full-access / mechanical / review / hold argv 不变"
 else bad "Codex 分发快照漂移（下方为逐字段 diff）"; printf '%s\n' "$snapshot_out"; fi
+snapshot_mutation_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" --compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" --mutate-codex-argv 2>&1)"; snapshot_mutation_rc=$?
+if [ "$snapshot_mutation_rc" -eq 1 ] && printf '%s\n' "$snapshot_mutation_out" | grep -q -- '--deliberate-snapshot-mutation'; then ok "Codex 分发快照能检出 argv 参数漂移"
+else bad "Codex 分发快照未检出故意参数漂移" "$snapshot_mutation_out"; fi
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import select
 import shutil
 import signal
@@ -24,7 +25,7 @@ from datetime import datetime, timezone
 
 SCRIPT = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SCRIPT.parent))
-from summarize import CLOSEOUT_ALLOW, FORBIDDEN  # noqa: E402
+from summarize import FORBIDDEN  # noqa: E402
 
 DEFAULT_CANNED_ANSWER = (
     "编排者当前不在线，无法实时回答。请按你最合理的理解把能做的部分做完，"
@@ -67,6 +68,12 @@ def append_event(path: pathlib.Path, event: dict) -> None:
         fh.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def append_raw(path: pathlib.Path, raw: bytes) -> None:
+    """Append one Claude stdout record without JSON re-serialization."""
+    with path.open("ab") as fh:
+        fh.write(raw)
+
+
 def foreman_event(path: pathlib.Path, payload: dict) -> None:
     append_event(path, {"_foreman": payload})
 
@@ -94,14 +101,41 @@ def command_for(tool: str, tool_input: dict) -> str:
     return ""
 
 
+def command_segments(command: str) -> list[str]:
+    """Split shell control operators and discard redirection targets for policy checks."""
+    segments = []
+    for raw in re.split(r"&&|\|\||[;|\n]", command):
+        segment = re.sub(r"(?:^|\s)\d*(?:>>?|<<?)\s*(?:'[^']*'|\"[^\"]*\"|\S+)", " ", raw).strip()
+        if segment:
+            segments.append(segment)
+    return segments
+
+
+def closeout_segment_allowed(segment: str) -> bool:
+    if re.fullmatch(r"git\s+push\b(?!.*(?:--force(?:-with-lease)?|-f\b)).*", segment):
+        return True
+    if re.fullmatch(r"gh\s+pr\s+(?:comment|ready|review|edit)\b.*", segment):
+        return True
+    if re.fullmatch(r"gh\s+api\s+graphql\b.*", segment):
+        return True
+    if (re.fullmatch(r"gh\s+api\b.*", segment)
+            and re.search(r"(?:-X|--method)\s*(?:POST|PATCH)\b", segment)
+            and re.search(r"(?:comments|reviews|pulls)", segment)):
+        return True
+    return False
+
+
 def forbidden_reason(command: str, closeout: bool) -> str | None:
-    for pattern, label in FORBIDDEN:
-        if not pattern.search(command):
-            continue
-        if closeout and any(allowed.search(command) for allowed in CLOSEOUT_ALLOW):
-            return None
-        return label
+    for segment in command_segments(command):
+        for pattern, label in FORBIDDEN:
+            if pattern.search(segment) and not (closeout and closeout_segment_allowed(segment)):
+                return label
     return None
+
+
+def closeout_command_allowed(command: str) -> bool:
+    segments = command_segments(command)
+    return bool(segments) and all(closeout_segment_allowed(segment) for segment in segments)
 
 
 def permission_reply(stem: pathlib.Path, tool: str, tool_input: dict) -> dict:
@@ -113,7 +147,7 @@ def permission_reply(stem: pathlib.Path, tool: str, tool_input: dict) -> dict:
     if reason:
         foreman_event(log, {"type": "permission", "tool": tool, "decision": "deny", "reason": reason, "input_digest": digest})
         return {"behavior": "deny", "message": f"foreman 禁止此操作：{reason}"}
-    if command and bool(req.get("closeout")) and any(pattern.search(command) for pattern in CLOSEOUT_ALLOW):
+    if command and bool(req.get("closeout")) and closeout_command_allowed(command):
         foreman_event(log, {"type": "permission", "tool": tool, "decision": "allow", "reason": "收尾阶段白名单", "input_digest": digest})
         return {"behavior": "allow", "updatedInput": tool_input}
 
@@ -188,6 +222,7 @@ def rpc_response(rid: object, result: object = None, error: dict | None = None) 
 
 def serve_permission(stem: pathlib.Path) -> int:
     for raw in sys.stdin:
+        rid = None
         try:
             msg = json.loads(raw)
             method, rid = msg.get("method"), msg.get("id")
@@ -204,12 +239,20 @@ def serve_permission(stem: pathlib.Path) -> int:
                 args = params.get("arguments") or {}
                 tool = str(args.get("tool_name") or args.get("toolName") or args.get("name") or "")
                 tool_input = args.get("input") or args.get("tool_input") or args.get("toolInput") or {}
-                decision = permission_reply(stem, tool, tool_input)
+                try:
+                    decision = permission_reply(stem, tool, tool_input)
+                    if not isinstance(decision, dict) or decision.get("behavior") not in {"allow", "deny"}:
+                        raise ValueError("权限审查器返回非法 decision")
+                except Exception as exc:
+                    req = load_request(stem)
+                    foreman_event(pathlib.Path(req["jsonl_path"]), {"type": "permission", "tool": tool,
+                        "decision": "deny", "reason": f"权限审查器异常: {exc}", "input_digest": input_digest(tool_input)})
+                    decision = {"behavior": "deny", "message": "foreman 权限审查器异常，已拒绝操作"}
                 out = rpc_response(rid, {"content": [{"type": "text", "text": json.dumps(decision, ensure_ascii=False)}]})
             else:
                 out = rpc_response(rid, error={"code": -32601, "message": f"不支持的方法: {method}"})
         except Exception as exc:
-            out = rpc_response(None, error={"code": -32603, "message": str(exc)})
+            out = rpc_response(rid, error={"code": -32603, "message": str(exc)})
         sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
         sys.stdout.flush()
     return 0
@@ -251,25 +294,50 @@ def user_mcp_servers() -> dict:
 
 
 def deny_rules(closeout: bool) -> list[str]:
-    rules = [
-        "Bash(git remote add:*)", "Bash(git remote set-url:*)", "Bash(git remote remove:*)",
-        "Bash(git reset --hard:*)", "Bash(git clean -f:*)", "Bash(git stash:*)",
-        "Bash(git checkout --:*)", "Bash(git update-ref:*)", "Bash(git commit-tree:*)",
-        "Bash(git write-tree:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
-        "Bash(git --git-dir=*)", "Bash(GIT_INDEX_FILE=:*)",
-        "Bash(gh pr create:*)", "Bash(gh pr close:*)", "Bash(gh pr merge:*)", "Bash(gh pr reopen:*)",
-        "Bash(gh issue create:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)", "Bash(gh issue reopen:*)",
-        "Bash(gh release:*)", "Bash(gh workflow:*)", "Bash(gh secret:*)", "Bash(gh repo:*)",
-        "Bash(gh api * --method PUT:*)", "Bash(gh api * --method DELETE:*)",
-        "Bash(vercel deploy:*)", "Bash(vercel promote:*)", "Bash(vercel rollback:*)",
-        "Bash(vercel env:*)", "Bash(vercel link:*)", "Bash(supabase link:*)",
-        "Bash(supabase db push:*)", "Bash(supabase db remote:*)", "Bash(npx sst:*)", "Bash(sst deploy:*)",
-    ]
-    if not closeout:
-        rules += ["Bash(git push:*)", "Bash(gh pr edit:*)", "Bash(gh pr comment:*)", "Bash(gh pr ready:*)",
-                  "Bash(gh pr review:*)",
-                  "Bash(gh api * --method POST:*)", "Bash(gh api * --method PATCH:*)", "Bash(gh api graphql:*)"]
-    return rules
+    """Translate the shared FORBIDDEN table into Claude's pure-glob Bash rules.
+
+    Claude 2.1.268 only treats a trailing ``:*`` as a prefix matcher; stars in
+    that form are literals.  Every rule that needs an interior wildcard is
+    therefore emitted in the pure ``*...*`` glob form.
+    """
+    by_label = {
+        "git push": ["*git push*"],
+        "git remote 写操作": ["*git remote add*", "*git remote set-url*", "*git remote remove*"],
+        "gh 写操作": [
+            *[f"*gh {kind} {action}*" for kind in ("issue", "pr")
+              for action in ("create", "edit", "comment", "close", "merge", "reopen", "ready", "review")],
+            *[f"*gh {kind}*" for kind in ("release", "workflow", "secret", "repo")],
+        ],
+        "gh api 写": [f"*gh api * {flag} {method}*" for flag in ("-X", "--method")
+                      for method in ("POST", "PUT", "PATCH", "DELETE")],
+        "gh api graphql": ["*gh api graphql*"],
+        "vercel 写操作或 env": [f"*vercel {action}*" for action in
+            ("deploy", "promote", "rollback", "redeploy", "alias", "env", "domains", "dns", "certs",
+             "rm", "remove", "link", "project", "teams", "switch", "login", "logout", "git")],
+        "vercel api 写": [f"*vercel api * {flag} {method}*" for flag in ("-X", "--method")
+                          for method in ("POST", "PUT", "PATCH", "DELETE")],
+        "supabase 远端": ["*supabase link*", "*supabase db push*", "*supabase db remote*"],
+        "sst deploy": ["*npx sst*", "*npm sst*", "*sst deploy*"],
+        "eslint-disable": ["*eslint-disable*"],
+        "测试 skip/only": ["*.skip(*", "*.only(*"],
+        "git 破坏性操作": ["*git reset --hard*", "*git clean -*f*", "*git checkout -- *", "*git stash*"],
+        "git push --force": ["*git push *--force*", "*git push * -f*"],
+        "git 底层改写（绕过索引/沙箱）": ["*GIT_INDEX_FILE=*", "*git update-ref*", "*git commit-tree*",
+            "*git write-tree*", "*git symbolic-ref*", "*git --git-dir=*"],
+    }
+    rules = []
+    for _pattern, label in FORBIDDEN:
+        if label not in by_label:
+            raise ValueError(f"FORBIDDEN 缺少 Claude deny 映射: {label}")
+        rules.extend(by_label[label])
+    if closeout:
+        allowed_exact = {
+            "*git push*", "*gh pr edit*", "*gh pr comment*", "*gh pr ready*", "*gh pr review*",
+            "*gh api graphql*",
+            *[f"*gh api * {flag} {method}*" for flag in ("-X", "--method") for method in ("POST", "PATCH")],
+        }
+        rules = [rule for rule in rules if rule not in allowed_exact]
+    return list(dict.fromkeys(f"Bash({rule})" for rule in rules))
 
 
 def common_gitdir(work_dir: str) -> str:
@@ -314,7 +382,8 @@ def update_thread_ref(meta_path: pathlib.Path, thread: str, session_id: str) -> 
 def classify_engine_down(text: str) -> bool:
     lowered = text.lower()
     return any(word in lowered for word in ("authentication", "not logged", "unauthorized", "model not found",
-                                             "overloaded", "service unavailable", "rate limit", "permission mcp"))
+                                             "overloaded", "service unavailable", "rate limit", "permission mcp",
+                                             "mcp tool mcp__foreman__approve", "permission-prompt-tool"))
 
 
 def run_bridge(request_path: pathlib.Path) -> int:
@@ -322,23 +391,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
     stem = pathlib.Path(str(request_path)[:-len(".request.json")])
     jsonl = pathlib.Path(req["jsonl_path"])
     mcp_path = pathlib.Path(str(stem) + ".mcp.json")
-    jsonl.write_text("", encoding="utf-8")
-    full = bool(req.get("user_explicitly_approved_full_access"))
-    reason = str(req.get("full_access_reason") or "")
-    permission_mode = "bypassPermissions" if full else "auto"
-    work_dir = str(req.get("work_dir") or "")
-    roots = unique_paths([work_dir, *(req.get("writable_roots") or []), common_gitdir(work_dir)])
-    started = now_iso()
-    claude = resolve_claude()
-    try:
-        version = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=10).stdout.strip() if claude else "unknown"
-    except Exception:
-        version = "unknown"
-    version = version or "unknown"
-    foreman_event(jsonl, {"engine": "claude", "cli_version": version, "session_id": req.get("session_id"),
-                           "role": req.get("role"), "model": req.get("model"), "effort": req.get("effort"),
-                           "permission_mode": permission_mode, "cwd": req.get("cwd"),
-                           "work_dir": work_dir or None, "writable_roots": roots, "started_at": started})
+    stderr_path = pathlib.Path(req.get("stderr_path") or str(stem) + ".stderr")
     raw_rc = 0
     final_rc = 3
     subtype = "protocol_error"
@@ -346,8 +399,200 @@ def run_bridge(request_path: pathlib.Path) -> int:
     result_event = None
     init_session = None
     interrupted = False
+    proc: subprocess.Popen | None = None
+    stderr_fh = None
+    hard_stop_started = False
+    finished = threading.Event()
+    grace = float(os.environ.get("FOREMAN_CLAUDE_INTERRUPT_GRACE", INTERRUPT_GRACE)) \
+        if os.environ.get("FOREMAN_SELFTEST") == "1" else INTERRUPT_GRACE
 
-    def finish() -> int:
+    def kill_group(sig: int) -> None:
+        if proc is None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def hard_stop_after_grace() -> None:
+        if not finished.wait(grace):
+            kill_group(signal.SIGKILL)
+
+    def request_stop(mark_interrupted: bool) -> None:
+        nonlocal interrupted, hard_stop_started
+        interrupted = interrupted or mark_interrupted
+        kill_group(signal.SIGTERM)
+        if not hard_stop_started:
+            hard_stop_started = True
+            threading.Thread(target=hard_stop_after_grace, daemon=True).start()
+
+    def on_term(_sig, _frame):
+        request_stop(True)
+
+    # Install before creating any per-run file so startup-stage TERM follows the same cleanup path.
+    old_term = signal.signal(signal.SIGTERM, on_term)
+    try:
+        jsonl.write_text("", encoding="utf-8")
+        raw_full = req.get("user_explicitly_approved_full_access")
+        reason = str(req.get("full_access_reason") or "")
+        invalid_full = not isinstance(raw_full, bool) or (raw_full is True and not reason.strip())
+        full = raw_full is True and bool(reason.strip())
+        permission_mode = "bypassPermissions" if full else "auto"
+        work_dir = str(req.get("work_dir") or "")
+        roots = unique_paths([work_dir, *(req.get("writable_roots") or []), common_gitdir(work_dir)])
+        started = now_iso()
+        claude = resolve_claude()
+        try:
+            version = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=10).stdout.strip() if claude else "unknown"
+        except Exception:
+            version = "unknown"
+        version = version or "unknown"
+        foreman_event(jsonl, {"engine": "claude", "cli_version": version, "session_id": req.get("session_id"),
+                               "role": req.get("role"), "model": req.get("model"), "effort": req.get("effort"),
+                               "permission_mode": permission_mode, "cwd": req.get("cwd"),
+                               "work_dir": work_dir or None, "writable_roots": roots, "started_at": started})
+        if invalid_full:
+            terminal_reason = "bypassPermissions 缺少严格布尔授权标记或非空原话"
+            raise RuntimeError(terminal_reason)
+        model, effort = str(req.get("model") or ""), str(req.get("effort") or "")
+        if not (model in MODEL_ALIASES or model.startswith("claude-")) or effort not in EFFORTS:
+            terminal_reason = "Claude model / effort 非法"
+            raise RuntimeError(terminal_reason)
+        if not claude:
+            terminal_reason = "找不到 claude 可执行文件"
+            raise RuntimeError(terminal_reason)
+        settings_path = pathlib.Path(str(stem) + ".settings.json")
+        system_path = pathlib.Path(str(stem) + ".system.md")
+        settings = {"sandbox": {"enabled": not full, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
+                                 "allowUnsandboxedCommands": False, "allowWrite": roots},
+                    "permissions": {"deny": deny_rules(bool(req.get("closeout"))), "ask": ["AskUserQuestion"]}}
+        write_json(settings_path, settings)
+        servers = user_mcp_servers()
+        if not full:
+            servers["foreman"] = {"type": "stdio", "command": sys.executable,
+                                  "args": [str(SCRIPT), "permission-server", "--run", str(stem)]}
+        write_private_json(mcp_path, {"mcpServers": servers})
+        dev = pathlib.Path(req["dev_instructions_path"]).read_text(encoding="utf-8")
+        facts = ("\n\n---\n\n# Claude 引擎事实\n\n"
+                 "- Bash 沙箱只约束 Bash 启动的子进程；本轮 cwd 内的可写范围仍以任务书为准。\n"
+                 f"- Claude settings 放开的写路径：{', '.join(roots) or '无'}。\n"
+                 "- 用户级 MCP 从 ~/.claude.json 的 mcpServers 内存读取后写入本轮 MCP 配置；foreman MCP 只处理权限与提问。\n"
+                 "- 需要澄清时只用 AskUserQuestion，并等待回答；不要自行启动 claude 或 codex 子进程。\n")
+        system_path.write_text(dev + facts, encoding="utf-8")
+        if not full:
+            ok, why = preflight_permission(stem)
+            if not ok:
+                final_rc, subtype, terminal_reason = 4, "engine_down", why
+                raise RuntimeError(terminal_reason)
+
+        argv = [claude, "-p", "--output-format", "stream-json", "--verbose", "--input-format", "text",
+                "--model", model, "--effort", effort, "--permission-mode", permission_mode,
+                "--setting-sources", "", "--settings", str(settings_path), "--strict-mcp-config",
+                "--mcp-config", str(mcp_path)]
+        if not full:
+            argv += ["--permission-prompt-tool", "mcp__foreman__approve"]
+        argv += ["--append-system-prompt-file", str(system_path), "--max-turns", str(req.get("max_turns") or 80),
+                 "--max-budget-usd", str(req.get("max_budget_usd") or 5)]
+        if req.get("session_id"):
+            argv += ["--resume", str(req["session_id"])]
+        if req.get("no_session_persistence"):
+            argv.append("--no-session-persistence")
+        write_argv(pathlib.Path(str(stem) + ".argv"), argv)
+        write_json(pathlib.Path(req["claude_json_path"]), {"model": model, "effort": effort,
+            "permission_mode": permission_mode, "settings": str(settings_path), "mcp_servers": sorted(servers),
+            "session_id": req.get("session_id"), "cli_version": version, "started_at": started})
+
+        stderr_fh = stderr_path.open("wb")
+        try:
+            proc = subprocess.Popen(argv, cwd=req["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=stderr_fh, start_new_session=True, bufsize=0)
+        except OSError as exc:
+            final_rc, subtype, terminal_reason = 3, "launch_error", f"Claude 启动失败: {exc}"
+            raise RuntimeError(terminal_reason)
+        if interrupted:
+            request_stop(True)
+        assert proc.stdin and proc.stdout
+        protocol_failed = False
+        try:
+            proc.stdin.write(pathlib.Path(req["prompt_path"]).read_bytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            terminal_reason = "Claude stdin BrokenPipe"
+            protocol_failed = True
+            foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
+            request_stop(False)
+        for raw in proc.stdout:
+            append_raw(jsonl, raw)
+            if protocol_failed or not raw.strip():
+                continue
+            try:
+                event = json.loads(raw)
+                if not isinstance(event, dict):
+                    raise ValueError("Claude stream-json 行不是 JSON 对象")
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+                terminal_reason = f"Claude stream-json 协议错误: {exc}"
+                protocol_failed = True
+                foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
+                request_stop(False)
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                init_session = event.get("session_id")
+                if init_session:
+                    expected = req.get("session_id")
+                    if expected and init_session != expected:
+                        terminal_reason = "resume 的 system.init.session_id 不一致"
+                        protocol_failed = True
+                        foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
+                        request_stop(False)
+                    else:
+                        update_thread_ref(pathlib.Path(req["meta_path"]), str(req["thread"]), str(init_session))
+            if event.get("type") == "result":
+                result_event = event
+        try:
+            raw_rc = proc.wait(timeout=grace + 2 if hard_stop_started else 5)
+        except subprocess.TimeoutExpired:
+            kill_group(signal.SIGKILL)
+            raw_rc = proc.wait()
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+        if interrupted:
+            final_rc, subtype, terminal_reason = 143, "interrupted", "收到超时或终止信号"
+        elif protocol_failed or terminal_reason:
+            final_rc, subtype = 3, "protocol_error"
+        elif not init_session:
+            if classify_engine_down(stderr_text):
+                final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
+            else:
+                final_rc, subtype, terminal_reason = 3, "protocol_error", "未收到 system.init.session_id"
+        elif result_event:
+            if result_event.get("session_id") != init_session:
+                final_rc, subtype, terminal_reason = 3, "protocol_error", "result.session_id 与 system.init 不一致"
+            else:
+                subtype = str(result_event.get("subtype") or "")
+                if subtype == "success":
+                    final_rc, terminal_reason = 0, "success"
+                else:
+                    combined = subtype + " " + str(result_event.get("result") or "") + " " + stderr_text
+                    final_rc = 4 if classify_engine_down(combined) else 1
+                    terminal_reason = subtype or "result error"
+        elif classify_engine_down(stderr_text):
+            final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
+        else:
+            final_rc, subtype, terminal_reason = 3, "protocol_error", "EOF 前未收到 result"
+    except Exception as exc:
+        if not terminal_reason:
+            terminal_reason = f"Claude 桥异常: {exc}"
+    finally:
+        if proc is not None and proc.poll() is None:
+            request_stop(interrupted)
+            try:
+                raw_rc = proc.wait(timeout=grace + 2)
+            except subprocess.TimeoutExpired:
+                kill_group(signal.SIGKILL)
+                raw_rc = proc.wait()
+        finished.set()
+        signal.signal(signal.SIGTERM, old_term)
+        if stderr_fh is not None:
+            stderr_fh.close()
         usage = (result_event or {}).get("usage") or {}
         cost = (result_event or {}).get("total_cost_usd")
         foreman_event(jsonl, {"type": "turn_summary", "rc": final_rc, "raw_rc": raw_rc, "subtype": subtype,
@@ -357,139 +602,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
             mcp_path.unlink()
         except FileNotFoundError:
             pass
-        return final_rc
-
-    if permission_mode == "bypassPermissions" and (not full or not reason):
-        terminal_reason = "bypassPermissions 缺少用户授权标记或原话"
-        return finish()
-    model, effort = str(req.get("model") or ""), str(req.get("effort") or "")
-    if not (model in MODEL_ALIASES or model.startswith("claude-")) or effort not in EFFORTS:
-        terminal_reason = "Claude model / effort 非法"
-        return finish()
-    if not claude:
-        terminal_reason = "找不到 claude 可执行文件"
-        return finish()
-    settings_path = pathlib.Path(str(stem) + ".settings.json")
-    system_path = pathlib.Path(str(stem) + ".system.md")
-    settings = {"sandbox": {"enabled": not full, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
-                             "allowUnsandboxedCommands": False, "allowWrite": roots},
-                "permissions": {"deny": deny_rules(bool(req.get("closeout"))), "ask": ["AskUserQuestion"]}}
-    write_json(settings_path, settings)
-    servers = user_mcp_servers()
-    if not full:
-        servers["foreman"] = {"type": "stdio", "command": sys.executable,
-                              "args": [str(SCRIPT), "permission-server", "--run", str(stem)]}
-    write_private_json(mcp_path, {"mcpServers": servers})
-    dev = pathlib.Path(req["dev_instructions_path"]).read_text(encoding="utf-8")
-    facts = ("\n\n---\n\n# Claude 引擎事实\n\n"
-             "- Bash 沙箱只约束 Bash 启动的子进程；本轮 cwd 内的可写范围仍以任务书为准。\n"
-             f"- Claude settings 放开的写路径：{', '.join(roots) or '无'}。\n"
-             "- 用户级 MCP 从 ~/.claude.json 的 mcpServers 内存读取后写入本轮 MCP 配置；foreman MCP 只处理权限与提问。\n"
-             "- 需要澄清时只用 AskUserQuestion，并等待回答；不要自行启动 claude 或 codex 子进程。\n")
-    system_path.write_text(dev + facts, encoding="utf-8")
-    if not full:
-        ok, why = preflight_permission(stem)
-        if not ok:
-            final_rc, subtype, terminal_reason = 4, "engine_down", why
-            return finish()
-
-    argv = [claude, "-p", "--output-format", "stream-json", "--verbose", "--input-format", "text",
-            "--model", model, "--effort", effort, "--permission-mode", permission_mode,
-            "--setting-sources", "", "--settings", str(settings_path), "--strict-mcp-config",
-            "--mcp-config", str(mcp_path)]
-    if not full:
-        argv += ["--permission-prompt-tool", "mcp__foreman__approve"]
-    argv += ["--append-system-prompt-file", str(system_path), "--max-turns", str(req.get("max_turns") or 80),
-             "--max-budget-usd", str(req.get("max_budget_usd") or 5)]
-    if req.get("session_id"):
-        argv += ["--resume", str(req["session_id"])]
-    if req.get("no_session_persistence"):
-        argv.append("--no-session-persistence")
-    write_argv(pathlib.Path(str(stem) + ".argv"), argv)
-    write_json(pathlib.Path(req["claude_json_path"]), {"model": model, "effort": effort,
-        "permission_mode": permission_mode, "settings": str(settings_path), "mcp_servers": sorted(servers),
-        "session_id": req.get("session_id"), "cli_version": version, "started_at": started})
-
-    stderr_path = pathlib.Path(req.get("stderr_path") or str(stem) + ".stderr")
-    stderr_fh = stderr_path.open("w", encoding="utf-8")
-    try:
-        proc = subprocess.Popen(argv, cwd=req["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=stderr_fh, text=True, start_new_session=True, bufsize=1)
-    except OSError as exc:
-        stderr_fh.close()
-        final_rc, subtype, terminal_reason = 3, "launch_error", f"Claude 启动失败: {exc}"
-        return finish()
-
-    def on_term(_sig, _frame):
-        nonlocal interrupted
-        interrupted = True
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-    old_term = signal.signal(signal.SIGTERM, on_term)
-    assert proc.stdin and proc.stdout
-    try:
-        proc.stdin.write(pathlib.Path(req["prompt_path"]).read_text(encoding="utf-8"))
-        proc.stdin.close()
-        for raw in proc.stdout:
-            line = raw.rstrip("\r\n")
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                terminal_reason = "Claude stream-json 含坏 JSON"
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                break
-            append_event(jsonl, event)
-            if event.get("type") == "system" and event.get("subtype") == "init":
-                init_session = event.get("session_id")
-                if init_session:
-                    update_thread_ref(pathlib.Path(req["meta_path"]), str(req["thread"]), str(init_session))
-            if event.get("type") == "result":
-                result_event = event
-        try:
-            raw_rc = proc.wait(timeout=INTERRUPT_GRACE if interrupted else 5)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            raw_rc = proc.wait()
-    finally:
-        signal.signal(signal.SIGTERM, old_term)
-        stderr_fh.close()
-
-    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
-    if interrupted:
-        final_rc, subtype, terminal_reason = 143, "interrupted", "收到超时或终止信号"
-    elif terminal_reason:
-        final_rc, subtype = 3, "protocol_error"
-    elif not init_session:
-        if classify_engine_down(stderr_text):
-            final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
-        else:
-            final_rc, subtype, terminal_reason = 3, "protocol_error", "未收到 system.init.session_id"
-    elif req.get("session_id") and init_session != req.get("session_id"):
-        final_rc, subtype, terminal_reason = 3, "protocol_error", "resume 的 system.init.session_id 不一致"
-    elif result_event:
-        if result_event.get("session_id") != init_session:
-            final_rc, subtype, terminal_reason = 3, "protocol_error", "result.session_id 与 system.init 不一致"
-            return finish()
-        subtype = str(result_event.get("subtype") or "")
-        if subtype == "success":
-            final_rc, terminal_reason = 0, "success"
-        else:
-            combined = subtype + " " + str(result_event.get("result") or "") + " " + stderr_text
-            final_rc = 4 if classify_engine_down(combined) else 1
-            terminal_reason = subtype or "result error"
-    elif classify_engine_down(stderr_text):
-        final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
-    else:
-        final_rc, subtype, terminal_reason = 3, "protocol_error", "EOF 前未收到 result"
-    return finish()
+        pathlib.Path(str(stem) + ".rc").write_text(str(final_rc), encoding="utf-8")
+    return final_rc
 
 
 def main() -> int:
