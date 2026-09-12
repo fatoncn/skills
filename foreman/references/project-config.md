@@ -43,7 +43,7 @@
 
 ## [engines]
 
-`concurrency`：从本项目派发时的并发上限，覆盖本机 config.toml 的默认（计数是本机所有项目合计）；`default`：角色没写 engine 时的默认执行器 `codex`（app-server）/ `codex-exec` / `pi`；pi 装了就能用，没有开关
+`concurrency`：从本项目派发时的并发上限，覆盖本机 config.toml 的默认（计数是本机所有项目合计）；`default`：角色没写 engine 时的默认执行器 `codex`（app-server）/ `pi`；pi 装了就能用，没有开关
 
 ## 全局配置 `~/.foreman/config.toml`（本机一份，跨项目）
 

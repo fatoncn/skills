@@ -1,20 +1,7 @@
 # codex app-server 实测笔记（foreman 默认执行器）
 
 对 codex-cli **0.153.4**（ChatGPT 桌面端内置二进制）的实测与设计决定，2026-09-11。
-改 `scripts/codex_appserver.py` 之前先读这里。`codex exec` 那条路的笔记在 [`codex-cli.md`](./codex-cli.md)，
-其中「沙箱四坑」对 app-server 同样成立（同一套 core）。
-
-## 为什么从 `codex exec` 换到 app-server
-
-| 能力 | `codex exec --json` | `codex app-server` |
-|---|---|---|
-| 角色注入 | 只能 `$CODEX_HOME/AGENTS.md`，所以每票一份 CODEX_HOME | `thread/start.developerInstructions`，全 skill 一份 home |
-| 模型 / 推理档 | 进程级 `-c`，run 与 review 共用一个 effort | `thread/start.model` + `turn/start.effort`，每轮可换 |
-| 续会话 | `exec resume` 参数表更窄（无 `-s` / `-C`） | `thread/resume` 参数与 start 一致 |
-| 审批 / 提问 | 非交互，模型没法问人 | `item/tool/requestUserInput` 等作为**服务端请求**回给客户端，编排者能当场答 |
-| 中断 | 只能杀进程 | `turn/interrupt` 优雅收尾（status=interrupted） |
-| 成败判定 | 缺 `turn.completed` 就当失败 | `turn/completed.turn.status` ∈ completed / interrupted / failed，带 `error` |
-| 状态 | `mcp-server` 在 0.153.4 已标 **deprecated** | app-server 标 experimental，但桌面端与 IDE 扩展就是它的客户端 |
+改 `scripts/codex_appserver.py` 之前先读这里。app-server 是 foreman 的默认 Codex 执行协议，负责逐轮模型与推理档、续会话、审批、提问、中断和终态判定。
 
 ## 核心调用
 
@@ -35,11 +22,11 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
   `account/rateLimits/read` 返回订阅额度百分比与重置时间，`account/read` 返回 plan。
 - `thread/start` / `turn/start` / 服务端请求处理**首跑前未实测**，见文末「未验证」。
 
-## 沙箱与网络（继承 codex-cli.md 的结论 + 本次实测）
+## 沙箱与网络
 
 - `workspace-write` 默认挡掉 worktree 的 git 提交（common dir 在主仓库 `.git`），必须放行：
   进程级 `-c 'sandbox_workspace_write.writable_roots=["<main>/.git"]'` + `thread/start.sandbox="workspace-write"`。
-  这就是 codex exec 的口径，实测 `git add && git commit` 在 worktree 里成功（探针 D）。
+  实测放行后 `git add && git commit` 在 worktree 里成功；在 `/private/tmp` 建临时仓库测不出这条，因为临时目录本来就可写，边界测试必须使用真实 worktree。
 - **不要往 `turn/start.sandboxPolicy` 传结构化策略**（2026-09-11 实测，0.153.4）：带上同样内容的
   `{"type":"workspaceWrite","writableRoots":[<common .git>],…}` 后，`git add` 写 `.git/worktrees/<wt>/index.lock`、
   `update-ref` 写 `HEAD.lock` 一律 `Operation not permitted`（探针 H / I，两个 worktree 都复现），而同目录 `touch` 反而能过；
@@ -47,8 +34,10 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
   执行体已改为默认不传（`force_turn_sandbox_policy` 才传），summarize 加了「git 底层改写」探针抓绕路。
 - 实测的连带现象：luna/low 被拒后会用 `GIT_INDEX_FILE=/tmp/x git add` + `commit-tree` + `update-ref` 硬造提交，
   结果树里少了 README（临时索引是空的）。`foreman check` 的 `git status --porcelain` 为空这一条抓住了它。
-- 默认无网络（DNS 直接失败）；`sandbox_workspace_write.network_access=true` 才有 shell 出网。开了之后连本机代理是通的。
+- `workspace-write` 默认无 shell 网络（DNS 直接失败）；`sandbox_workspace_write.network_access=true` 才有 shell 出网。HTTP(S) 代理会被继承，开了之后连本机代理是通的；设了代理时 `curl` 连 `127.0.0.1` 失败通常也是未开放网络，不应先归因于代理故障。
 - `read-only`（复审）**完全没有 shell 网络**，但有服务端 `web_search`（不走沙箱）。`sandbox_read_only.*` 这个键不存在。
+- macOS 自带 git 是 xcrun 壳；`read-only` 下写不了 `/tmp/xcrun_db-*` 缓存，会向 stderr 打 `Operation not permitted`，但 git 命令本身仍可能成功，应按 stdout 和退出码判断。
+- shell 工具依赖 Codex 二进制同目录的 `codex-code-mode-host`。软链路径旁没有这个兄弟程序时会 fail closed；foreman 因此把二进制解析成真实路径。
 - `codex sandbox <-c …> bash -lc '<probe>'` 不起模型，`foreman doctor` 用它做七条边界断言。
 
 ## 审批：默认「替我审批」，完全权限只留一个口子（用户 2026-09-11 硬规矩）
@@ -104,18 +93,14 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 退出码：0 完成 / 1 failed / 2 被中断 / 3 没跑起来 / 143 SIGTERM 且未能优雅中断。看门狗超时会 SIGTERM 执行体，执行体先发 `turn/interrupt` 再退。；**4 = 执行器不可用**（turn 失败或协议错误里匹配到 404 / 5xx / 连接失败 / 429 / 401，事件流写 `_fleet: engine_unavailable`，`status` 显示 `ENGINE_DOWN`）——编排者只告知用户，不排障
 
-## CODEX_HOME：全 skill 一份，与用户的 `~/.codex` 隔离
+## CODEX_HOME：shared / isolated 与线程续跑
 
-`~/.foreman/codex-home/`：`auth.json` 软链到 `~/.codex/auth.json`（认证仍走用户已登录的 ChatGPT）+ 极简 `config.toml`。
-有意**不继承** `~/.codex` 的 MCP servers、插件、`notify` 钩子、全局 `AGENTS.md`（用户全局指令里的「有不确定先问用户」在非交互场景会卡住；现在换成执行体处理提问）。
-代价：这些线程**不会出现在 Codex 桌面端**。要看：`foreman report/tail`，或终端 `CODEX_HOME=~/.foreman/codex-home codex resume <thread_id>`。
-不要为了在桌面端看见而把 home 指回 `~/.codex`。
-**不要整目录重建这个 home**：sessions/ 里是所有线程的 rollout，删了 `thread/resume` 找不到历史。
+`foreman setup --codex-home shared|isolated` 必须显式选择：
 
-## 与 codex-exec 备用引擎的关系
+- `shared` 使用用户的 `~/.codex`，线程能在桌面端看到，并继承该 home 的 MCP、插件、notify 与全局 `AGENTS.md`。
+- `isolated` 使用 `~/.foreman/codex-home/`，以 `auth.json` 软链复用登录态，配置保持精简；线程不出现在桌面端，通过 `foreman report/tail` 查看。
 
-`foreman run --engine codex-exec` 走 pi-fleet 原样的 `codex exec --json` 路径（每票一份 `codex-home-run/`，AGENTS.md 注入），实测过、可退回。
-两条路的 thread id 分开存（`codex_thread` vs `codex_exec_thread`），互不能 resume；换引擎 = 换会话，返工上下文要在 prompt 里补。
+新线程按当前模式选择 home；线程建立时把 home 记进账本，续跑始终使用它创建时的原 home，即使之后切换了全局模式。**不要整目录重建正在使用的 home**：`sessions/` 保存线程 rollout，删除后 `thread/resume` 找不到历史。
 
 ## 已验证（2026-09-11 首跑，scratch 仓库 + luna/low）
 
@@ -134,7 +119,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 - **账本里的线程记录**：request.json 的 `meta_thread_key` 支持点路径（`threads.<名>.ref`），执行体拿到 thread id 后写进票的 meta.json；票下多条线程各一条记录，引擎无关。
 - **线程命名**：`thread/name/set {threadId, name}` → `{}`，`thread/read` 的 `thread.name` 回读一致，并推 `thread/name/updated` 通知（2026-09-11 探针，thread/start 不花 token）。执行体在 thread/start / resume 后按 request.json 的 `thread_name` 设置，失败只记事件不阻塞。
 - **线程 cwd = 项目根（2026-09-11 晚定稿）**：`thread/start` 的 `cwd` 一律是编排者的项目目录，不是 worktree；实测 `instructionSources` = `~/.codex/AGENTS.md` + `<项目根>/AGENTS.md`，所以项目规则不用再由 foreman 注入。桌面端把线程归到项目的规则是 cwd 与项目 rootPaths **精确相等**（app.asar 里 `path.relative(root, cwd) === ''`），cwd 是 worktree 就落到 Tasks；app-server 有未公开的 `project/list` / `project/update`（roots 可多个），但不需要用。工作目录（PR 的 worktree）走请求的 `work_dir`，进 `_fleet: thread` 事件的 `workDir`，摘要器据此标出工作目录之外的改动。
-- **`AGENTS.md` 自动注入范围**（探针 2026-09-11 晚，worktree + 三层暗号）：codex 只注入「仓库根到 cwd」链上的 `AGENTS.md`；worktree 里的 `.git` **文件**就算仓库根，仓库根之上的父目录（工作区级 AGENTS.md）**一个字都不读**；子目录的 `AGENTS.md` 在 cwd 为根时不注入（按二进制里的说明，模型碰到该子树文件时才按范围适用）。`developerInstructions` 与 `AGENTS.md` 并存，模型自己能分清（它把 AGENTS.md 归为"用户消息提供"），直接指令优先。二进制里另有两条：`project_doc_max_bytes` 默认 32 KiB（超出截断；工作区 AGENTS.md 已 39 KiB）；`AGENTS.md` 与开发者消息都是「可信内容、可建立 user_authorization」，即它们能替自动审查放行沙箱外动作。结论：仓库内规则不用替执行者指定；仓库外规则才走 `rules.executor_rules_file`，且不写放行的话。
+- **`AGENTS.md` 自动注入范围**（探针 2026-09-11 晚，worktree + 三层暗号）：codex 只注入「仓库根到 cwd」链上的 `AGENTS.md`；worktree 里的 `.git` **文件**就算仓库根，仓库根之上的父目录（工作区级 AGENTS.md）**一个字都不读**；子目录的 `AGENTS.md` 在 cwd 为根时不注入（按二进制里的说明，模型碰到该子树文件时才按范围适用）。`developerInstructions` 与 `AGENTS.md` 并存，模型自己能分清（它把 AGENTS.md 归为"用户消息提供"），直接指令优先。二进制里另有两条：`project_doc_max_bytes` 默认 32 KiB（超出截断；工作区 AGENTS.md 已 39 KiB）；`AGENTS.md` 与开发者消息都是「可信内容、可建立 user_authorization」，即它们能替自动审查放行沙箱外动作。结论：仓库内规则由 cwd 自动加载；角色、批次背景与额外 `--context` 由 foreman 组装进 `developerInstructions`，没有额外的规则文件配置键。
 - 续线程时若模型与首轮不同，会来一条 `warning`（"session was recorded with model X but is resuming with Y"），无害，summarize 列在运行提示里。
 
 ## 未验证（下次要盯的）
@@ -143,7 +128,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 2. `turn/interrupt` 后 `turn/completed.status=interrupted` 是否可靠到达（否则执行体 20 秒后强杀，rc=143）。
 3. 长任务自动压缩上下文后 developerInstructions 是否仍在场（`thread/compacted` 通知可观察）。
 4. 并发 2 路以上的订阅额度表现；terra/high 档一轮真实票的 token 与用时。
-5. ~~真仓库（非 /private/tmp 下）的沙箱行为与 scratch 一致~~ **已验**（2026-09-11 晚，一个真实 monorepo 的布局 `data/worktrees/<repo>-<id>` + `.git` 文件指回主仓库）：doctor 六项全 OK，含「主仓库根不可写（如期被挡）」与「git dir 可写」。
+5. ~~真仓库（非 /private/tmp 下）的沙箱行为与 scratch 一致~~ **已验**（2026-09-11 晚，一个真实 monorepo 的布局 `data/worktrees/<repo>-<id>` + `.git` 文件指回主仓库）。当前线程 cwd 是项目根，因此项目根整体可写；工作目录范围主要靠任务书约束与 report 事后探针，common gitdir 仍需单独加入 writable roots。
 
 ## 零成本工具
 

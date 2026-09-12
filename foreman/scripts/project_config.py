@@ -104,7 +104,7 @@ COMMENTS = {
             "copy_env = bootstrap 从主 checkout 拷进 worktree 的未跟踪文件。install_cmd 空 = 按 lockfile 自动。branch_check=strict 时不合规直接拒 bootstrap。",
     "verify": "机械验收默认命令（foreman check）。空 = 从当前仓库 package.json 自动取 type-check / lint；每张票的完成定义可覆盖（foreman check <id> <cmd...>）。",
     "github": "gh 可以是包装脚本（foreman pr / doctor 用）。pr_draft = 建 PR 默认 draft。汇总分支、关票、issue 首行契约这些是编排者按项目规则做的事，不在这里配。",
-    "engines": "角色没写 engine 时的默认执行器（codex / codex-exec / pi，pi 装了就能用）。concurrency = 从本项目派发时的并发上限（计数仍是本机所有项目合计在跑的 codex 线程），覆盖 ~/.foreman/config.toml 的本机默认。",
+    "engines": "角色没写 engine 时的默认执行器（codex / pi，pi 装了就能用）。concurrency = 从本项目派发时的并发上限（计数仍是本机所有项目合计在跑的 codex 线程），覆盖 ~/.foreman/config.toml 的本机默认。",
     "roles": "本项目要覆盖的角色档位（同名覆盖 ~/.foreman/config.toml 的 implement / review / mechanical）。单次 --model / --effort 可覆盖。",
     "codex": "codex 执行器细节。沙箱不在这里配：实现固定 workspace-write、复审固定 read-only，完全权限只有用户明确要求时 foreman run --full-access 「用户原话」。sandbox_network / web_search 是给执行者的能力开关。"
              "审批默认『替我审批』= approval_policy=on-request + approvals_reviewer=auto_review；approvals 是自动审查仍回给编排者时的兜底（decline/accept）。question_timeout 是执行者提问时等编排者的秒数，0=立即兜底答复。hold_idle_minutes：常驻执行体占着线程、空闲多久自动释放（编排者 release / cleanup 之前桌面端打不开该线程）。",

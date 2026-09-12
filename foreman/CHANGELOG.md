@@ -1,5 +1,11 @@
 # foreman 版本记录
 
+## 1.4.0 — 2026-09-12
+
+- 退役 `codex-exec` 引擎，删除脚本执行入口、旧事件摘要和配置 / 帮助枚举；旧线程改用 codex 新线程继续。
+- 把仍适用于 app-server 的 common gitdir、网络、只读缓存噪音、二进制宿主与会话 home 经验合并到 app-server 文档，删除独立 CLI 文档。
+- 纠正文档中旧执行器对比、CODEX_HOME 固定隔离、项目根不可写和已删除规则文件配置等与当前实现冲突的说明。
+
 ## 1.3.2 — 2026-09-12
 
 - issue #22：新增隔离 CODEX_HOME / 插件环境的可编排 app-server stdio 回放夹具，固定协议基线并纳入 selftest。

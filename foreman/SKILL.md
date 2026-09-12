@@ -2,12 +2,12 @@
 name: foreman
 description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.3.2"
+  version: "1.4.0"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码
 
-你是编排者：需求分析、规划、推进、审核；执行者做排查与实现。主线是 **Claude Code 当编排者、派 codex 干活**（走 `codex app-server` 协议）；备用引擎 codex-exec（`codex exec` 路径），可选引擎 pi（装了才有），编排流程三者共用。Codex 当编排者是副线（`references/orchestrator-codex.md`，未实现）。真源仓库是 github.com/fatoncn/skills（`foreman/` 子目录）：本机克隆到 `~/skills`，用符号链接装到 `~/.claude/skills/foreman`，改动直接提交到该仓库；`~/.agents/skills/` 会被 Codex 扫到，要不要给 Codex 用由使用者定。
+你是编排者：需求分析、规划、推进、审核；执行者做排查与实现。主线是 **Claude Code 当编排者、派 codex 干活**（走 `codex app-server` 协议）；可选引擎 pi（装了才有），编排流程两者共用。Codex 当编排者是副线（`references/orchestrator-codex.md`，未实现）。真源仓库是 github.com/fatoncn/skills（`foreman/` 子目录）：本机克隆到 `~/skills`，用符号链接装到 `~/.claude/skills/foreman`，改动直接提交到该仓库；`~/.agents/skills/` 会被 Codex 扫到，要不要给 Codex 用由使用者定。
 
 **核心口径：编排层统筹，执行层干活。** 你是编排层，只做四件事：需求分析、规划（拆票、写任务书、定契约）、推进（派活、答疑、收敛）、审核（增量代码逐行读，方法在阶段 4）。**所有能独立切分的执行工作都交给执行层**（走哪条通道按下面「第二级」的优先级选）：拆票前的排查与调研、实现、复审、验收冒烟、收尾，都是执行工作。拿 bug 举例：排查交给执行，下判断交给编排。留给自己的只有三类：要用只有本会话才有的东西（会话上下文、会话里的 MCP、编排者所在 agent 自己的能力，如 Claude 的 Artifact）——**需要编排层独有能力的活不能交给 foreman**，执行者拿不到这些，派过去只会卡住；要与用户来回确认口径的判断；一两步就能做完的小事。已有口径能覆盖的小风险决定你直接拍板并说一句按的哪条，拿不准的问用户要口径。
 
@@ -43,7 +43,7 @@ skill 以**仓库内的票**为工作单位；票下挂若干线程；每条线�
 | **PR** | 票下若干个，每个 = 一个 worktree + 一条分支 + 一个基线（`here` 登记的检出也算一个）。是框架对编排者的约束，线程感觉不到它 | `bootstrap <id> --pr <名>` 建，`cleanup <id> --pr <名>` 删；只有一个时各命令不用 `--pr` |
 | **线程** | 票下若干条。建立时绑定角色 + 引擎，记引擎内引用和轮次；cwd 永远是项目根，每轮针对票下的一个 PR 干活（`--pr`）；默认按角色命名，`--thread <名>` 另起，同角色可多条 | `run` 开或续，`review` 开复审线程，`threads <id>` 查 |
 | **角色** | 线程干什么活、用什么档位：implement / review / mechanical 必需，再多的自定；每个角色一份角色文件（契约） | 本机 `~/.foreman/config.toml`，项目可覆盖 |
-| **引擎** | 线程属于且只属于一个：codex（app-server）/ codex-exec / pi | 角色默认引擎，`--engine` 只在新开线程时可指定 |
+| **引擎** | 线程属于且只属于一个：codex（app-server）/ pi | 角色默认引擎，`--engine` 只在新开线程时可指定 |
 
 脚本强制的几条：**跨引擎绝不共用一条线程**；**线程角色不中途换**（续线程时角色、引擎自动取记录，显式给的不一致直接拒绝，要换就 `--thread` 另起）；实现与收尾续同一条线程；复审永远新线程；PR 之间不共用目录；**同一 PR 同时只跑一条线程**（另一条还在跑就拒绝派发）。**真源是另一回事**：真源是需求从哪来（issue、文档、用户口径），写在任务书首段和 PR 描述里；票只把一份活和它的目录、分支、线程绑在一起。
 
@@ -293,7 +293,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN selftest [--keep]` | 零 token 自测：隔离目录 + 假 codex，把 setup / init / here / bootstrap / run / review / check / diff / pr / cleanup 和各条守卫走一遍。**改过 skill 的脚本就跑它**，全绿再用 |
 | `$FOREMAN bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
 | `$FOREMAN here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
-| `$FOREMAN run <id> --prompt f --title 内容 [--pr 名] [--role 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|codex-exec\|pi] [--model] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮；并发一律 `--detach`；`--role research` / `--role accept` 配 `--writable <交付目录>` = 调研 / 验收线程 |
+| `$FOREMAN run <id> --prompt f --title 内容 [--pr 名] [--role 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|pi] [--model] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮；并发一律 `--detach`；`--role research` / `--role accept` 配 `--writable <交付目录>` = 调研 / 验收线程 |
 | `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 口径变化默认立刻通知；`tail` 确认方向已改；刚排队的任务用 `--from-queue` 立刻生效 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
@@ -307,7 +307,6 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 ## 参考
 
 - `references/codex-app-server.md` —— app-server 协议实测、request.json 字段、审批 / 提问机制、未验证项（改执行体前先读）
-- `references/codex-cli.md` —— `codex exec` 实测行为与沙箱四坑（codex-exec 备用引擎；沙箱部分对 app-server 同样成立）
 - `references/pi-cli.md` —— pi 实测（可选执行器）
 - `references/issue-pr-flow.md` —— 背景文档 / 任务书 / 返工 / PR 描述 / 收尾任务书 / 复审关注点 / 验收包模板
 - `references/project-config.md` —— foreman.toml 字段说明
