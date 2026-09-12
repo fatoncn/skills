@@ -1,0 +1,4 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":null,"role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"type":"system","subtype":"init","session_id":"session-eof","model":"claude-sonnet","permissionMode":"auto"}
+{"type":"assistant","uuid":"eof-text","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"partial final"}]}}
+{"_foreman":{"type":"turn_summary","rc":3,"raw_rc":2,"subtype":"protocol_error","terminal_reason":"eof","session_id":"session-eof","usage":{},"total_cost_usd":null,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

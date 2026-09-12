@@ -608,6 +608,8 @@ PY2
 command_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/command-dedup.jsonl")"
 if printf '%s' "$command_out" | grep -q '最后仍失败的命令' && printf '%s' "$command_out" | grep -q 'still-bad' && ! printf '%s' "$command_out" | grep -q 'retry-me'; then ok "report 命令失败按命令去重且末次成功消除失败"; else bad "report 命令失败去重"; fi
 if printf '%s' "$command_out" | grep -q '最后仍失败的命令 3 条' && printf '%s' "$command_out" | grep -q '迭代中命令失败 4 次'; then ok "摘要去重键区分 cwd 与 500 字后缀并保留失败次数"; else bad "摘要完整命令 cwd 去重键"; fi
+echo "== claude 摘要器 =="
+python3 -B "$SKILL_DIR/tests/claude_events_replay.py" --selftest && ok "claude 事件夹具与旧引擎黄金输出" || bad "claude 事件夹具与旧引擎黄金输出"
 echo "== 引导竞态与执行体 =="
 python3 - "$SKILL_DIR/scripts/codex_appserver.py" "$T" <<'PY2' && ok "执行体引导：成功、WAITING、结束竞态、失败保留、旧正文、空号与 FIFO" || bad "执行体引导竞态"
 import importlib.util, json, os, pathlib, tempfile, types, sys

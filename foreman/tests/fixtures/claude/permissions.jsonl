@@ -1,0 +1,6 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-permissions","role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"_foreman":{"type":"permission","tool":"Read","decision":"allow","reason":"read only","input_digest":"digest-allow"}}
+{"_foreman":{"type":"permission","tool":"Bash","decision":"ask","reason":"needs classification","input_digest":"digest-ask"}}
+{"_foreman":{"type":"permission","tool":"Bash","decision":"deny","reason":"forbidden","input_digest":"digest-deny"}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"session-permissions","usage":{},"total_cost_usd":0,"permission_denials":[]}
+{"_foreman":{"type":"turn_summary","rc":0,"raw_rc":0,"subtype":"success","terminal_reason":"result","session_id":"session-permissions","usage":{},"total_cost_usd":0,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

@@ -1,0 +1,7 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-unknown","role":"research","model":"sonnet","effort":"xhigh","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":123}}
+{"type":"future_event","payload":{"safe":"value"}}
+{"type":"future_event","payload":{"safe":"again"}}
+{"type":"system","subtype":"api_error","error":"service unavailable"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"session-unknown","usage":{},"total_cost_usd":0,"permission_denials":[]}
+{"_foreman":{"type":"turn_summary","rc":1,"raw_rc":1,"subtype":"error_during_execution","terminal_reason":"result","session_id":"session-unknown","usage":{},"total_cost_usd":0,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

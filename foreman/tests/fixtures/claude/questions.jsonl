@@ -1,0 +1,7 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-questions","role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"_foreman":{"type":"question","qid":"qid-answered","state":"asked"}}
+{"_foreman":{"type":"question","qid":"qid-answered","state":"answered"}}
+{"_foreman":{"type":"question","qid":"qid-timeout","state":"asked"}}
+{"_foreman":{"type":"question","qid":"qid-timeout","state":"timeout"}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"session-questions","usage":{},"total_cost_usd":0,"permission_denials":[]}
+{"_foreman":{"type":"turn_summary","rc":0,"raw_rc":0,"subtype":"success","terminal_reason":"result","session_id":"session-questions","usage":{},"total_cost_usd":0,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

@@ -1,0 +1,6 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-deny","role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"type":"assistant","uuid":"deny-final","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"continued after denial"}]}}
+{"type":"assistant","uuid":"deny-tool","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-denied","name":"Bash","input":{"command":"git push origin topic"}}]}}
+{"_foreman":{"type":"permission","tool":"Bash","decision":"deny","reason":"remote write","input_digest":"abc123"}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"session-deny","usage":{"input_tokens":2,"output_tokens":1},"total_cost_usd":0.001,"permission_denials":[{"tool_name":"Bash","tool_use_id":"tool-denied","tool_input":{"command":"git push"}}]}
+{"_foreman":{"type":"turn_summary","rc":0,"raw_rc":0,"subtype":"success","terminal_reason":"result","session_id":"session-deny","usage":{},"total_cost_usd":0.001,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

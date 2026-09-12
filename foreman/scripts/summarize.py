@@ -22,6 +22,7 @@ import time
 
 from appserver_identity import TurnIdentity
 from check_state import check_result
+from claude_events import event_rows as claude_event_rows, is_claude, scan_claude
 
 # 越界命令探针：执行器侧靠角色文件（契约）约束，这里做事后检测，双保险。命中只是「需要编排者判断」，项目规则允许的由编排者放行。
 FORBIDDEN = [
@@ -93,6 +94,8 @@ def load(path: str):
 
 
 def detect_engine(events) -> str:
+    if is_claude(events):
+        return "claude"
     for event in events:
         if event.get("jsonrpc") == "2.0" or event.get("_fleet"):
             return "appserver"
@@ -113,6 +116,7 @@ def blank_state() -> dict:
         "engine_down": None,
         "thread_busy": None,       # appserver: 线程被别的客户端占着（桌面端打开了它），rc=5       # appserver: 执行器不可用（404 / 5xx / 额度 / 登录），rc=4
         "cost": 0.0,               # 仅 pi：美元
+        "cost_basis": None,        # claude: estimate
         "tokens": 0,
         "in_tokens": 0,
         "out_tokens": 0,
@@ -125,6 +129,10 @@ def blank_state() -> dict:
         "forbidden": [],
         "approvals": [],           # appserver: 回到执行体的审批请求及决定
         "auto_reviews": [],        # appserver: Codex 自动审查（替我审批）的决定
+        "permissions": [],         # claude: 权限 MCP 的决定
+        "permission_denials": [],  # claude: result.permission_denials
+        "claude_meta": {},         # claude: 首行标记与 turn_summary
+        "permission_mode": None,
         "steers": [],
         "requeued_steers": [],
         "questions": [],           # appserver: 向编排者提的问题
@@ -464,6 +472,8 @@ def scan(events, engine: str | None = None, role: str | None = None):
     engine = engine or detect_engine(events)
     if engine == "appserver":
         return scan_appserver(events, role)
+    if engine == "claude":
+        return scan_claude(events, blank_state(), probe_forbidden, role)
     return scan_pi(events, role)
 
 
@@ -482,16 +492,26 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     eng = state["engine"]
     codex_like = eng == "appserver"
 
-    print(f"=== {eng} run 摘要 · {os.path.basename(log_path)}" + (f" · role={role}" if role else "") + " ===")
+    marker = (state.get("claude_meta") or {}).get("marker") or {}
+    effective_role = role or (marker.get("role") if eng == "claude" else None)
+    print(f"=== {eng} run 摘要 · {os.path.basename(log_path)}" + (f" · role={effective_role}" if effective_role else "") + " ===")
+    if eng == "claude":
+        print(f"session={state['id'] or '—'} model={state['model'] or '—'} effort={state['effort'] or '—'} "
+              f"permission_mode={state.get('permission_mode') or '—'} sandbox_scope=bash_children")
+        if state.get("permission_mode") == "bypassPermissions":
+            print("!FULL ⚠ 本轮使用完全权限（无沙箱、无审批）")
     for note in state["notices"]:
         if note.startswith("⚠ 本轮使用完全权限"):
             print(note)
-    label = "thread" if codex_like else "session"
-    extra = f"  effort={state['effort']}" if state.get("effort") else ""
     dur = f"  用时={state['duration_ms'] // 1000}s" if state.get("duration_ms") else ""
-    print(f"{label}={state['id']}  model={state['model'] or '—'}{extra}  turns={state['turns']}  "
-          f"tools={state['tool_calls']}" + (f"  files={len(visible_files)}" if codex_like else "")
-          + (f"  web_search={state['web_searches']}" if state["web_searches"] else "") + dur)
+    if eng == "claude":
+        print(f"turns={state['turns']}  tools={state['tool_calls']}  files={len(visible_files)}" + dur)
+    else:
+        label = "thread" if codex_like else "session"
+        extra = f"  effort={state['effort']}" if state.get("effort") else ""
+        print(f"{label}={state['id']}  model={state['model'] or '—'}{extra}  turns={state['turns']}  "
+              f"tools={state['tool_calls']}" + (f"  files={len(visible_files)}" if codex_like else "")
+              + (f"  web_search={state['web_searches']}" if state["web_searches"] else "") + dur)
     if codex_like:
         print(f"tokens: root in={state['in_tokens']} (cached {state['cached_tokens']})  "
               f"root out={state['out_tokens']}  total={state['tokens']}"
@@ -501,8 +521,12 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
             if isinstance(total, dict):
                 print(f"tokens[{label_}]: in={_usage_int(total, 'inputTokens', 'input_tokens')}  "
                       f"out={_usage_int(total, 'outputTokens', 'output_tokens')}")
-    else:
+    elif eng == "pi":
         print(f"cost=${state['cost']:.4f}  tokens={state['tokens']}")
+    else:
+        print(f"tokens: in={state['in_tokens']} (cached {state['cached_tokens']})  "
+              f"out={state['out_tokens']}  total={state['tokens']}")
+        print(f"估算（list 价）=${state['cost']:.4f}")
 
     if final_command_errors:
         print("\n--- 最后仍失败的命令（同一命令仅末次结果）---")
@@ -523,6 +547,10 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     if not state["settled"]:
         if eng == "appserver":
             blockers.append(f"turn 没有正常完成（status={state['status'] or '未知'}）：可能超时被杀、被中断、模型侧失败或协议错误")
+        elif eng == "claude":
+            summary = (state.get("claude_meta") or {}).get("turn_summary") or {}
+            blockers.append("没有 result：可能超时被杀、被中断或协议错误"
+                            f"（raw_rc={summary.get('raw_rc', '未知')}）")
         else:
             blockers.append("会话没有正常结束（无 agent_settled）：可能超时被杀、崩溃或被中断")
     if state["errors"]:
@@ -545,6 +573,8 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         blockers.append(f"自动审查拒绝了 {len(state['auto_reviews'])} 次沙箱外动作（看它有没有绕路）")
     if state["questions"]:
         blockers.append(f"执行者向编排者提了 {len(state['questions'])} 个问题（看是否用了兜底答复）")
+    if state.get("permission_denials"):
+        blockers.append(f"result.permission_denials 非空（{len(state['permission_denials'])} 条）")
 
     if blockers:
         print("\n!!!! 需要人工/编排者判断 !!!!")
@@ -573,6 +603,10 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         print("\n--- 审批请求（回到执行体的）---")
         for kind, decision, what in state["approvals"]:
             print(f"  [{kind} → {decision}] {what}")
+    if state.get("permissions"):
+        print("\n--- 权限 MCP 的决定 ---")
+        for decision, tool, reason, digest in state["permissions"]:
+            print(f"  [{decision} · tool={tool} · digest={digest}] {reason or '—'}")
 
     for key, title in (("steers", "本轮收到的引导消息"), ("requeued_steers", "引导转排队（steer_requeued）")):
         if state[key]:
@@ -587,7 +621,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     if state["questions"]:
         print("\n--- 执行者的提问 ---")
         for q in state["questions"]:
-            print(f"  ? {q}")
+            print(f"  ? {stringify(q, 300)}")
 
     if state["tool_errors"]:
         print("\n--- 其它工具失败明细（最多 10 条）---")
@@ -633,10 +667,10 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     return 0
 
 
-def tail(log_path: str, count: int = 20) -> int:
+def tail(log_path: str, count: int = 20, engine: str | None = None) -> int:
     """人读的进度视图：最近 N 个 item 级事件。跑到一半随时可看。"""
     events = load(log_path) if os.path.isfile(log_path) else []
-    rows = event_rows(events)
+    rows = event_rows(events, engine)
     for row in rows[-count:]:
         print(row)
     if not rows:
@@ -644,8 +678,10 @@ def tail(log_path: str, count: int = 20) -> int:
     return 0
 
 
-def event_rows(events):
+def event_rows(events, engine: str | None = None):
     """事件流共用的一行摘要；tail 与 wait 进展都从这里取。"""
+    if engine == "claude" or is_claude(events):
+        return claude_event_rows(events)
     rows = []
     for event in events:
         foreman = event.get("_fleet")
@@ -710,13 +746,13 @@ def _event_time(event):
     return value
 
 
-def progress(log_path, state_path, label, status, progress_seconds, now=None):
+def progress(log_path, state_path, label, status, progress_seconds, now=None, engine=None):
     """输出 wait 的零或多条单行进展，并把跨轮询状态写入临时文件。"""
     now = float(now if now is not None else time.time())
     events = load(log_path) if os.path.isfile(log_path) else []
-    scanned = scan(events)
+    scanned = scan(events, engine)
     scanned["writable_extra"] = _extra_writable_roots(log_path)
-    rows = event_rows(events)
+    rows = event_rows(events, engine)
     last = _one_line(rows[-1] if rows else "尚无事件")
     stem = log_path[:-len(".jsonl")] if log_path.endswith(".jsonl") else log_path
     try:
@@ -751,6 +787,15 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
                              "at": event_at or known_at or now}
         elif method == "item/completed" and ident:
             active.pop(ident, None)
+        if scanned["engine"] == "claude" and event.get("type") == "assistant":
+            for block in (event.get("message") or {}).get("content") or []:
+                if block.get("type") == "tool_use" and block.get("name") == "Bash" and block.get("id"):
+                    active[block["id"]] = {"command": _one_line(stringify((block.get("input") or {}).get("command"), 180)),
+                                           "at": event_at or (known_active.get(block["id"]) or {}).get("at") or now}
+        elif scanned["engine"] == "claude" and event.get("type") == "user":
+            for block in (event.get("message") or {}).get("content") or []:
+                if block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    active.pop(block["tool_use_id"], None)
     if not active_status:
         active = {}
 
@@ -842,6 +887,7 @@ def listing(issues_home: str) -> int:
                        if re.fullmatch(r"run-\d+\.(?:jsonl|cancelled)", f)})
         cost = 0.0
         cx_tokens = 0
+        claude_tokens = 0
         engines = []
         last = "—"
         check = "—"
@@ -860,26 +906,31 @@ def listing(issues_home: str) -> int:
             state = scan(events)
             if state["engine"] == "appserver":
                 cx_tokens += state["tokens"]
+            elif state["engine"] == "claude":
+                claude_tokens += state["tokens"]
+                cost += state["cost"]
             else:
                 cost += state["cost"]
-            engines.append({"appserver": "a", "pi": "p"}.get(state["engine"], "?"))
+            engines.append({"appserver": "a", "pi": "p", "claude": "l"}.get(state["engine"], "?"))
             last = "ok" if state["settled"] and not state["errors"] else "CHECK"
         spend = f"${cost:.3f}" if cost else ""
         if cx_tokens:
             spend += (" +" if spend else "") + f"{cx_tokens // 1000}k tok"
+        if claude_tokens:
+            spend += (" +" if spend else "") + f"{claude_tokens // 1000}k claude tok"
         rows.append((name, branch, base, meta.get("gh_issue", "—"), "".join(engines) or "—",
                      spend or "—", check, last, "有" if os.path.isdir(worktree) else "已清理"))
     if not rows:
         print("（没有登记的 issue）")
         return 0
-    header = ("issue", "branch", "base", "gh", "runs(a/p)", "spend", "check", "last", "worktree")
+    header = ("issue", "branch", "base", "gh", "runs(a/p/l)", "spend", "check", "last", "worktree")
     widths = [max(len(str(r[i])) for r in ([header] + rows)) for i in range(len(header))]
     line = lambda r: "  ".join(str(r[i]).ljust(widths[i]) for i in range(len(header)))
     print(line(header))
     print("  ".join("-" * w for w in widths))
     for row in rows:
         print(line(row))
-    print("\nruns 列每字符代表一轮: a=codex app-server, p=pi, ?=未知（按轮次顺序）")
+    print("\nruns 列每字符代表一轮: a=codex app-server, p=pi, l=claude, ?=未知（按轮次顺序）")
     print("codex 走 ChatGPT 订阅额度，没有美元成本，只计 token。")
     return 0
 
@@ -903,15 +954,15 @@ if __name__ == "__main__":
         print(scan(load(argv[1]), engine)["final"])
         sys.exit(0)
     if len(argv) >= 2 and argv[0] == "--tail":
-        sys.exit(tail(argv[1], int(argv[2]) if len(argv) > 2 else 20))
+        sys.exit(tail(argv[1], int(argv[2]) if len(argv) > 2 else 20, engine))
     if len(argv) >= 6 and argv[0] == "--progress":
         for line in progress(argv[1], argv[2], argv[3], argv[4], int(argv[5]),
-                             float(argv[6]) if len(argv) > 6 else None):
+                             float(argv[6]) if len(argv) > 6 else None, engine):
             print(line)
         sys.exit(0)
     if not argv:
         print(
-            "用法: summarize.py [--engine appserver|pi] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
+            "用法: summarize.py [--engine appserver|pi|claude] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
             "      summarize.py --list <issues-dir>\n"
             "      summarize.py --final <run.jsonl>    # 只吐交付报告\n"
             "      summarize.py --tail <run.jsonl> [N] # 最近 N 个 item 级事件\n"

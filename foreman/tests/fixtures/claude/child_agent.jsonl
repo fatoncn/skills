@@ -1,0 +1,5 @@
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-child","role":"research","model":"sonnet","effort":"xhigh","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"type":"assistant","uuid":"root-final","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"root final"}]}}
+{"type":"assistant","uuid":"child-final","parent_tool_use_id":"tool-task","message":{"role":"assistant","content":[{"type":"text","text":"child final must not win"},{"type":"tool_use","id":"child-read","name":"Read","input":{"file_path":"/workspace/a"}}],"usage":{"input_tokens":999,"output_tokens":999}}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"session-child","usage":{"input_tokens":5,"output_tokens":2},"total_cost_usd":0.002,"permission_denials":[]}
+{"_foreman":{"type":"turn_summary","rc":0,"raw_rc":0,"subtype":"success","terminal_reason":"result","session_id":"session-child","usage":{},"total_cost_usd":0.002,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}
