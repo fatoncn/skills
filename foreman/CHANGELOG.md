@@ -1,5 +1,13 @@
 # foreman 版本记录
 
+## 1.5.0 — 2026-09-12
+
+- C1：新增 Claude Code CLI 一轮一进程桥、session resume、原生 `auto` + 权限 MCP、独立并发池、严格 full-access 双层授权与 Codex 分发快照门。
+- C2：新增 Claude stream-json 事件解析、report / progress / listing 集成、权限拒绝与目录外改动探针，并保留旧 Codex / pi 黄金输出。
+- C3：新增 Claude 只读工具级复审、下一轮 steer 队列、零 token doctor 自检、`review_readonly=tools_only` 横幅与完整配置 / CLI 文档。
+- 允许例外：`listing` 为新引擎增加 `l = claude` 图例而变更表头 / 列宽；report、event rows 与 progress 的旧引擎输出仍逐字节不变。
+- 凭证落盘：用户 MCP 配置只写入 0600 的本轮临时 `mcp.json`，成功、失败或中断都在统一收尾删除；持久 `claude.json` 只留 server 名字。
+
 ## 1.4.0 — 2026-09-12
 
 - 退役 `codex-exec` 引擎，删除脚本执行入口、旧事件摘要和配置 / 帮助枚举；旧线程改用 codex 新线程继续，旧 `codex exec` 事件日志不再解析。

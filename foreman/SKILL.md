@@ -1,13 +1,13 @@
 ---
 name: foreman
-description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
+description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，派 codex 或 claude 在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；pi 为可选引擎。用户说「派给 codex / claude」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「收尾这张 PR」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码
 
-你是编排者：需求分析、规划、推进、审核；执行者做排查与实现。主线是 **Claude Code 当编排者、派 codex 干活**（走 `codex app-server` 协议）；可选引擎 pi（装了才有），编排流程两者共用。Codex 当编排者是副线（`references/orchestrator-codex.md`，未实现）。真源仓库是 github.com/fatoncn/skills（`foreman/` 子目录）：本机克隆到 `~/skills`，用符号链接装到 `~/.claude/skills/foreman`，改动直接提交到该仓库；`~/.agents/skills/` 会被 Codex 扫到，要不要给 Codex 用由使用者定。
+你是编排者：需求分析、规划、推进、审核；执行者做排查与实现。主线是 **派 codex 或 claude 干活**：codex 走 app-server 常驻线程，claude 走 Claude Code CLI 一轮一进程；pi 为可选引擎。三者共用票、PR、线程与验收流程。真源仓库是 github.com/fatoncn/skills（`foreman/` 子目录）：本机克隆到 `~/skills`，用符号链接装到 `~/.claude/skills/foreman`；Codex 另装到 `~/.codex/skills/foreman`。
 
 **核心口径：编排层统筹，执行层干活。** 你是编排层，只做四件事：需求分析、规划（拆票、写任务书、定契约）、推进（派活、答疑、收敛）、审核（增量代码逐行读，方法在阶段 4）。**所有能独立切分的执行工作都交给执行层**（走哪条通道按下面「第二级」的优先级选）：拆票前的排查与调研、实现、复审、验收冒烟、收尾，都是执行工作。拿 bug 举例：排查交给执行，下判断交给编排。留给自己的只有三类：要用只有本会话才有的东西（会话上下文、会话里的 MCP、编排者所在 agent 自己的能力，如 Claude 的 Artifact）——**需要编排层独有能力的活不能交给 foreman**，执行者拿不到这些，派过去只会卡住；要与用户来回确认口径的判断；一两步就能做完的小事。已有口径能覆盖的小风险决定你直接拍板并说一句按的哪条，拿不准的问用户要口径。
 
@@ -43,7 +43,7 @@ skill 以**仓库内的票**为工作单位；票下挂若干线程；每条线�
 | **PR** | 票下若干个，每个 = 一个 worktree + 一条分支 + 一个基线（`here` 登记的检出也算一个）。是框架对编排者的约束，线程感觉不到它 | `bootstrap <id> --pr <名>` 建，`cleanup <id> --pr <名>` 删；只有一个时各命令不用 `--pr` |
 | **线程** | 票下若干条。建立时绑定角色 + 引擎，记引擎内引用和轮次；cwd 永远是项目根，每轮针对票下的一个 PR 干活（`--pr`）；默认按角色命名，`--thread <名>` 另起，同角色可多条 | `run` 开或续，`review` 开复审线程，`threads <id>` 查 |
 | **角色** | 线程干什么活、用什么档位：implement / review / mechanical 必需，再多的自定；每个角色一份角色文件（契约） | 本机 `~/.foreman/config.toml`，项目可覆盖 |
-| **引擎** | 线程属于且只属于一个：codex（app-server）/ pi | 角色默认引擎，`--engine` 只在新开线程时可指定 |
+| **引擎** | 线程属于且只属于一个：codex（app-server）/ claude（Claude Code CLI）/ pi | 角色默认引擎，`--engine` 只在新开线程时可指定；codex / claude 各用独立并发池 |
 
 脚本强制的几条：**跨引擎绝不共用一条线程**；**线程角色不中途换**（续线程时角色、引擎自动取记录，显式给的不一致直接拒绝，要换就 `--thread` 另起）；实现与收尾续同一条线程；复审永远新线程；PR 之间不共用目录；**同一 PR 同时只跑一条线程**（另一条还在跑就拒绝派发）。**真源是另一回事**：真源是需求从哪来（issue、文档、用户口径），写在任务书首段和 PR 描述里；票只把一份活和它的目录、分支、线程绑在一起。
 
@@ -58,6 +58,7 @@ $FOREMAN doctor                              # 二进制 / 登录 / app-server �
 $FOREMAN setup --codex-home shared|isolated  # 必须显式二选一，不设不能派活
 $FOREMAN setup                               # 生成角色表 + 拷五份角色文件样例 → 表和文件都念给用户过目
 $FOREMAN setup --confirm                     # 用户确认后打标记；没确认之前 run / review 一律拒绝
+ln -sfn ~/skills/foreman ~/.codex/skills/foreman  # 装到 Codex；Codex 新会话生效
 ```
 
 建议先安装 ripgrep（`brew install ripgrep`）：执行者搜索更快、更省轮次，`foreman doctor` 会在未安装时提示，但不阻塞使用。
@@ -66,13 +67,13 @@ codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 forem
 
 角色 = 执行器 + 模型 + 推理档 + 角色文件：档位放 `~/.foreman/config.toml`，角色文件放 `~/.foreman/roles/<名>.md`（`setup` 从 `assets/roles/` 拷五份样例，可改可加，或 `[roles.<名>].prompt` 指到别处）。implement / review / mechanical 三个参考角色必需，research / accept 建议保留；缺角色或缺文件拒绝派活；再多的自定，`run --role <名>` 取用。按**档位描述**选模型，不绑死模型名（模型会迭代，`doctor` 打印当前可用模型与推理档）：
 
-| 角色 | 干什么 | 档位描述 | 今天的对应（2026-09-11） |
+| 角色 | 干什么 | Codex 档位（2026-09-11） | Claude 档位 |
 |---|---|---|---|
-| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + medium | gpt-5.6-sol / medium |
-| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | 旗舰 + high | gpt-6-astra / high |
-| `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | 次旗舰 + low～medium，便宜但精准 | gpt-5.6-terra / medium |
-| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 旗舰 + high 及以上 | gpt-6-astra / high |
-| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 旗舰或次旗舰 + high（比实现者高一档，假「通过」最贵；多是浏览器脏活） | gpt-5.6-sol / high |
+| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | gpt-5.6-sol / medium | sonnet / medium |
+| `review` | 对抗性复审：只看 diff，永远新线程、只读 | gpt-6-astra / high | fable / high |
+| `mechanical` | 轻活：按既定契约接线，不做设计取舍 | gpt-5.6-terra / medium | sonnet / low |
+| `research` | 只读调研：排查、核事实、复现 | gpt-6-astra / high | sonnet / xhigh |
+| `accept` | 验收：真跑产品流程，发现问题只报不修 | gpt-5.6-sol / high | sonnet / high |
 
 **角色文件只写契约**：位置、沙箱事实、分工边界（探针会查什么）、提问方式、输出格式。怎么干活不写在里面，每轮由你写进任务书（模板有可选「工作纪律」段）、复审关注点用 `review --prompt`、收尾规则写在收尾任务书里；角色文件与项目规则或任务书冲突时以后者为准。**收尾不是角色**：由实现者带着原口径续同一线程做（`run --closeout`）。并发上限：本机 `engines.concurrency` 是默认（5），项目 `foreman.toml` 同名键可覆盖；计数是本机所有项目合计在跑的 codex 线程（run 与 review 都算），因为执行者和用户自己的 Codex 抢同一份订阅额度。
 
@@ -279,6 +280,13 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 
 任务书写成独立 markdown（放项目约定的交接目录，目录配 README 收录通用纪律），转发 prompt **整段贴在回复代码块里**：任务书路径 + 3～5 条关键要求 + 回报格式；**投递去向（开新会话 / 复用做 X 的那个会话）写在代码块外**给用户看，块内只放外部会话要读的字；一条消息多段 prompt 分别标去向，prompt 别夹在长汇报里。交接文档是快照，交接后不回写；进展真值在 PR / issue。收尾 prompt 首行提醒「开工先查分支 HEAD 与登记表里同 owner 是否已存在，存在即停」，防同一段 prompt 被贴进两个会话。
 
+## 已知降级
+
+- Claude 的 `steer` 只排到下一轮 `run`，不中断或谎报已注入当前进程。
+- Claude 复审只读是 Read / Glob / Grep 工具级，不是 OS 级只读。
+- 用户 MCP 的远程写不在本地 Bash / 文件事件探针观测面。
+- `listing` 图例含 `l = claude`，因新引擎字符增加而与旧版表头不同。
+
 ## 边界与成本
 
 - 执行者没有人工审批环节，约束靠四层：OS 沙箱（线程 cwd = 项目根，整个项目可写）、自动审查、「本轮位置」+ 角色文件里的分工边界、`report` 的事后探针（越界命令、工作目录之外的改动）。
@@ -295,7 +303,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN selftest [--keep]` | 零 token 自测：隔离目录 + 假 codex，把 setup / init / here / bootstrap / run / review / check / diff / pr / cleanup 和各条守卫走一遍。**改过 skill 的脚本就跑它**，全绿再用 |
 | `$FOREMAN bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
 | `$FOREMAN here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
-| `$FOREMAN run <id> --prompt f --title 内容 [--pr 名] [--role 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|pi] [--model] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮；并发一律 `--detach`；`--role research` / `--role accept` 配 `--writable <交付目录>` = 调研 / 验收线程 |
+| `$FOREMAN run <id> --prompt f --title 内容 [--pr 名] [--role 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|claude\|pi] [--model] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮；并发一律 `--detach`；claude 一轮一进程并用 session resume |
 | `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
 | `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 口径变化默认立刻通知；`tail` 确认方向已改；刚排队的任务用 `--from-queue` 立刻生效 |
 | `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
@@ -309,6 +317,7 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 ## 参考
 
 - `references/codex-app-server.md` —— app-server 协议实测、request.json 字段、审批 / 提问机制、未验证项（改执行体前先读）
+- `references/claude-code-cli.md` —— Claude Code CLI argv、settings / MCP、事件与升级复验清单
 - `references/pi-cli.md` —— pi 实测（可选执行器）
 - `references/issue-pr-flow.md` —— 背景文档 / 任务书 / 返工 / PR 描述 / 收尾任务书 / 复审关注点 / 验收包模板
 - `references/project-config.md` —— foreman.toml 字段说明

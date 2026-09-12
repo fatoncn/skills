@@ -43,7 +43,9 @@
 
 ## [engines]
 
-`concurrency`：从本项目派发时的并发上限，覆盖本机 config.toml 的默认（计数是本机所有项目合计）；`default`：角色没写 engine 时的默认执行器 `codex`（app-server）/ `pi`；pi 装了就能用，没有开关
+`concurrency`：codex 池从本项目派发时的并发上限，覆盖本机默认；`default`：角色没写 engine 时的默认执行器 `codex` / `claude` / `pi`。
+
+`[engines.claude] concurrency`：Claude 独立池上限，默认 3；与 codex 一样按本机所有项目的活进程合计，两个池不混算。
 
 ## 全局配置 `~/.foreman/config.toml`（本机一份，跨项目）
 
@@ -53,7 +55,9 @@
 | `roles_confirmed` | 角色分工是否已由使用者过目确认；false 时 `run` / `review` 拒绝派活 | false |
 | `codex.thread_name` | 线程命名模板，须含 `{ids}`（相关 issue / PR 号）与 `{title}`（工作内容） | `foreman {ids}: {title}` |
 | `engines.concurrency` | 在跑 codex 线程上限的本机默认（run + review，计数是所有项目合计）；项目 foreman.toml 同名键覆盖 | 5 |
-| `roles.<名>` | 角色 = `engine` / `model` / `effort` + 角色文件；implement / review / mechanical 三个都必需，再多的自定 | 按档位描述：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + high；轻活 = 次旗舰 + low～medium |
+| `engines.claude.concurrency` | 在跑 Claude 轮次上限，独立计数 | 3 |
+| `roles.<名>` | 角色 = `engine` / `model` / `effort` + 角色文件；implement / review / mechanical 三个都必需，再多的自定 | Codex 档位 |
+| `roles.<名>.claude` | 该角色在 Claude 引擎下的 `model` / `effort`；缺失则 `--engine claude` 直接拒绝 | 参考角色见模板 |
 | `roles.<名>.prompt` | 角色文件路径（契约：位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律） | `~/.foreman/roles/<名>.md`，`setup` 从 `assets/roles/` 拷样例 |
 
 项目 foreman.toml 里写同名 `[roles.<名>]` 可覆盖档位与角色文件。
@@ -69,3 +73,24 @@
 | `request_user_input` | Default 模式是否开放提问工具；执行体用进程级功能位覆盖，修改后重起 hold 生效 | true |
 | `question_timeout` | 执行者提问时等编排者回答的秒数；0 = 立即兜底 | 1800 |
 | `hold_idle_minutes` | 常驻执行体占着线程（写锁）、空闲多久自动释放；`foreman release` / `cleanup` 之前桌面端打不开这条线程 | 360 |
+
+## [claude]
+
+| 字段 | 含义 | 默认 |
+|---|---|---|
+| `max_turns` | 每轮 Claude Code 最大 turn 数，可用 `run --max-turns` 覆盖 | 80 |
+| `max_budget_usd` | 每轮 CLI 预算上限，可用 `run --max-budget-usd` 覆盖 | 5 |
+| `question_timeout` | AskUserQuestion 等编排者回答的秒数；复审固定 0 | 1800 |
+
+Claude 角色完整例子：
+
+```toml
+[roles.implement]
+engine = "codex"
+model = "gpt-5.6-sol"
+effort = "medium"
+
+[roles.implement.claude]
+model = "sonnet"
+effort = "medium"
+```

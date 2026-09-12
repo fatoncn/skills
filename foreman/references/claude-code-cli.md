@@ -46,6 +46,18 @@ prompt 通过 stdin 传入。默认 `max_turns = 80`、`max_budget_usd = 5`；�
 | 4 | 认证、模型、服务端或权限审查器不可用（ENGINE_DOWN） |
 | 143 | foreman 超时或信号中断；session 可续 |
 
+## 复审
+
+`foreman review --engine claude` 每次新开 session，强制 `--no-session-persistence --tools Read,Glob,Grep`。settings 另加 `Bash(*)` 与 Write / Edit / MultiEdit / NotebookEdit 的 deny；不继承用户 MCP，只挂 foreman 权限 MCP 供 `auto` 升级时明确 deny。首行标记 `review_readonly: "tools_only"`，report 同样展示该降级口径；复审不写 session ref。
+
+## steer
+
+Claude 没有常驻 turn，`foreman steer` 把消息写入该线程的 steer 文件队列。下一轮 `run` 在原任务书前加「编排者追加说明」段后消费；当前 Claude 进程不中断。`status` 以 `+NEXT` 标出待生效消息。
+
+## doctor
+
+`foreman doctor` 的 Claude 节只做零 token 检查：CLI 版本、`claude auth status`、由本桥生成的 settings / MCP JSON 静态校验、五个 `[roles.*.claude]` 档位、独立池占用，以及将继承的用户 MCP server 名字。doctor 的临时 MCP 文件用后删除，不打印配置或凭证。
+
 ## 已知降级
 
 - steer 只排到下一轮，不宣称已注入当前 Claude 进程。
@@ -59,4 +71,6 @@ prompt 通过 stdin 传入。默认 `max_turns = 80`、`max_budget_usd = 5`；�
 3. 真走一次权限 MCP initialize / list / call，覆盖 allow、deny、AskUserQuestion 回答与超时。
 4. 验证 settings sandbox 四键、allowWrite、deny / ask 规则仍被 CLI 接受。
 5. 覆盖正常结束、坏 JSON、EOF、预算 / max turns、认证失败与 SIGTERM 的 rc 归一化。
-6. 跑 `claude_replay.py --selftest`、完整 `selftest.sh`、Codex 分发快照和真实两轮 resume 冒烟。
+6. 真跑 review，确认 argv 只有 Read / Glob / Grep、不挂用户 MCP、不落 session，report 含 `review_readonly=tools_only`。
+7. 真跑 steer 后的下一轮 resume，确认追加段顺序和队列消费；跑 doctor 确认不起模型。
+8. 跑 `claude_replay.py --selftest`、完整 `selftest.sh`、Codex 分发快照和真实两轮 resume 冒烟。
