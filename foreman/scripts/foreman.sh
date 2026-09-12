@@ -8,6 +8,7 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_PATH="$SKILL_DIR/scripts/foreman.sh"
 ASSETS_DIR="$SKILL_DIR/assets"
 PY_APPSERVER="$SKILL_DIR/scripts/codex_appserver.py"
+PY_CLAUDE="$SKILL_DIR/scripts/claude_code.py"
 PY_SUMMARIZE="$SKILL_DIR/scripts/summarize.py"
 PY_CONFIG="$SKILL_DIR/scripts/project_config.py"
 
@@ -123,6 +124,10 @@ roles_confirmed = false
 # 和你自己开的 Codex 抢同一份配额。这里是本机默认；项目 foreman.toml 的 [engines] concurrency 可覆盖。到上限拒绝派发。
 concurrency = 5
 
+[engines.claude]
+# Claude Code 使用独立订阅池；按本机所有项目的 claude 活进程计数。
+concurrency = 3
+
 # 角色分工（跨项目）：按活分档，每个角色 = 执行器 + 模型 + 推理档 + 角色文件。
 # 三个参考角色 implement / review / mechanical 都必需（foreman setup --confirm 会查）；再多的自己起名，foreman run --role <名> 取用。
 # 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
@@ -144,10 +149,18 @@ model = "gpt-5.6-sol"
 effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 
+[roles.implement.claude]
+model = "sonnet"
+effort = "medium"
+
 [roles.review]
 # 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
 engine = "codex"
 model = "gpt-6-astra"
+effort = "high"
+
+[roles.review.claude]
+model = "fable"
 effort = "high"
 
 [roles.mechanical]
@@ -156,16 +169,28 @@ engine = "codex"
 model = "gpt-5.6-terra"
 effort = "medium"
 
+[roles.mechanical.claude]
+model = "sonnet"
+effort = "low"
+
 [roles.research]
 # 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + high 及以上
 engine = "codex"
 model = "gpt-6-astra"
 effort = "high"
 
+[roles.research.claude]
+model = "sonnet"
+effort = "xhigh"
+
 [roles.accept]
 # 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high，比实现者高一档（假「通过」最贵）
 engine = "codex"
 model = "gpt-5.6-sol"
+effort = "high"
+
+[roles.accept.claude]
+model = "sonnet"
 effort = "high"
 
 # 再多的角色照样子加，名字自定，foreman run --role <名> 取用。
@@ -270,6 +295,7 @@ PY2
 
 # 角色 → 执行器 / 模型 / 推理档：项目 foreman.toml 的 [roles.<名>] 优先，其次全局 config.toml；都没有就是未定义
 role_cfg() { local v; v="$(cfg_opt "roles.$1.$2")"; if [ -n "$v" ]; then printf '%s' "$v"; else gcfg "roles.$1.$2" ""; fi; }
+claude_role_cfg() { role_cfg "$1" "claude.$2"; }
 role_defined() { [ -n "$(role_cfg "$1" model)" ]; }
 require_role() { role_defined "$1" || die "角色 '$1' 未定义。在 $GLOBAL_TOML 的 [roles.$1] 里定义 engine / model / effort（跨项目），或在 $PROJECT_TOML 里覆盖"; }
 
@@ -323,11 +349,33 @@ active_codex_runs() {
   printf '%s' "$(printf '%s
 ' $seen | sort -u | grep -c .)"
 }
+active_claude_runs() {
+  local d f eng seen=""
+  for d in "$FOREMAN_ROOT"/projects/*/issues/*/*; do
+    [ -f "$d/meta.json" ] || continue
+    for f in "$d"/run-*.pid "$d"/review-*.pid; do
+      [ -f "$f" ] || continue
+      eng="$(cat "${f%.pid}.engine" 2>/dev/null || true)"
+      [ "$eng" = "claude" ] || continue
+      [ -f "${f%.pid}.rc" ] && continue
+      kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
+    done
+  done
+  printf '%s' "$(printf '%s
+' $seen | sort -u | grep -c .)"
+}
 concurrency_limit() { local l; l="$(cfg_opt engines.concurrency)"; [ -n "$l" ] || l="$(gcfg engines.concurrency 5)"; printf '%s' "$l"; }  # 项目覆盖 > 本机默认
+claude_concurrency_limit() { local l; l="$(cfg_opt engines.claude.concurrency)"; [ -n "$l" ] || l="$(gcfg engines.claude.concurrency 3)"; printf '%s' "$l"; }
 require_concurrency_slot() {  # 派发前调用；只对 codex 系执行器
   local limit running; limit="$(concurrency_limit)"; running="$(active_codex_runs)"
   if [ "$running" -ge "$limit" ]; then
     die "本机并发已达上限：$running 个 codex 线程在跑（所有项目合计），上限 ${limit}。先 foreman wait，或改上限（项目 ${PROJECT_TOML} 的 engines.concurrency 覆盖本机 ${GLOBAL_TOML} 的默认）"
+  fi
+}
+require_claude_slot() {
+  local limit running; limit="$(claude_concurrency_limit)"; running="$(active_claude_runs)"
+  if [ "$running" -ge "$limit" ]; then
+    die "本机并发已达上限：$running 个 claude 线程在跑（所有项目合计），上限 ${limit}。先 foreman wait，或改 [engines.claude] concurrency"
   fi
 }
 
@@ -967,6 +1015,7 @@ build_thread_name() {   # $1 issue $2 显式标题 $3 任务书路径 $4 阶段�
 cmd_run() {
   local issue="" prompt_file="" role="" closeout=0 engine="" model="" effort="" detach=0 timeout=1800 title="" tname="" prname=""
   local writable="" extra_ctx="" thinking="" qtimeout="" full_access_reason="" full_access_flag=0 no_check=0
+  local max_turns="" max_budget_usd=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt) prompt_file="$2"; shift 2 ;;
@@ -986,13 +1035,15 @@ cmd_run() {
       --writable) writable="$writable $2"; shift 2 ;;
       --new-thread|--new-session) die "run: --new-thread 已取消。同名线程不覆盖：要重开就 foreman release <id> --thread <名> 放掉旧的，再 run --thread <新名> 另起（旧线程的账本保留）" ;;
       --question-timeout) qtimeout="$2"; shift 2 ;;
+      --max-turns) max_turns="$2"; shift 2 ;;
+      --max-budget-usd) max_budget_usd="$2"; shift 2 ;;
       --context) extra_ctx="$extra_ctx$2
 "; shift 2 ;;
       -*) die "run: 未知参数 $1" ;;
       *) [ -z "$issue" ] && issue="$1" || die "run: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
+  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|pi|claude] [--model m] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
   [ -n "$prompt_file" ] || die "必须给 --prompt <file>"
   [ -f "$prompt_file" ] || die "prompt 文件不存在: $prompt_file"
   # 完全权限的口子：只有用户在本会话明确要求时才用，且必须把用户原话作为理由传进来（进日志、进摘要横幅）。
@@ -1043,9 +1094,19 @@ cmd_run() {
   require_role "$role"
   local rf_role; rf_role="$role"
   [ -n "$engine" ] || engine="$(role_cfg "$role" engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
-  case "$engine" in codex|pi|claude) ;; *) die "run: --engine 只能是 codex / pi（收到 '$engine'）" ;; esac
-  [ -n "$model" ] || model="$(role_cfg "$role" model)"
-  [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
+  case "$engine" in codex|pi|claude) ;; *) die "run: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
+  if [ "$engine" != "claude" ] && [ -n "$max_turns$max_budget_usd" ]; then die "run: --max-turns / --max-budget-usd 只对 claude 引擎有效"; fi
+  if [ "$engine" = "claude" ]; then
+    local claude_model claude_effort; claude_model="$(claude_role_cfg "$role" model)"; claude_effort="$(claude_role_cfg "$role" effort)"
+    [ -n "$claude_model" ] && [ -n "$claude_effort" ] || die "角色 ${role} 没有 claude 档位，在 [roles.${role}.claude] 配 model / effort"
+    [ -n "$model" ] || model="$claude_model"; [ -n "$effort" ] || effort="$claude_effort"
+    case "$model" in sonnet|fable|opus|best|haiku|claude-*) ;; *) die "run: Claude --model 只接受 sonnet / fable / opus / best / haiku 或 claude- 开头的完整模型 id（收到 '$model'）" ;; esac
+    case "$effort" in low|medium|high|xhigh|max) ;; *) die "run: Claude --effort 只接受 low / medium / high / xhigh / max（收到 '$effort'）" ;; esac
+    require_claude_slot
+  else
+    [ -n "$model" ] || model="$(role_cfg "$role" model)"
+    [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
+  fi
 
   local n; n=$(( $(latest_n "$dir" run) + 1 ))
   local orig_prompt; orig_prompt="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$prompt_file")"
@@ -1128,9 +1189,36 @@ EOF
       stage_call "$dir" run "$n" "$wt" "$timeout" "" pi -- "$@" "$(cat "$prompt_file")"
       ;;
     claude)
-      die "run: claude 执行器是副线（Codex 编排 / Claude 干活），尚未实现，见 references/orchestrator-codex.md。宿主是 Claude Code 时直接 spawn 子 agent 即可。"
+      [ -z "$thinking" ] || die "run: --thinking 是 pi 档的开关；claude 用 --effort"
+      local role_file thread thread_json thread_name roots_json
+      role_file="$(role_prompt_file "$rf_role")"
+      assemble_dev_instructions "$role_file" "$issue" "$extra_ctx" "$dir/run-$n.dev.md" 1
+      thread="$(thread_get "$issue" "$tname" ref)"
+      if [ -n "$thread" ]; then thread_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$thread")"; else thread_json=null; fi
+      [ -n "$qtimeout" ] || qtimeout="$(cfg claude.question_timeout 1800)"
+      [ -n "$max_turns" ] || max_turns="$(cfg claude.max_turns 80)"
+      [ -n "$max_budget_usd" ] || max_budget_usd="$(cfg claude.max_budget_usd 5)"
+      case "$max_turns" in ''|*[!0-9]*|0) die "run: --max-turns 必须是正整数" ;; esac
+      python3 -c 'import sys; assert float(sys.argv[1]) > 0' "$max_budget_usd" 2>/dev/null || die "run: --max-budget-usd 必须是正数"
+      thread_name="$(build_thread_name "$issue" "$title" "$orig_prompt" "$( [ "$closeout" -eq 1 ] && echo 收尾 || { [ "$n" -gt 1 ] && echo "返工 第${n}轮" || echo 实现; } )")"
+      roots_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' $writable)"
+      if [ -n "$thread" ]; then echo "==> claude run #$n  issue=$issue  线程=$tname role=$role$([ "$closeout" -eq 1 ] && echo '(收尾)')  续 ${thread:0:8}…  model=$model effort=$effort"
+      else echo "==> claude run #$n  issue=$issue  线程=$tname role=$role$([ "$closeout" -eq 1 ] && echo '(收尾)')  新开  model=$model effort=$effort"; fi
+      write_request "$dir/run-$n.request.json" \
+        "issue=$issue" "thread=$tname" "role=$role" "model=$model" "effort=$effort" \
+        "prompt_path=$prompt_file" "dev_instructions_path=$dir/run-$n.dev.md" \
+        "cwd=$PROJECT_ROOT" "work_dir=$wt" "writable_roots=@json:$roots_json" "session_id=@json:$thread_json" \
+        "timeout=@json:$timeout" "questions_path=$dir/run-$n.questions.json" "answer_path=$dir/run-$n.answer.json" \
+        "question_timeout=@json:$qtimeout" "user_explicitly_approved_full_access=@json:$([ "$full_access" -eq 1 ] && echo true || echo false)" \
+        "full_access_reason=$full_access_reason" "closeout=@json:$([ "$closeout" -eq 1 ] && echo true || echo false)" \
+        "jsonl_path=$dir/run-$n.jsonl" "stderr_path=$dir/run-$n.stderr" "claude_json_path=$dir/run-$n.claude.json" \
+        "thread_title=$thread_name" "meta_path=$dir/meta.json" \
+        "max_turns=@json:$max_turns" "max_budget_usd=@json:$max_budget_usd"
+      printf '%s' "$PR_NAME" > "$dir/run-$n.pr"
+      echo "    cwd=$PROJECT_ROOT  PR=${PR_NAME:-无}  工作目录=${wt:-无}  timeout=${timeout}s"
+      stage_call "$dir" run "$n" "$wt" "$timeout" "" claude -- python3 "$PY_CLAUDE" run "$dir/run-$n.request.json"
       ;;
-    *) die "run: --engine 只能是 codex / pi（收到 '$engine'）" ;;
+    *) die "run: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;;
   esac
 
   prepare_auto_check "$dir/run-$n" "$role" "$no_check"
@@ -1925,7 +2013,7 @@ EOF
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
   echo "状态: RUNNING 在跑（主用时从本轮派发、即 request 写入账本起算，QUEUED→RUNNING 不归零）| WAITING 执行者在等编排者回答（foreman questions / answer）| CHECKING 自动 check 中 | DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
   local hd hid; for hd in "$ISSUES_DIR"/*/hold-*; do [ -d "$hd" ] && hold_alive "$hd" || continue; hid="$(basename "$(dirname "$hd")")"; echo "HOLD   $hid  线程「$(basename "$hd" | sed 's/^hold-//')」由常驻执行体占着（pid $(cat "$hd/bridge.pid")；桌面端此时打不开它；foreman release $hid 释放）"; done
-  echo "本机 codex 线程在跑（所有项目合计）: $(active_codex_runs) / 本项目派发上限 $(concurrency_limit)"
+  echo "本机 codex 线程在跑: $(active_codex_runs) / 上限 $(concurrency_limit) | claude: $(active_claude_runs) / 上限 $(claude_concurrency_limit)"
 }
 
 cmd_wait() {
@@ -2213,7 +2301,7 @@ cmd_doctor() {
 
 usage() {
   cat <<'EOF'
-foreman <command>            执行器: codex（默认，app-server）| pi（可选）。claude 执行器为副线，未实现。
+foreman <command>            执行器: codex（默认，app-server）| claude（Claude Code 非交互）| pi（可选）。
 
   setup [--codex-home shared|isolated] [--confirm]        本机一次：生成/查看跨项目的角色分工与并发上限（~/.foreman/config.toml）；（同时把五份角色文件样例拷到 ~/.foreman/roles/）
                            和用户确认后 --confirm 打标记，标记没打之前 run / review 拒绝派活
@@ -2229,8 +2317,9 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   硬规矩: 线程 cwd 永远 = 项目根（编排者的工作目录），worktree / 交付目录写进每轮 prompt 顶部的「本轮位置」；
           沙箱：复审 read-only（只看 diff）；其余角色（实现 / 轻活 / 调研 / 验收）workspace-write；审批默认「替我审批」(on-request + auto_review)。
           完全权限只有一个口子: run --full-access "<用户明确要求的原话>"（无沙箱无审批，原话进日志与摘要横幅；review 没有这个口子）
-  run <id> --prompt <f> [--role <名>] [--title <线程名内容>] [--closeout] [--engine codex|pi] [--model m] [--effort e]
+  run <id> --prompt <f> [--role <名>] [--title <线程名内容>] [--closeout] [--engine codex|pi|claude] [--model m] [--effort e]
            [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <f>] [--question-timeout s]
+           [--max-turns n] [--max-budget-usd usd]
            [--full-access "<用户要求原话>"]
                            跑一轮（首轮建线程，之后自动续线程）。并发派活一律 --detach，再 status / wait 收敛
                            --role 取 ~/.foreman/config.toml 的 [roles.<名>]（跨项目，可自定；项目 foreman.toml 同名可覆盖），默认 implement
@@ -2238,7 +2327,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            两者都配 --writable <交付目录> 放开交付目录，探针把该目录当作内部
                            --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
                            写码角色 rc=0 后自动 detached 跑 check；--no-check 只跳过本轮
-                           本机所有项目在跑的 codex 线程 ≥ 上限（项目 engines.concurrency，缺省本机 config.toml 的默认 5）时拒绝派发
+                           codex 与 claude 使用独立并发池；claude 档位来自 [roles.<名>.claude]，池上限来自 [engines.claude] concurrency（默认 3）
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)

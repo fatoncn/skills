@@ -1006,6 +1006,85 @@ rm -f "$steer_dir"/run-95.*
 manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; FOREMAN_SELFTEST=1 FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null; FOREMAN_SELFTEST=1 FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null
 manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 [ "$manual_after" -eq $((manual_before+2)) ] && ok "手动 check 同秒日志名唯一" || bad "手动 check 日志覆盖"
+
+echo "== Claude 引擎 =="
+claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
+for claude_case in success deny eof no_session bad_json unknown question_answered question_timeout signal mcp_missing invalid_decision forbidden closeout full_access; do
+  if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
+    ok "Claude 回放：${claude_case}"
+  else
+    bad "Claude 回放：${claude_case}" "$(printf '%s\n' "$claude_replay_out" | tail -3 | tr '\n' ' ')"
+  fi
+done
+
+expect_rc "Claude --model haiku 可单次覆盖" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --engine claude --model haiku --effort low --prompt "$T/brief.md" --title haiku --timeout 30 --no-check
+claude_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+python3 - "$claude_req" <<'PY2' && ok "Claude 首轮写 session 且 argv 使用真实模板" || bad "Claude 首轮 argv / session"
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); stem=str(p)[:-len('.request.json')]
+m=json.load(open(p.parent/'meta.json')); assert m['threads']['claude-haiku']['ref']=='session-replay-001'
+a=pathlib.Path(stem+'.argv').read_bytes().split(b'\0'); assert b'claude_replay.py' in a[0] and b'--permission-mode' in a and b'auto' in a
+PY2
+expect_rc "Claude resume 轮次成功" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title resume --timeout 30 --no-check
+claude_resume_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+python3 - "$claude_resume_req" <<'PY2' && ok "Claude resume argv 带同一 session" || bad "Claude resume argv"
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); a=pathlib.Path(str(p)[:-len('.request.json')]+'.argv').read_bytes().split(b'\0')
+i=a.index(b'--resume'); assert a[i+1]==b'session-replay-001'
+PY2
+
+cat >> "$FOREMAN_HOME/config.toml" <<'EOF'
+
+[roles.noclaude]
+engine = "codex"
+model = "gpt-5.6-terra"
+effort = "low"
+EOF
+cp "$FOREMAN_HOME/roles/mechanical.md" "$FOREMAN_HOME/roles/noclaude.md"
+expect_grep "角色缺 claude 档位拒绝" "没有 claude 档位" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread no-claude-tier --role noclaude --engine claude --prompt "$T/brief.md" --title missing
+python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
+import pathlib,re,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)3',r'\g<1>0',s,count=1); p.write_text(s)
+PY2
+expect_grep "Claude 独立池满拒绝" "claude 线程在跑" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread claude-pool-full --engine claude --prompt "$T/brief.md" --title pool --detach --no-check
+python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
+import pathlib,re,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
+PY2
+
+# 快照夹具在基线提交生成。逐字段先哈希，再摘要字段哈希表；字段增删或任一值变化都会失败。
+python3 - "$steer_dir" "$d2" "$T" "$SKILL_DIR" "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" <<'PY2' && ok "Codex 分发快照：run / resume / writable / full-access / mechanical / review / hold argv 不变" || bad "Codex 分发快照漂移"
+import hashlib,json,os,pathlib,re,subprocess,sys
+d1,d2,tmp,skill,fixture=map(pathlib.Path,sys.argv[1:])
+m=json.load(open(d1/'meta.json')); m['threads']['implement']['ref']='snapshot-session'; (d1/'meta.json').write_text(json.dumps(m,ensure_ascii=False,indent=2))
+env=dict(os.environ,FOREMAN_HOME=str(tmp/'home'),FOREMAN_CODEX_BIN=str(tmp/'fake-codex'))
+shell=skill/'scripts/foreman.sh'; brief=tmp/'brief.md'; cwd=tmp/'proj/app'
+subprocess.run([shell,'run','1','--thread','implement','--prompt',brief,'--title','resume-snapshot','--timeout','30'],cwd=cwd,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+resume=max(d1.glob('run-*.request.json'),key=lambda p:int(re.search(r'run-(\d+)',p.name)[1]))
+subprocess.run([shell,'run','1','--thread','full-snapshot','--prompt',brief,'--title','full-snapshot','--full-access','用户明确要求完全权限','--timeout','30'],cwd=cwd,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+full=max(d1.glob('run-*.request.json'),key=lambda p:int(re.search(r'run-(\d+)',p.name)[1]))
+cases={'new':d1/'run-1.request.json','resume':resume,'mechanical':d1/'run-4.request.json','full_access':full,'writable':d2/'run-2.request.json','review':d2/'review-1.request.json'}
+tmp_real=os.path.realpath(tmp); skill_real=os.path.realpath(skill)
+def norm(v):
+    if isinstance(v,dict): return {k:norm(x) for k,x in sorted(v.items())}
+    if isinstance(v,list): return [norm(x) for x in v]
+    if isinstance(v,str):
+        s=v.replace('/private/tmp/','/tmp/').replace(tmp_real.replace('/private/tmp/','/tmp/'),'<TMP>').replace(str(tmp),'<TMP>')
+        s=s.replace(skill_real,str(skill)).replace(str(skill),'<SKILL>')
+        s=re.sub(r'foreman-selftest\.[A-Za-z0-9]+--bare','<REPO_SLUG>',s)
+        return re.sub(r'(?<![A-Za-z])(?:run|review)-\d+','<ROUND>',s)
+    return v
+expected=json.load(open(fixture))['cases']
+expected_argv=json.load(open(fixture))['argv']
+for name,path in cases.items():
+    req=norm(json.load(open(path))); fields={k:hashlib.sha256(json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in req.items()}
+    got=hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    assert got==expected[name],(name,got,expected[name])
+    argv=[os.fsdecode(x) for x in pathlib.Path(str(path)[:-len('.request.json')]+'.argv').read_bytes().split(b'\0')[:-1]]
+    argv=norm(argv); argv=[re.sub(r'/(?:1|2)/<ROUND>',r'/<ISSUE>/<ROUND>',x) for x in argv]
+    assert argv==expected_argv,(name,argv,expected_argv)
+assert json.load(open(fixture))['hold_start_argv'][0:3]==['python3','<SKILL>/scripts/codex_appserver.py','serve']
+PY2
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"
