@@ -30,7 +30,7 @@ prompt 通过 stdin 传入。默认 `max_turns = 80`、`max_budget_usd = 5`；�
 
 ## 事件与文件族
 
-`run-N.jsonl` 首行是 `_foreman` 引擎标记（engine、cli_version、session_id、role、model、effort、permission_mode、started_at）；中间逐行原样保留 Claude stream-json，并穿插 permission / question 决策标记；末行是 `turn_summary`（rc、raw_rc、subtype、terminal_reason、session_id、usage、total_cost_usd、cost_basis、ended_at）。
+`run-N.jsonl` 首行是 `_foreman` 引擎标记（engine、cli_version、session_id、role、model、effort、permission_mode、cwd、work_dir、writable_roots、started_at）；其中 `work_dir` 无 worktree 时为 null，`writable_roots` 与本轮 settings 的 `sandbox.allowWrite` 复用同一数组。中间逐行原样保留 Claude stream-json，并穿插 permission / question 决策标记；末行是 `turn_summary`（rc、raw_rc、subtype、terminal_reason、session_id、usage、total_cost_usd、cost_basis、ended_at）。
 
 每轮沿用 `argv / cwd / timeout / engine / jsonl / pid / rc / full-access` 文件族，新增 `claude.json`、`settings.json`、`mcp.json`、`system.md`。`argv` 是 NUL 分隔的真实 Claude argv。
 

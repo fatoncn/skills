@@ -317,6 +317,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
     full = bool(req.get("user_explicitly_approved_full_access"))
     reason = str(req.get("full_access_reason") or "")
     permission_mode = "bypassPermissions" if full else "auto"
+    work_dir = str(req.get("work_dir") or "")
+    roots = unique_paths([work_dir, *(req.get("writable_roots") or []), common_gitdir(work_dir)])
     started = now_iso()
     claude = resolve_claude()
     try:
@@ -326,7 +328,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
     version = version or "unknown"
     foreman_event(jsonl, {"engine": "claude", "cli_version": version, "session_id": req.get("session_id"),
                            "role": req.get("role"), "model": req.get("model"), "effort": req.get("effort"),
-                           "permission_mode": permission_mode, "started_at": started})
+                           "permission_mode": permission_mode, "cwd": req.get("cwd"),
+                           "work_dir": work_dir or None, "writable_roots": roots, "started_at": started})
     raw_rc = 0
     final_rc = 3
     subtype = "protocol_error"
@@ -353,8 +356,6 @@ def run_bridge(request_path: pathlib.Path) -> int:
     if not claude:
         terminal_reason = "找不到 claude 可执行文件"
         return finish()
-    work_dir = str(req.get("work_dir") or "")
-    roots = unique_paths([work_dir, *(req.get("writable_roots") or []), common_gitdir(work_dir)])
     settings_path = pathlib.Path(str(stem) + ".settings.json")
     mcp_path = pathlib.Path(str(stem) + ".mcp.json")
     system_path = pathlib.Path(str(stem) + ".system.md")

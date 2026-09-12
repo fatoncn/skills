@@ -162,7 +162,11 @@ def run_case(root: pathlib.Path, scenario: str, want: int, **kwargs) -> tuple[pa
     assert proc.returncode == want, (scenario, proc.returncode, want)
     log = pathlib.Path(str(req)[:-len(".request.json")] + ".jsonl")
     data = events(log)
-    assert data[0]["_foreman"]["engine"] == "claude"
+    marker = data[0]["_foreman"]
+    assert marker["engine"] == "claude"
+    assert marker["cwd"] == str(root) and marker["work_dir"] == str(root)
+    settings = json.loads(pathlib.Path(str(req)[:-len(".request.json")] + ".settings.json").read_text())
+    assert marker["writable_roots"] == settings["sandbox"]["allowWrite"]
     assert data[-1]["_foreman"]["type"] == "turn_summary" and data[-1]["_foreman"]["rc"] == want
     print(f"claude replay: {scenario} PASS")
     return req, data
