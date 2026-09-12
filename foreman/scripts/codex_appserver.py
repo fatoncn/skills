@@ -156,6 +156,7 @@ class AppServer:
             process_overrides.pop(REQUEST_INPUT_KEY, None)
         for key, value in process_overrides.items():
             args += ["-c", f"{key}={value}"]
+        self.stderr_path = stderr_path
         self._stderr = open(stderr_path, "ab")
         self.proc = subprocess.Popen(
             args, cwd=cwd, env=env,
@@ -829,7 +830,14 @@ class Runner:
         srv.log_event({"_fleet": "protocol_error", "error": str(exc)})
         sys.stderr.write(f"codex_appserver: {exc}\n")
         rc = 3 if self.turn_id is None else 1
-        kind = classify_unavailable(str(exc))
+        detail = str(exc)
+        try:
+            srv._stderr.flush()
+            with open(srv.stderr_path, encoding="utf-8", errors="replace") as fh:
+                detail += "\n" + fh.read()[-8192:]
+        except OSError:
+            pass
+        kind = classify_unavailable(detail)
         if kind:
             rc = 4
             self.mark_unavailable(srv, kind, str(exc))
