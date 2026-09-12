@@ -692,6 +692,15 @@ def listing(issues_home: str) -> int:
         if not os.path.isfile(meta_path):
             continue
         meta = json.load(open(meta_path, encoding="utf-8"))
+        prs = meta.get("prs") or {}
+        default_pr = meta.get("default_pr")
+        selected_pr = prs.get(default_pr) if default_pr else None
+        if selected_pr is None and len(prs) == 1:
+            selected_pr = next(iter(prs.values()))
+        selected_pr = selected_pr or {}
+        branch = meta.get("branch") or selected_pr.get("branch") or "—"
+        base = meta.get("base") or selected_pr.get("base") or "—"
+        worktree = meta.get("worktree") or selected_pr.get("worktree") or ""
         runs = sorted({re.sub(r"\.cancelled$", ".jsonl", f) for f in os.listdir(issue_dir)
                        if re.fullmatch(r"run-\d+\.(?:jsonl|cancelled)", f)})
         cost = 0.0
@@ -719,19 +728,19 @@ def listing(issues_home: str) -> int:
         spend = f"${cost:.3f}" if cost else ""
         if cx_tokens:
             spend += (" +" if spend else "") + f"{cx_tokens // 1000}k tok"
-        rows.append((name, meta.get("branch", "?"), meta.get("gh_issue", "—"), "".join(engines) or "—",
-                     spend or "—", last, "有" if os.path.isdir(meta.get("worktree", "")) else "已清理"))
+        rows.append((name, branch, base, meta.get("gh_issue", "—"), "".join(engines) or "—",
+                     spend or "—", last, "有" if os.path.isdir(worktree) else "已清理"))
     if not rows:
         print("（没有登记的 issue）")
         return 0
-    header = ("issue", "branch", "gh", "runs(a/c/p)", "spend", "last", "worktree")
+    header = ("issue", "branch", "base", "gh", "runs(a/c/p)", "spend", "last", "worktree")
     widths = [max(len(str(r[i])) for r in ([header] + rows)) for i in range(len(header))]
     line = lambda r: "  ".join(str(r[i]).ljust(widths[i]) for i in range(len(header)))
     print(line(header))
     print("  ".join("-" * w for w in widths))
     for row in rows:
         print(line(row))
-    print("\nruns 列: a=codex app-server, c=codex exec(旧), p=pi（按轮次顺序）")
+    print("\nruns 列每字符代表一轮: a=codex app-server, c=codex exec(旧), p=pi, ?=未知（按轮次顺序）")
     print("codex 走 ChatGPT 订阅额度，没有美元成本，只计 token。")
     return 0
 

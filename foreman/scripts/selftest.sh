@@ -409,6 +409,17 @@ PY2
   kill "$steer_pid"; wait "$steer_pid" 2>/dev/null || true
 fi
 expect_grep "list 能跑" "线程" "$F" list
+expect_grep "list here 空分支测试登记" "PR「here」" "$F" here 48
+list48_meta="$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/48/meta.json' -print -quit)"
+list48_dir="$(dirname "$list48_meta")"
+python3 - "$list48_meta" <<'PY2'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m["prs"]["here"]["branch"]=""; m["prs"]["here"]["base"]=""; json.dump(m,open(p,"w"))
+PY2
+for list48_n in 1 2 3 4 5; do printf '%s\n' '{"_fleet":"thread","threadId":"list-test"}' '{"method":"turn/completed","params":{"turn":{"status":"completed"}}}' > "$list48_dir/run-$list48_n.jsonl"; done
+list48_out="$("$F" list)"
+list48_row="$(printf '%s\n' "$list48_out" | grep '^48 ' | head -1)"
+if printf '%s\n' "$list48_row" | grep -Eq '^48 +— +— +— +aaaaa ' && ! printf '%s\n' "$list48_row" | grep -q '?'; then ok "list 的 here 空分支 / 基线显示 —，引擎列逐轮保留"; else bad "list here 分支 / 引擎列" "$list48_out"; fi
 echo "== 守卫 =="
 python3 - "$FOREMAN_HOME/config.toml" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r'(?m)^thread_name = .*$', 'thread_name = "x {ids}"', s); open(p,'w').write(s)
