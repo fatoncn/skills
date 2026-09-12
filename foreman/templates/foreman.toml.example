@@ -26,6 +26,9 @@ pr_draft = true
 default = "codex"
 concurrency = 5      # 覆盖本机默认；计数是本机所有项目合计在跑的 codex 线程
 
+[engines.claude]
+concurrency = 3       # Claude Code 独立池；同样按本机所有项目的活进程计数
+
 [codex]
 sandbox_network = true
 web_search = true
@@ -35,8 +38,33 @@ approvals = "decline"
 question_timeout = 1800
 hold_idle_minutes = 360   # 常驻执行体占着线程、空闲多久自动释放；release / cleanup 之前桌面端打不开该线程
 
+[claude]
+max_turns = 80
+max_budget_usd = 5
+question_timeout = 1800
+
 
 # 角色档位在 ~/.foreman/config.toml（跨项目）；本项目要不同档位时在此加同名 [roles.<名>] 覆盖
+# Claude 引擎必须另配角色档位；五个参考角色的默认值如下：
+[roles.research.claude]
+model = "sonnet"
+effort = "xhigh"
+
+[roles.implement.claude]
+model = "sonnet"
+effort = "medium"
+
+[roles.review.claude]
+model = "fable"
+effort = "high"
+
+[roles.accept.claude]
+model = "sonnet"
+effort = "high"
+
+[roles.mechanical.claude]
+model = "sonnet"
+effort = "low"
 
 # 按仓库覆盖：某个仓库和项目默认不一样的地方，键名与顶层同名（repo.* / verify.* / github.*）
 [repos."owner--repo"]

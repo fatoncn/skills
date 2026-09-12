@@ -1008,6 +1008,77 @@ rm -f "$steer_dir"/run-95.*
 manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; FOREMAN_SELFTEST=1 FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null; FOREMAN_SELFTEST=1 FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null
 manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 [ "$manual_after" -eq $((manual_before+2)) ] && ok "手动 check 同秒日志名唯一" || bad "手动 check 日志覆盖"
+
+echo "== Claude 引擎 =="
+claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
+for claude_case in success mcp_private_cleanup first_line_paths deny eof no_session bad_json unknown question_timeout signal mcp_missing invalid_decision forbidden closeout non_closeout_graphql success_stderr_warning full_access; do
+  if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
+    ok "Claude 回放：${claude_case}"
+  else
+    bad "Claude 回放：${claude_case}" "$(printf '%s\n' "$claude_replay_out" | tail -3 | tr '\n' ' ')"
+  fi
+done
+
+expect_rc "Claude --model haiku 可单次覆盖" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --engine claude --model haiku --effort low --prompt "$T/brief.md" --title haiku --timeout 30 --no-check
+claude_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+python3 - "$claude_req" <<'PY2' && ok "Claude 首轮写 session 且 argv 使用真实模板" || bad "Claude 首轮 argv / session"
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); stem=str(p)[:-len('.request.json')]
+m=json.load(open(p.parent/'meta.json')); assert m['threads']['claude-haiku']['ref']=='session-replay-001'
+a=pathlib.Path(stem+'.argv').read_bytes().split(b'\0'); assert b'claude_replay.py' in a[0] and b'--permission-mode' in a and b'auto' in a
+PY2
+expect_rc "Claude resume 轮次成功" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title resume --timeout 30 --no-check
+claude_resume_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+python3 - "$claude_resume_req" <<'PY2' && ok "Claude resume argv 带同一 session" || bad "Claude resume argv"
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]); a=pathlib.Path(str(p)[:-len('.request.json')]+'.argv').read_bytes().split(b'\0')
+i=a.index(b'--resume'); assert a[i+1]==b'session-replay-001'
+PY2
+
+env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=question_answered "$F" run 1 --thread claude-question --engine claude --prompt "$T/brief.md" --title question --question-timeout 10 --detach --no-check >/dev/null
+question_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+question_stem="${question_req%.request.json}"
+for _ in $(seq 1 100); do [ -f "$question_stem.questions.json" ] && break; sleep 0.05; done
+questions_out="$("$F" questions 1 2>&1)"
+question_qid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["questions"][0]["id"])' "$question_stem.questions.json" 2>/dev/null)"
+if [ -n "$question_qid" ] && printf '%s\n' "$questions_out" | grep -q "$question_qid"; then ok "Claude 提问可由 foreman questions 列出 qid"; else bad "Claude questions 未列出问题或 qid" "$questions_out"; fi
+expect_rc "Claude 提问经 foreman answer 写回答" 0 "$F" answer 1 --qid "$question_qid" "蓝色"
+for _ in $(seq 1 100); do [ -f "$question_stem.rc" ] && break; sleep 0.05; done
+python3 - "$question_stem" <<'PY2' && ok "Claude 提问回答消费、MCP 回包与事件顺序" || bad "Claude 提问回答回路"
+import json,pathlib,sys
+s=pathlib.Path(sys.argv[1]); events=[json.loads(x) for x in pathlib.Path(str(s)+'.jsonl').read_text().splitlines() if x]
+states=[e['_foreman']['state'] for e in events if e.get('_foreman',{}).get('type')=='question']
+answer=next(e for e in events if e.get('type')=='foreman_replay_answer')['answers']['选择颜色？']
+meta=json.load(open(str(s)+'.claude.json'))
+assert states==['asked','answered'] and answer=='蓝色'
+assert pathlib.Path(str(s)+'.questions.answered.json').is_file() and not pathlib.Path(str(s)+'.questions.json').exists()
+assert not pathlib.Path(str(s)+'.mcp.json').exists() and isinstance(meta['mcp_servers'],list) and 'mcp_config' not in meta
+assert pathlib.Path(str(s)+'.rc').read_text().strip()=='0'
+PY2
+
+cat >> "$FOREMAN_HOME/config.toml" <<'EOF'
+
+[roles.noclaude]
+engine = "codex"
+model = "gpt-5.6-terra"
+effort = "low"
+EOF
+cp "$FOREMAN_HOME/roles/mechanical.md" "$FOREMAN_HOME/roles/noclaude.md"
+expect_grep "角色缺 claude 档位拒绝" "没有 claude 档位" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread no-claude-tier --role noclaude --engine claude --prompt "$T/brief.md" --title missing
+python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
+import pathlib,re,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)3',r'\g<1>0',s,count=1); p.write_text(s)
+PY2
+expect_grep "Claude 独立池满拒绝" "claude 线程在跑" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread claude-pool-full --engine claude --prompt "$T/brief.md" --title pool --detach --no-check
+python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
+import pathlib,re,sys
+p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
+PY2
+
+# 快照夹具在基线生成，保存完整归一化 JSON；失败直接打印逐字段 unified diff。
+snapshot_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" --compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" 2>&1)"; snapshot_rc=$?
+if [ "$snapshot_rc" -eq 0 ]; then ok "Codex 分发完整快照：run / resume / writable / full-access / mechanical / review / hold argv 不变"
+else bad "Codex 分发快照漂移（下方为逐字段 diff）"; printf '%s\n' "$snapshot_out"; fi
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"
