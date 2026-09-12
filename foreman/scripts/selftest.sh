@@ -78,6 +78,15 @@ expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
 expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
 expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
+retired_engine="codex""-exec"
+retired_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/1/meta.json' -print -quit)")"
+retired_before="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
+retired_run_out="$("$F" run 1 --thread retired-run --engine "$retired_engine" --prompt "$T/brief.md" --title x 2>&1)"; retired_run_rc=$?
+retired_after_run="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
+if [ "$retired_run_rc" -ne 0 ] && printf '%s' "$retired_run_out" | grep -q '已在 1.4.0 退役' && [ "$retired_before" = "$retired_after_run" ]; then ok "run 拒绝已退役引擎且不落轮次文件"; else bad "run 已退役引擎守卫" "rc=$retired_run_rc"; fi
+retired_review_out="$("$F" review 1 --engine "$retired_engine" 2>&1)"; retired_review_rc=$?
+retired_after_review="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
+if [ "$retired_review_rc" -ne 0 ] && printf '%s' "$retired_review_out" | grep -q '已在 1.4.0 退役' && [ "$retired_before" = "$retired_after_review" ]; then ok "review 拒绝已退役引擎且不落轮次文件"; else bad "review 已退役引擎守卫" "rc=$retired_review_rc"; fi
 echo "== 票 / PR / 线程 =="
 echo task > "$T/brief.md"
 expect_rc   "假 codex 下前台 run 返回 4（ENGINE_DOWN）" 4 "$F" run 1 --prompt "$T/brief.md" --title "自测" --timeout 30

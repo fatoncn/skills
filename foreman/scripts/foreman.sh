@@ -18,6 +18,7 @@ GLOBAL_TOML="$FOREMAN_ROOT/config.toml"
 ROLES_DIR="$FOREMAN_ROOT/roles"   # 每个角色一份角色文件（契约），foreman setup 从 assets/roles/ 拷参考角色样例
 REQUIRED_ROLES="implement review mechanical"   # 三个参考角色全必需；再多的自定义可选。收尾不是角色：实现者续线程，见 assets/CLOSEOUT.md
 HOLD_TERM_GRACE=25  # 必须 >= codex_appserver.py INTERRUPT_GRACE(20) + 5，给执行体写 rc/last 的收尾窗口
+RETIRED_CODEX_ENGINE="codex""-exec"
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 
@@ -315,7 +316,7 @@ active_codex_runs() {
     for f in "$d"/run-*.pid "$d"/review-*.pid; do
       [ -f "$f" ] || continue
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || echo codex)"
-      case "$eng" in codex|codex-exec) ;; *) continue ;; esac
+      case "$eng" in codex) ;; *) continue ;; esac
       [ -f "${f%.pid}.rc" ] && continue
       kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
     done
@@ -685,9 +686,6 @@ exec_call() {
   local rc=0 pid wd
   if [ "$engine" = "pi" ]; then
     ( cd "$cwd" && exec "${argv[@]}" >"$f.jsonl" 2>"$f.stderr" ) &
-  elif [ "$engine" = "codex-exec" ]; then
-    # </dev/null 对 codex exec 是必须的：不给 stdin 它会停下来等追加输入
-    ( cd "$cwd" && exec "${argv[@]}" </dev/null >"$f.jsonl" 2>"$f.stderr" ) &
   else
     # codex（app-server）：python 执行体自己写 jsonl / stderr，这里只收它的诊断输出
     ( cd "$cwd" && exec "${argv[@]}" </dev/null >"$f.driver.log" 2>&1 ) &
@@ -846,45 +844,6 @@ os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$
   echo "    收敛: foreman wait $issue --timeout 300"
 }
 
-# ---------- codex-exec 备用引擎（pi-fleet 实测过的 `codex exec` 路径，原样保留） ----------
-#
-# exec 没有 developerInstructions，唯一稳定的注入点是 $CODEX_HOME/AGENTS.md，所以这条路仍按 pi-fleet 的做法
-# 给每张票一份专属 CODEX_HOME（auth.json 软链 + AGENTS.md = 角色提示词 + 批次背景 + 精简 config.toml）。
-# 只刷新注入面，**绝不整目录重建**：会话 rollout 在 $CODEX_HOME/sessions/ 下，删了下一轮 resume 报 no rollout found。
-build_exec_codex_home() {
-  local issue="$1" role_file="$2" model="$3" effort="$4" extra_ctx="$5" kind="$6"
-  local home; home="$(issue_dir "$issue")/codex-home-$kind"
-  mkdir -p "$home"
-  [ -f "$HOME/.codex/auth.json" ] || die "codex 未登录（缺 ~/.codex/auth.json），先跑 codex login"
-  ln -sfn "$HOME/.codex/auth.json" "$home/auth.json"
-  assemble_dev_instructions "$role_file" "$issue" "$extra_ctx" "$home/AGENTS.md" "$([ "$kind" = run ] && echo 1 || echo 0)"
-  {
-    printf 'model = "%s"\n' "$model"
-    [ -z "$effort" ] || printf 'model_reasoning_effort = "%s"\n' "$effort"
-    printf '\n[tools]\nweb_search = %s\n' "$(cfg codex.web_search true)"
-  } > "$home/config.toml"
-  printf '%s' "$home"
-}
-
-exec_sandbox_args() {  # <worktree> <extra writable>  → NUL 分隔的 -c 参数
-  local wt="$1" extra="$2" gitdir="" roots="" d
-  [ "$IN_GIT" -eq 1 ] && gitdir="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)"
-  [ -n "$gitdir" ] && roots="\"$gitdir\""
-  for d in $extra; do roots="${roots:+$roots, }\"$d\""; done
-  printf '%s\0' -c "sandbox_workspace_write.writable_roots=[$roots]" -c "sandbox_workspace_write.network_access=$(cfg codex.sandbox_network true)"
-}
-
-# 首轮的 thread_id 存进 meta，否则第二轮没法 resume
-capture_exec_thread() {  # <issue> <线程名> <jsonl>
-  local issue="$1" tname="$2" log="$3" thread
-  [ -s "$log" ] || return 0
-  thread="$(python3 "$PY_SUMMARIZE" --engine codex --thread "$log" 2>/dev/null || true)"
-  [ -n "$thread" ] || return 0
-  [ -n "$(thread_get "$issue" "$tname" ref)" ] && return 0
-  thread_set "$issue" "$tname" ref "$thread"
-  echo "    thread_id 已记录: $thread"
-}
-
 # ---------- 组装 codex 请求 ----------
 
 # 开发者指令 = 角色提示词 + 项目执行者规则（可选）+ 批次背景（meta.context）+ 额外 --context 文件
@@ -1034,7 +993,7 @@ cmd_run() {
       *) [ -z "$issue" ] && issue="$1" || die "run: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
+  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
   [ -n "$prompt_file" ] || die "必须给 --prompt <file>"
   [ -f "$prompt_file" ] || die "prompt 文件不存在: $prompt_file"
   # 完全权限的口子：只有用户在本会话明确要求时才用，且必须把用户原话作为理由传进来（进日志、进摘要横幅）。
@@ -1085,6 +1044,7 @@ cmd_run() {
   require_role "$role"
   local rf_role; rf_role="$role"
   [ -n "$engine" ] || engine="$(role_cfg "$role" engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
+  [ "$engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
   [ -n "$model" ] || model="$(role_cfg "$role" model)"
   [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
 
@@ -1148,35 +1108,6 @@ cmd_run() {
       echo "    cwd=$PROJECT_ROOT  PR=${PR_NAME:-无}  工作目录=${wt:-无}  timeout=${timeout}s  CODEX_HOME=$run_home"
       stage_call "$dir" run "$n" "$wt" "$timeout" "" codex -- python3 "$PY_APPSERVER" run "$dir/run-$n.request.json"
       ;;
-    codex-exec)
-      [ -z "$thinking" ] || die "run: --thinking 是 pi 档的开关；codex-exec 用 --effort"
-      [ -n "$CODEX_BIN" ] || die "找不到 codex 二进制"
-      local role_file
-      role_file="$(role_prompt_file "$rf_role")"
-      local home; home="$(build_exec_codex_home "$issue" "$role_file" "$model" "$effort" "$extra_ctx" run)"
-      local prev=$((n-1))
-      if [ "$prev" -ge 1 ] && [ -s "$dir/run-$prev.jsonl" ] && [ "$(cat "$dir/run-$prev.engine" 2>/dev/null)" = "codex-exec" ]; then
-        capture_exec_thread "$issue" "$tname" "$dir/run-$prev.jsonl" >/dev/null || true
-      fi
-      local thread; thread="$(thread_get "$issue" "$tname" ref)"
-      local args=()
-      if [ -n "$thread" ]; then
-        echo "==> codex-exec run #$n  issue=$issue  线程=$tname role=$role  续会话 ${thread:0:8}…  model=$model"
-        args=(exec resume "$thread" --json -c sandbox_mode=workspace-write)
-      else
-        echo "==> codex-exec run #$n  issue=$issue  线程=$tname role=$role  新建会话  model=$model"
-        if [ "$full_access" -eq 1 ]; then args=(exec --json -C "$PROJECT_ROOT" --dangerously-bypass-approvals-and-sandbox)
-        else args=(exec --json -C "$PROJECT_ROOT" -s workspace-write --approve-for-me); fi
-      fi
-      local a
-      while IFS= read -r -d '' a; do args[${#args[@]}]="$a"; done < <(exec_sandbox_args "$wt" "$wt $writable")
-      args[${#args[@]}]="-o"; args[${#args[@]}]="$dir/run-$n.last.md"
-      args[${#args[@]}]="$(cat "$prompt_file")"
-      printf '%s' "$PR_NAME" > "$dir/run-$n.pr"
-      echo "    cwd=$PROJECT_ROOT  PR=${PR_NAME:-无}  工作目录=${wt:-无}  timeout=${timeout}s  CODEX_HOME=$home"
-      printf '%s' "$home" > "$dir/run-$n.home"
-      stage_call "$dir" run "$n" "$wt" "$timeout" "" codex-exec -- env "CODEX_HOME=$home" "$CODEX_BIN" "${args[@]}"
-      ;;
     pi)
       command -v pi >/dev/null || die "pi 未安装（可选执行器）。装法见 references/pi-cli.md，或改用默认的 codex"
       [ -z "$writable" ] || die "run: --writable 只对 codex 有意义（pi 没有沙箱）"
@@ -1200,7 +1131,7 @@ EOF
     claude)
       die "run: claude 执行器是副线（Codex 编排 / Claude 干活），尚未实现，见 references/orchestrator-codex.md。宿主是 Claude Code 时直接 spawn 子 agent 即可。"
       ;;
-    *) die "run: --engine 只能是 codex / codex-exec / pi（收到 '$engine'）" ;;
+    *) die "run: --engine 只能是 codex / pi（收到 '$engine'）" ;;
   esac
 
   prepare_auto_check "$dir/run-$n" "$role" "$no_check"
@@ -1208,7 +1139,6 @@ EOF
   # 已在跑的 hold 只是追加队列，不新增并发线程。
   case "$engine" in
     codex) hold_alive "$(hold_dir "$dir" "$tname")" || require_concurrency_slot ;;
-    codex-exec) require_concurrency_slot ;;
   esac
   DISPATCH_STEM="$dir/run-$n"; DISPATCHED=0
   trap '[ "${DISPATCHED:-1}" -eq 1 ] || cleanup_failed_dispatch "${DISPATCH_STEM:-}"' EXIT
@@ -1222,7 +1152,6 @@ EOF
   DISPATCHED=1; DISPATCH_STEM=""; trap - EXIT
   if [ "$detach" -eq 0 ]; then
     wait_auto_check "$dir/run-$n"
-    [ "$engine" = "codex-exec" ] && capture_exec_thread "$issue" "$tname" "$dir/run-$n.jsonl"
     local rc; rc="$(cat "$dir/run-$n.rc" 2>/dev/null || echo '?')"
     [ "$rc" = "0" ] || echo "!! 执行体非零退出 rc=${rc}（1=turn failed 2=被中断 3=没跑起来 4=执行器不可用 5=线程被桌面端占着 143=超时被杀）" >&2
     cmd_report_inner "$issue" "$n" || true
@@ -1266,6 +1195,7 @@ cmd_review() {
   local review_role_file
   review_role_file="$(role_prompt_file review)"
   [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
+  [ "$engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
   [ -n "$model" ] || model="$(role_cfg review model)"
   [ -n "$effort" ] || effort="$(role_cfg review effort)"
   # 硬规矩（用户 09-11）：复审永远是新线程（ephemeral、thread_id 为空），绝不沿用实现或收尾的会话
@@ -1284,7 +1214,7 @@ $unclean"
   require_pr_idle "$issue" "$PR_NAME" "review-$n"
 
   local inbox
-  if [ "$engine" = "codex" ] || [ "$engine" = "codex-exec" ]; then
+  if [ "$engine" = "codex" ]; then
     inbox="$dir/review-$n-inputs"; rm -rf "$inbox"; mkdir -p "$inbox"
   else
     local rwt; rwt="$(cfg repo.worktree_root)/$(cfg repo.worktree_prefix '')review-$issue"
@@ -1348,33 +1278,6 @@ EOF
       "questions_path=$dir/review-$n.questions.json" "answer_path=$dir/review-$n.answer.json" \
       "question_timeout=@json:0"
     stage_call "$dir" review "$n" "$wt" "$timeout" "" codex -- python3 "$PY_APPSERVER" run "$dir/review-$n.request.json"
-  elif [ "$engine" = "codex-exec" ]; then
-    [ -n "$CODEX_BIN" ] || die "找不到 codex 二进制"
-    thread_set "$issue" "review-$n" engine codex-exec; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" runs "review-$n"
-    local home; home="$(build_exec_codex_home "$issue" "$review_role_file" "$model" "$effort" "" review)"
-    cat > "$dir/review-$n.prompt.md" <<EOF
-对这次改动做对抗性复审。
-
-你在被审 worktree 本身的只读沙箱里：任何写操作都会被 OS 拒绝（不是你的错，也不必重试），
-而且没有 shell 网络。需要查外部资料时用你的联网搜索工具，不要 curl。
-
-你不判「需求做对没有」（那是编排者的活）；你看的是这次改动有没有破坏项目约定、仓库约定、最佳实践，
-给意见和依据，采不采纳由编排者拍板。prompt 里编排者给的需求口径是最重要的输入。
-
-输入（绝对路径，直接读）：
-  改动 diff:              $inbox/REVIEW_DIFF.patch
-  任务书:                 $inbox/REVIEW_BRIEF.md
-  被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
-线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准，可以读原始代码与约定文件做上下文。
-
-环境提示：只读沙箱下 macOS 自带 git 会往 stderr 打 \`couldn't create cache file '/tmp/xcrun_db-…'\`，那是 xcrun 缓存写不了，不是 git 命令失败，按 stdout 判断即可。
-
-按你的输出格式给意见。
-EOF
-    append_review_focus "$dir/review-$n.prompt.md" "$focus"; prepend_position "$dir/review-$n.prompt.md"
-    printf '%s' "$home" > "$dir/review-$n.home"
-    stage_call "$dir" review "$n" "$wt" "$timeout" "" codex-exec -- env "CODEX_HOME=$home" "$CODEX_BIN" \
-      exec --json -C "$PROJECT_ROOT" -s read-only --ephemeral -o "$dir/review-$n.last.md" "$(cat "$dir/review-$n.prompt.md")"
   else
     command -v pi >/dev/null || die "pi 未安装"
     thread_set "$issue" "review-$n" engine pi; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" runs "review-$n"
@@ -1384,7 +1287,7 @@ EOF
       "复审 REVIEW_DIFF.patch 里的改动。任务书在 REVIEW_BRIEF.md，被审 agent 自己的交付报告在 REVIEW_REPORT.md。按你的输出格式给结论。$( [ -n "$focus" ] && printf '\n\n## 复审关注点（编排者给的，按这个看）\n%s' "$(cat "$focus")" || printf '\n没有额外关注点：按任务书「要求」逐条核对。' )"
   fi
 
-  case "$engine" in codex|codex-exec) require_concurrency_slot ;; esac
+  case "$engine" in codex) require_concurrency_slot ;; esac
   unlock_runs
   launch_call "$issue" "$dir" review "$n" "$detach"
   if [ "$detach" -eq 0 ]; then
@@ -2326,7 +2229,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   硬规矩: 线程 cwd 永远 = 项目根（编排者的工作目录），worktree / 交付目录写进每轮 prompt 顶部的「本轮位置」；
           沙箱：复审 read-only（只看 diff）；其余角色（实现 / 轻活 / 调研 / 验收）workspace-write；审批默认「替我审批」(on-request + auto_review)。
           完全权限只有一个口子: run --full-access "<用户明确要求的原话>"（无沙箱无审批，原话进日志与摘要横幅；review 没有这个口子）
-  run <id> --prompt <f> [--role <名>] [--title <线程名内容>] [--closeout] [--engine codex|codex-exec|pi] [--model m] [--effort e]
+  run <id> --prompt <f> [--role <名>] [--title <线程名内容>] [--closeout] [--engine codex|pi] [--model m] [--effort e]
            [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <f>] [--question-timeout s]
            [--full-access "<用户要求原话>"]
                            跑一轮（首轮建线程，之后自动续线程）。并发派活一律 --detach，再 status / wait 收敛
@@ -2336,8 +2239,7 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
                            --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
                            写码角色 rc=0 后自动 detached 跑 check；--no-check 只跳过本轮
                            本机所有项目在跑的 codex 线程 ≥ 上限（项目 engines.concurrency，缺省本机 config.toml 的默认 5）时拒绝派发
-                           codex-exec = pi-fleet 实测过的 `codex exec` 路径（每票一份 CODEX_HOME），app-server 出问题时的备用
-  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
+  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
                            口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N
