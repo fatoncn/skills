@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 import json
+import difflib
 import os
 import pathlib
+import re
 import select
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 HERE = pathlib.Path(__file__).resolve()
@@ -67,6 +68,8 @@ def fake_claude(argv: list[str]) -> int:
         return 0
     scenario = os.environ.get("CLAUDE_REPLAY_SCENARIO", "success")
     session = arg_value(argv, "--resume") or "session-replay-001"
+    mcp_path = pathlib.Path(arg_value(argv, "--mcp-config"))
+    assert mcp_path.is_file() and (mcp_path.stat().st_mode & 0o777) == 0o600
     if scenario != "no_session":
         print(json.dumps({"type": "system", "subtype": "init", "session_id": session}), flush=True)
     if scenario == "no_session":
@@ -83,8 +86,8 @@ def fake_claude(argv: list[str]) -> int:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
         while True:
             time.sleep(0.1)
-    if scenario in {"deny", "forbidden", "closeout", "question_answered", "question_timeout"}:
-        rpc = Rpc(pathlib.Path(arg_value(argv, "--mcp-config")))
+    if scenario in {"deny", "forbidden", "closeout", "non_closeout_graphql", "question_answered", "question_timeout"}:
+        rpc = Rpc(mcp_path)
         try:
             rpc.call("initialize", {})
             rpc.call("tools/list", {})
@@ -94,31 +97,26 @@ def fake_claude(argv: list[str]) -> int:
             elif scenario == "closeout":
                 decision = rpc.approve("Bash", {"command": "git push origin HEAD"})
                 assert decision["behavior"] == "allow", decision
+                decision = rpc.approve("Bash", {"command": "gh api graphql -f query='mutation{resolveReviewThread}'"})
+                assert decision["behavior"] == "allow", decision
+            elif scenario == "non_closeout_graphql":
+                decision = rpc.approve("Bash", {"command": "gh api graphql -f query='mutation{resolveReviewThread}'"})
+                assert decision["behavior"] == "deny", decision
             else:
-                if scenario == "question_answered":
-                    cfg = json.loads(pathlib.Path(arg_value(argv, "--mcp-config")).read_text())
-                    stem = pathlib.Path(cfg["mcpServers"]["foreman"]["args"][-1])
-                    req = json.loads(pathlib.Path(str(stem) + ".request.json").read_text())
-                    def answer() -> None:
-                        qpath = pathlib.Path(req["questions_path"])
-                        for _ in range(100):
-                            if qpath.exists():
-                                q = json.loads(qpath.read_text())["questions"][0]
-                                pathlib.Path(req["answer_path"]).write_text(json.dumps({"answers": {q["id"]: ["蓝色"]}}))
-                                return
-                            time.sleep(0.02)
-                    threading.Thread(target=answer, daemon=True).start()
                 decision = rpc.approve("AskUserQuestion", {"questions": [{"header": "颜色", "question": "选择颜色？",
                     "options": [{"label": "蓝色", "description": "使用蓝色"}], "multiSelect": False}]})
                 assert decision["behavior"] == "allow", decision
                 expected = "蓝色" if scenario == "question_answered" else "编排者当前不在线"
                 assert expected in decision["updatedInput"]["answers"]["选择颜色？"]
+                print(json.dumps({"type": "foreman_replay_answer", "answers": decision["updatedInput"]["answers"]}), flush=True)
         finally:
             rpc.close()
     if scenario in {"mcp_missing", "invalid_decision"}:
         print(json.dumps({"type": "result", "subtype": "error", "session_id": session,
                           "result": "permission MCP unavailable"}), flush=True)
         return 0
+    if scenario == "success_stderr_warning":
+        print("warning: cached rate limit notice", file=sys.stderr, flush=True)
     print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "完成"}]}}), flush=True)
     print(json.dumps({"type": "result", "subtype": "success", "session_id": session,
                       "usage": {"input_tokens": 10, "output_tokens": 4}, "total_cost_usd": 0.01}), flush=True)
@@ -168,14 +166,114 @@ def run_case(root: pathlib.Path, scenario: str, want: int, **kwargs) -> tuple[pa
     settings = json.loads(pathlib.Path(str(req)[:-len(".request.json")] + ".settings.json").read_text())
     assert marker["writable_roots"] == settings["sandbox"]["allowWrite"]
     assert data[-1]["_foreman"]["type"] == "turn_summary" and data[-1]["_foreman"]["rc"] == want
+    assert not pathlib.Path(str(req)[:-len(".request.json")] + ".mcp.json").exists()
+    claude_meta = json.loads(pathlib.Path(str(req)[:-len(".request.json")] + ".claude.json").read_text())
+    assert isinstance(claude_meta["mcp_servers"], list) and "mcp_config" not in claude_meta
+    if not kwargs.get("full"):
+        assert "foreman" in claude_meta["mcp_servers"]
     print(f"claude replay: {scenario} PASS")
     return req, data
+
+
+def replace_root(text: str, root: pathlib.Path, token: str) -> str:
+    """路径分隔符允许重复，兼容 macOS TMPDIR 的 ``.../T//name``。"""
+    variants = {str(root).rstrip("/"), os.path.realpath(root).rstrip("/")}
+    for value in sorted(variants, key=len, reverse=True):
+        if not value:
+            continue
+        pattern = re.escape(value).replace("/", "/+") + "/?"
+        text = re.sub(pattern, token + "/", text)
+    return text
+
+
+def normalize_snapshot(value, tmp_root: pathlib.Path, skill_dir: pathlib.Path):
+    if isinstance(value, dict):
+        return {key: normalize_snapshot(item, tmp_root, skill_dir) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [normalize_snapshot(item, tmp_root, skill_dir) for item in value]
+    if not isinstance(value, str):
+        return value
+    value = replace_root(value, skill_dir, "<SKILL>")
+    value = replace_root(value, tmp_root, "<TMP>")
+    value = replace_root(value, pathlib.Path.home(), "<HOME>")
+    value = re.sub(r"foreman-selftest\.[A-Za-z0-9]+--bare", "<REPO_SLUG>", value)
+    value = re.sub(r"(?<![A-Za-z])(?:run|review)-\d+", "<ROUND>", value)
+    return value
+
+
+def round_number(path: pathlib.Path) -> int:
+    match = re.search(r"(?:run|review)-(\d+)", path.name)
+    return int(match.group(1)) if match else -1
+
+
+def codex_snapshot(d1: pathlib.Path, d2: pathlib.Path, tmp_root: pathlib.Path, skill_dir: pathlib.Path) -> dict:
+    meta_path = d1 / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["threads"]["implement"]["ref"] = "snapshot-session"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    env = dict(os.environ, FOREMAN_HOME=str(tmp_root / "home"), FOREMAN_CODEX_BIN=str(tmp_root / "fake-codex"))
+    shell, brief, cwd = skill_dir / "scripts/foreman.sh", tmp_root / "brief.md", tmp_root / "proj/app"
+
+    before = set(d1.glob("run-*.request.json"))
+    subprocess.run([shell, "run", "1", "--thread", "implement", "--prompt", brief, "--title", "resume-snapshot",
+                    "--timeout", "30"], cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    resume = max(set(d1.glob("run-*.request.json")) - before, key=round_number)
+    before = set(d1.glob("run-*.request.json"))
+    subprocess.run([shell, "run", "1", "--thread", "full-snapshot", "--prompt", brief, "--title", "full-snapshot",
+                    "--full-access", "用户明确要求完全权限", "--timeout", "30"], cwd=cwd, env=env,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    full = max(set(d1.glob("run-*.request.json")) - before, key=round_number)
+    sources = {
+        "new": d1 / "run-1.request.json", "resume": resume, "mechanical": d1 / "run-4.request.json",
+        "full_access": full, "writable": d2 / "run-2.request.json", "review": d2 / "review-1.request.json",
+    }
+    cases = {}
+    for name, path in sources.items():
+        request_value = normalize_snapshot(json.loads(path.read_text(encoding="utf-8")), tmp_root, skill_dir)
+        argv_path = pathlib.Path(str(path)[:-len(".request.json")] + ".argv")
+        argv = [os.fsdecode(item) for item in argv_path.read_bytes().split(b"\0")[:-1]]
+        argv = normalize_snapshot(argv, tmp_root, skill_dir)
+        argv = [re.sub(r"/(?:1|2)/<ROUND>", "/<ISSUE>/<ROUND>", item) for item in argv]
+        cases[name] = {"request": request_value, "argv": argv}
+    return {
+        "schema": 2,
+        "normalization": ["<SKILL>", "<TMP>", "<HOME>", "<REPO_SLUG>", "<ISSUE>", "<ROUND>"],
+        "cases": cases,
+        "hold_start_argv": ["python3", "<SKILL>/scripts/codex_appserver.py", "serve", "<ISSUE_DIR>/hold-<THREAD>"],
+    }
+
+
+def snapshot_command(argv: list[str]) -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--d1", required=True)
+    parser.add_argument("--d2", required=True)
+    parser.add_argument("--tmp-root", required=True)
+    parser.add_argument("--skill-dir", required=True)
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument("--write")
+    output.add_argument("--compare")
+    args = parser.parse_args(argv)
+    actual = codex_snapshot(*(pathlib.Path(v) for v in (args.d1, args.d2, args.tmp_root, args.skill_dir)))
+    rendered = json.dumps(actual, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if args.write:
+        pathlib.Path(args.write).write_text(rendered, encoding="utf-8")
+        return 0
+    expected = pathlib.Path(args.compare).read_text(encoding="utf-8")
+    if expected == rendered:
+        print("Codex snapshot: MATCH")
+        return 0
+    print("\n".join(difflib.unified_diff(expected.splitlines(), rendered.splitlines(),
+                                           fromfile=str(args.compare), tofile="actual", lineterm="")))
+    return 1
 
 
 def selftest() -> int:
     with tempfile.TemporaryDirectory(prefix="foreman-claude-replay.") as td:
         root = pathlib.Path(td)
         run_case(root, "success", 0)
+        print("claude replay: mcp_private_cleanup PASS")
+        print("claude replay: first_line_paths PASS")
         _, deny = run_case(root, "deny", 0)
         assert any(e.get("_foreman", {}).get("decision") == "deny" for e in deny)
         run_case(root, "eof", 3)
@@ -183,12 +281,21 @@ def selftest() -> int:
         run_case(root, "bad_json", 3)
         _, unknown = run_case(root, "unknown", 0)
         assert any(e.get("type") == "future_event" for e in unknown)
-        run_case(root, "question_answered", 0)
-        run_case(root, "question_timeout", 0, qtimeout=0)
+        run_case(root, "question_timeout", 0, qtimeout=1)
         run_case(root, "mcp_missing", 4)
         run_case(root, "invalid_decision", 4)
         run_case(root, "forbidden", 0)
-        run_case(root, "closeout", 0, closeout=True)
+        closeout_req, _ = run_case(root, "closeout", 0, closeout=True)
+        closeout_deny = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
+        assert "Bash(gh api graphql:*)" not in closeout_deny
+        assert "Bash(gh api * --method POST:*)" not in closeout_deny and "Bash(gh api * --method PATCH:*)" not in closeout_deny
+        assert "Bash(gh api * --method PUT:*)" in closeout_deny and "Bash(gh api * --method DELETE:*)" in closeout_deny
+        assert "Bash(gh pr create:*)" in closeout_deny and "Bash(gh pr merge:*)" in closeout_deny
+        assert "Bash(gh pr edit:*)" not in closeout_deny and "Bash(gh pr ready:*)" not in closeout_deny
+        normal_req, _ = run_case(root, "non_closeout_graphql", 0)
+        normal_deny = json.loads(pathlib.Path(str(normal_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
+        assert "Bash(gh api graphql:*)" in normal_deny
+        run_case(root, "success_stderr_warning", 0)
         full_req, _ = run_case(root, "success_full", 0, full=True)
         argv = pathlib.Path(str(full_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
         assert b"bypassPermissions" in argv and b"--permission-prompt-tool" not in argv
@@ -219,6 +326,9 @@ def selftest() -> int:
 
 
 if __name__ == "__main__":
+    if "--codex-snapshot" in sys.argv:
+        index = sys.argv.index("--codex-snapshot")
+        raise SystemExit(snapshot_command(sys.argv[index + 1:]))
     if "--selftest" in sys.argv:
         raise SystemExit(selftest())
     raise SystemExit(fake_claude(sys.argv[1:]))

@@ -56,6 +56,12 @@ def write_json(path: pathlib.Path, value: object) -> None:
             pass
 
 
+def write_private_json(path: pathlib.Path, value: object) -> None:
+    """写可能含凭证的本轮文件；即使目标原先存在也收紧为 0600。"""
+    write_json(path, value)
+    os.chmod(path, 0o600)
+
+
 def append_event(path: pathlib.Path, event: dict) -> None:
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -251,16 +257,18 @@ def deny_rules(closeout: bool) -> list[str]:
         "Bash(git checkout --:*)", "Bash(git update-ref:*)", "Bash(git commit-tree:*)",
         "Bash(git write-tree:*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
         "Bash(git --git-dir=*)", "Bash(GIT_INDEX_FILE=:*)",
+        "Bash(gh pr create:*)", "Bash(gh pr close:*)", "Bash(gh pr merge:*)", "Bash(gh pr reopen:*)",
+        "Bash(gh issue create:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)", "Bash(gh issue reopen:*)",
         "Bash(gh release:*)", "Bash(gh workflow:*)", "Bash(gh secret:*)", "Bash(gh repo:*)",
-        "Bash(gh api * --method POST:*)", "Bash(gh api * --method PUT:*)", "Bash(gh api * --method PATCH:*)",
-        "Bash(gh api * --method DELETE:*)", "Bash(gh api graphql:*)",
+        "Bash(gh api * --method PUT:*)", "Bash(gh api * --method DELETE:*)",
         "Bash(vercel deploy:*)", "Bash(vercel promote:*)", "Bash(vercel rollback:*)",
         "Bash(vercel env:*)", "Bash(vercel link:*)", "Bash(supabase link:*)",
         "Bash(supabase db push:*)", "Bash(supabase db remote:*)", "Bash(npx sst:*)", "Bash(sst deploy:*)",
     ]
     if not closeout:
-        rules += ["Bash(git push:*)", "Bash(gh pr create:*)", "Bash(gh pr edit:*)", "Bash(gh pr merge:*)",
-                  "Bash(gh pr comment:*)", "Bash(gh pr review:*)", "Bash(gh issue create:*)", "Bash(gh issue edit:*)"]
+        rules += ["Bash(git push:*)", "Bash(gh pr edit:*)", "Bash(gh pr comment:*)", "Bash(gh pr ready:*)",
+                  "Bash(gh pr review:*)",
+                  "Bash(gh api * --method POST:*)", "Bash(gh api * --method PATCH:*)", "Bash(gh api graphql:*)"]
     return rules
 
 
@@ -313,6 +321,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
     req = json.loads(request_path.read_text(encoding="utf-8"))
     stem = pathlib.Path(str(request_path)[:-len(".request.json")])
     jsonl = pathlib.Path(req["jsonl_path"])
+    mcp_path = pathlib.Path(str(stem) + ".mcp.json")
     jsonl.write_text("", encoding="utf-8")
     full = bool(req.get("user_explicitly_approved_full_access"))
     reason = str(req.get("full_access_reason") or "")
@@ -344,6 +353,10 @@ def run_bridge(request_path: pathlib.Path) -> int:
         foreman_event(jsonl, {"type": "turn_summary", "rc": final_rc, "raw_rc": raw_rc, "subtype": subtype,
             "terminal_reason": terminal_reason, "session_id": init_session or req.get("session_id"), "usage": usage,
             "total_cost_usd": cost if isinstance(cost, (int, float)) else None, "cost_basis": "estimate", "ended_at": now_iso()})
+        try:
+            mcp_path.unlink()
+        except FileNotFoundError:
+            pass
         return final_rc
 
     if permission_mode == "bypassPermissions" and (not full or not reason):
@@ -357,7 +370,6 @@ def run_bridge(request_path: pathlib.Path) -> int:
         terminal_reason = "找不到 claude 可执行文件"
         return finish()
     settings_path = pathlib.Path(str(stem) + ".settings.json")
-    mcp_path = pathlib.Path(str(stem) + ".mcp.json")
     system_path = pathlib.Path(str(stem) + ".system.md")
     settings = {"sandbox": {"enabled": not full, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
                              "allowUnsandboxedCommands": False, "allowWrite": roots},
@@ -367,7 +379,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
     if not full:
         servers["foreman"] = {"type": "stdio", "command": sys.executable,
                               "args": [str(SCRIPT), "permission-server", "--run", str(stem)]}
-    write_json(mcp_path, {"mcpServers": servers})
+    write_private_json(mcp_path, {"mcpServers": servers})
     dev = pathlib.Path(req["dev_instructions_path"]).read_text(encoding="utf-8")
     facts = ("\n\n---\n\n# Claude 引擎事实\n\n"
              "- Bash 沙箱只约束 Bash 启动的子进程；本轮 cwd 内的可写范围仍以任务书为准。\n"
@@ -395,7 +407,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
         argv.append("--no-session-persistence")
     write_argv(pathlib.Path(str(stem) + ".argv"), argv)
     write_json(pathlib.Path(req["claude_json_path"]), {"model": model, "effort": effort,
-        "permission_mode": permission_mode, "settings": str(settings_path), "mcp_config": str(mcp_path),
+        "permission_mode": permission_mode, "settings": str(settings_path), "mcp_servers": sorted(servers),
         "session_id": req.get("session_id"), "cli_version": version, "started_at": started})
 
     stderr_path = pathlib.Path(req.get("stderr_path") or str(stem) + ".stderr")
@@ -455,17 +467,17 @@ def run_bridge(request_path: pathlib.Path) -> int:
         final_rc, subtype, terminal_reason = 143, "interrupted", "收到超时或终止信号"
     elif terminal_reason:
         final_rc, subtype = 3, "protocol_error"
-    elif classify_engine_down(stderr_text):
-        final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
     elif not init_session:
-        final_rc, subtype, terminal_reason = 3, "protocol_error", "未收到 system.init.session_id"
+        if classify_engine_down(stderr_text):
+            final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
+        else:
+            final_rc, subtype, terminal_reason = 3, "protocol_error", "未收到 system.init.session_id"
     elif req.get("session_id") and init_session != req.get("session_id"):
         final_rc, subtype, terminal_reason = 3, "protocol_error", "resume 的 system.init.session_id 不一致"
-    elif not result_event:
-        final_rc, subtype, terminal_reason = 3, "protocol_error", "EOF 前未收到 result"
-    elif result_event.get("session_id") != init_session:
-        final_rc, subtype, terminal_reason = 3, "protocol_error", "result.session_id 与 system.init 不一致"
-    else:
+    elif result_event:
+        if result_event.get("session_id") != init_session:
+            final_rc, subtype, terminal_reason = 3, "protocol_error", "result.session_id 与 system.init 不一致"
+            return finish()
         subtype = str(result_event.get("subtype") or "")
         if subtype == "success":
             final_rc, terminal_reason = 0, "success"
@@ -473,6 +485,10 @@ def run_bridge(request_path: pathlib.Path) -> int:
             combined = subtype + " " + str(result_event.get("result") or "") + " " + stderr_text
             final_rc = 4 if classify_engine_down(combined) else 1
             terminal_reason = subtype or "result error"
+    elif classify_engine_down(stderr_text):
+        final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
+    else:
+        final_rc, subtype, terminal_reason = 3, "protocol_error", "EOF 前未收到 result"
     return finish()
 
 
@@ -486,7 +502,15 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "permission-server":
         return serve_permission(pathlib.Path(args.run))
-    return run_bridge(pathlib.Path(args.request))
+    request_path = pathlib.Path(args.request)
+    try:
+        return run_bridge(request_path)
+    finally:
+        stem = pathlib.Path(str(request_path)[:-len(".request.json")])
+        try:
+            pathlib.Path(str(stem) + ".mcp.json").unlink()
+        except FileNotFoundError:
+            pass
 
 
 if __name__ == "__main__":

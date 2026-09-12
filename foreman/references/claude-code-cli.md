@@ -22,17 +22,21 @@ prompt 通过 stdin 传入。默认 `max_turns = 80`、`max_budget_usd = 5`；�
 
 ## settings 与 MCP
 
-`run-N.settings.json` 固定隔离用户 settings：sandbox 开启并 `failIfUnavailable`，不自动放行 Bash，不允许未沙箱命令；`allowWrite` 包含 worktree、显式 `--writable` 根和 common gitdir。`permissions.deny` 映射共享 `summarize.FORBIDDEN` 禁止项，`permissions.ask = ["AskUserQuestion"]`。收尾轮只移除 `CLOSEOUT_ALLOW` 对应的 push / gh PR 放行项。
+`run-N.settings.json` 固定隔离用户 settings：sandbox 开启并 `failIfUnavailable`，不自动放行 Bash，不允许未沙箱命令；`allowWrite` 包含 worktree、显式 `--writable` 根和 common gitdir。`permissions.deny` 映射共享 `summarize.FORBIDDEN` 禁止项，`permissions.ask = ["AskUserQuestion"]`。收尾 deny 表是 `CLOSEOUT_ALLOW` 的补集：放行非 force push、`gh pr comment/ready/review/edit`、`gh api graphql` 以及针对 comments/reviews/pulls 的 POST/PATCH；PUT、DELETE 和其它禁止项仍拒绝。
 
 `run-N.mcp.json` 显式包含 foreman stdio 权限 server，以及从 `~/.claude.json` 内存读取的 `mcpServers`。用户 settings、hooks、插件不参与。权限 server 在启动模型前做 `initialize` 与 `tools/list` 自检，失败按 `ENGINE_DOWN` 退出。
 
 权限 MCP 最小协议为逐行 JSON-RPC：`initialize`、`tools/list`、`tools/call`。`approve` 返回的文本内容是 JSON 串：放行为 `{"behavior":"allow","updatedInput":{...}}`，拒绝为 `{"behavior":"deny","message":"..."}`。`AskUserQuestion` 写现有 questions / answer 文件族；答案按问题文本写入 `updatedInput.answers`。其它升级到 MCP 的动作默认拒绝，权限决定不会超时放行。
 
+## 凭证与落盘
+
+用户级 MCP 配置可能含 token、header 或环境变量。桥只在进程内读取 `~/.claude.json` 的 `mcpServers`，以 0600 权限创建本轮 `run-N.mcp.json`，并在轮次成功或失败的统一收尾中删除；argv 只保留已经失效的文件路径。`run-N.claude.json` 只记录 `mcp_servers` 名字数组，不保存 server 配置、凭证或 MCP 文件内容。
+
 ## 事件与文件族
 
 `run-N.jsonl` 首行是 `_foreman` 引擎标记（engine、cli_version、session_id、role、model、effort、permission_mode、cwd、work_dir、writable_roots、started_at）；其中 `work_dir` 无 worktree 时为 null，`writable_roots` 与本轮 settings 的 `sandbox.allowWrite` 复用同一数组。中间逐行原样保留 Claude stream-json，并穿插 permission / question 决策标记；末行是 `turn_summary`（rc、raw_rc、subtype、terminal_reason、session_id、usage、total_cost_usd、cost_basis、ended_at）。
 
-每轮沿用 `argv / cwd / timeout / engine / jsonl / pid / rc / full-access` 文件族，新增 `claude.json`、`settings.json`、`mcp.json`、`system.md`。`argv` 是 NUL 分隔的真实 Claude argv。
+每轮沿用 `argv / cwd / timeout / engine / jsonl / pid / rc / full-access` 文件族，新增持久的 `claude.json`、`settings.json`、`system.md`，以及仅在进程运行期存在的 `mcp.json`。`argv` 是 NUL 分隔的真实 Claude argv。
 
 | rc | 含义 |
 |---:|---|

@@ -1009,7 +1009,7 @@ manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 
 echo "== Claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in success deny eof no_session bad_json unknown question_answered question_timeout signal mcp_missing invalid_decision forbidden closeout full_access; do
+for claude_case in success mcp_private_cleanup first_line_paths deny eof no_session bad_json unknown question_timeout signal mcp_missing invalid_decision forbidden closeout non_closeout_graphql success_stderr_warning full_access; do
   if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
     ok "Claude 回放：${claude_case}"
   else
@@ -1033,6 +1033,27 @@ p=pathlib.Path(sys.argv[1]); a=pathlib.Path(str(p)[:-len('.request.json')]+'.arg
 i=a.index(b'--resume'); assert a[i+1]==b'session-replay-001'
 PY2
 
+env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=question_answered "$F" run 1 --thread claude-question --engine claude --prompt "$T/brief.md" --title question --question-timeout 10 --detach --no-check >/dev/null
+question_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+question_stem="${question_req%.request.json}"
+for _ in $(seq 1 100); do [ -f "$question_stem.questions.json" ] && break; sleep 0.05; done
+questions_out="$("$F" questions 1 2>&1)"
+question_qid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["questions"][0]["id"])' "$question_stem.questions.json" 2>/dev/null)"
+if [ -n "$question_qid" ] && printf '%s\n' "$questions_out" | grep -q "$question_qid"; then ok "Claude 提问可由 foreman questions 列出 qid"; else bad "Claude questions 未列出问题或 qid" "$questions_out"; fi
+expect_rc "Claude 提问经 foreman answer 写回答" 0 "$F" answer 1 --qid "$question_qid" "蓝色"
+for _ in $(seq 1 100); do [ -f "$question_stem.rc" ] && break; sleep 0.05; done
+python3 - "$question_stem" <<'PY2' && ok "Claude 提问回答消费、MCP 回包与事件顺序" || bad "Claude 提问回答回路"
+import json,pathlib,sys
+s=pathlib.Path(sys.argv[1]); events=[json.loads(x) for x in pathlib.Path(str(s)+'.jsonl').read_text().splitlines() if x]
+states=[e['_foreman']['state'] for e in events if e.get('_foreman',{}).get('type')=='question']
+answer=next(e for e in events if e.get('type')=='foreman_replay_answer')['answers']['选择颜色？']
+meta=json.load(open(str(s)+'.claude.json'))
+assert states==['asked','answered'] and answer=='蓝色'
+assert pathlib.Path(str(s)+'.questions.answered.json').is_file() and not pathlib.Path(str(s)+'.questions.json').exists()
+assert not pathlib.Path(str(s)+'.mcp.json').exists() and isinstance(meta['mcp_servers'],list) and 'mcp_config' not in meta
+assert pathlib.Path(str(s)+'.rc').read_text().strip()=='0'
+PY2
+
 cat >> "$FOREMAN_HOME/config.toml" <<'EOF'
 
 [roles.noclaude]
@@ -1052,39 +1073,10 @@ import pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
 PY2
 
-# 快照夹具在基线提交生成。逐字段先哈希，再摘要字段哈希表；字段增删或任一值变化都会失败。
-python3 - "$steer_dir" "$d2" "$T" "$SKILL_DIR" "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" <<'PY2' && ok "Codex 分发快照：run / resume / writable / full-access / mechanical / review / hold argv 不变" || bad "Codex 分发快照漂移"
-import hashlib,json,os,pathlib,re,subprocess,sys
-d1,d2,tmp,skill,fixture=map(pathlib.Path,sys.argv[1:])
-m=json.load(open(d1/'meta.json')); m['threads']['implement']['ref']='snapshot-session'; (d1/'meta.json').write_text(json.dumps(m,ensure_ascii=False,indent=2))
-env=dict(os.environ,FOREMAN_HOME=str(tmp/'home'),FOREMAN_CODEX_BIN=str(tmp/'fake-codex'))
-shell=skill/'scripts/foreman.sh'; brief=tmp/'brief.md'; cwd=tmp/'proj/app'
-subprocess.run([shell,'run','1','--thread','implement','--prompt',brief,'--title','resume-snapshot','--timeout','30'],cwd=cwd,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-resume=max(d1.glob('run-*.request.json'),key=lambda p:int(re.search(r'run-(\d+)',p.name)[1]))
-subprocess.run([shell,'run','1','--thread','full-snapshot','--prompt',brief,'--title','full-snapshot','--full-access','用户明确要求完全权限','--timeout','30'],cwd=cwd,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-full=max(d1.glob('run-*.request.json'),key=lambda p:int(re.search(r'run-(\d+)',p.name)[1]))
-cases={'new':d1/'run-1.request.json','resume':resume,'mechanical':d1/'run-4.request.json','full_access':full,'writable':d2/'run-2.request.json','review':d2/'review-1.request.json'}
-tmp_real=os.path.realpath(tmp); skill_real=os.path.realpath(skill)
-def norm(v):
-    if isinstance(v,dict): return {k:norm(x) for k,x in sorted(v.items())}
-    if isinstance(v,list): return [norm(x) for x in v]
-    if isinstance(v,str):
-        s=v.replace('/private/tmp/','/tmp/').replace(tmp_real.replace('/private/tmp/','/tmp/'),'<TMP>').replace(str(tmp),'<TMP>')
-        s=s.replace(skill_real,str(skill)).replace(str(skill),'<SKILL>')
-        s=re.sub(r'foreman-selftest\.[A-Za-z0-9]+--bare','<REPO_SLUG>',s)
-        return re.sub(r'(?<![A-Za-z])(?:run|review)-\d+','<ROUND>',s)
-    return v
-expected=json.load(open(fixture))['cases']
-expected_argv=json.load(open(fixture))['argv']
-for name,path in cases.items():
-    req=norm(json.load(open(path))); fields={k:hashlib.sha256(json.dumps(v,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest() for k,v in req.items()}
-    got=hashlib.sha256(json.dumps(fields,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-    assert got==expected[name],(name,got,expected[name])
-    argv=[os.fsdecode(x) for x in pathlib.Path(str(path)[:-len('.request.json')]+'.argv').read_bytes().split(b'\0')[:-1]]
-    argv=norm(argv); argv=[re.sub(r'/(?:1|2)/<ROUND>',r'/<ISSUE>/<ROUND>',x) for x in argv]
-    assert argv==expected_argv,(name,argv,expected_argv)
-assert json.load(open(fixture))['hold_start_argv'][0:3]==['python3','<SKILL>/scripts/codex_appserver.py','serve']
-PY2
+# 快照夹具在基线生成，保存完整归一化 JSON；失败直接打印逐字段 unified diff。
+snapshot_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" --compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" 2>&1)"; snapshot_rc=$?
+if [ "$snapshot_rc" -eq 0 ]; then ok "Codex 分发完整快照：run / resume / writable / full-access / mechanical / review / hold argv 不变"
+else bad "Codex 分发快照漂移（下方为逐字段 diff）"; printf '%s\n' "$snapshot_out"; fi
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"
