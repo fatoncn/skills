@@ -1505,7 +1505,7 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
 }
 cmd_report_inner() {
   local issue="$1" n="${2:-}" filter_pr="${3:-}" kind=run
-  local dir; dir="$(issue_dir "$issue")"
+  local dir summary_rc=0 timed_out=0; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
     if [ -n "$filter_pr" ]; then
@@ -1523,21 +1523,38 @@ PY
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; return 0; fi
+  [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 143 ] && timed_out=1
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
-  [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
+  if [ ! -f "$dir/$kind-$n.jsonl" ]; then
+    [ "$timed_out" -eq 1 ] || die "没有 $kind-$n"
+    echo "!! $kind-$n 事件日志不可用"
+    timeout_state_report "$dir" "$kind" "$n"
+    return 0
+  fi
   if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
     if [ ! -s "$dir/$kind-$n.last.md" ]; then
       echo "run #$n 进行中；上一轮交付：foreman report $issue $((n-1))"
     else echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
   fi
   local role=""; [ -f "$dir/$kind-$n.role" ] && role="$(cat "$dir/$kind-$n.role")"
-  python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md"
+  python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md" || summary_rc=$?
   timeout_state_report "$dir" "$kind" "$n"
+  [ "$timed_out" -eq 1 ] && return 0
+  return "$summary_rc"
+}
+timeout_round_exists() { # <票目录>；meta 丢失时只为 rc=143 的 report 放行
+  local rc
+  for rc in "$1"/run-*.rc "$1"/review-*.rc; do
+    [ -f "$rc" ] || continue
+    [ "$(cat "$rc" 2>/dev/null || true)" = 143 ] && return 0
+  done
+  return 1
 }
 cmd_report() {
   local issue="${1:-}" n="" prname=""; [ -n "$issue" ] || die "用法: foreman report <票 id> [N|reviewN] [--pr <名>]"; shift || true
   while [ $# -gt 0 ]; do case "$1" in --pr) prname="$2"; shift 2 ;; -*) die "report: 未知参数 $1" ;; *) [ -z "$n" ] && n="$1" || die "report: 多余参数 $1"; shift ;; esac; done
-  init_repo_context; require_project; require_issue "$issue"
+  init_repo_context; require_project
+  [ -f "$(issue_dir "$issue")/meta.json" ] || timeout_round_exists "$(issue_dir "$issue")" || require_issue "$issue"
   [ -z "$prname" ] || resolve_pr "$issue" "$prname"
   cmd_report_inner "$issue" "$n" "$prname"
 }
@@ -1634,14 +1651,14 @@ call_state() {
 timeout_state_report() { # <票目录> <kind> <n>；只在硬超时 rc=143 后合成现场
   local dir="$1" kind="$2" n="$3" f="$1/$2-$3" pr wt base out
   [ "$(cat "$f.rc" 2>/dev/null || true)" = 143 ] || return 0
-  pr="$(round_pr "$dir" "$kind-$n")"
-  wt="$(python3 - "$dir/meta.json" "$pr" <<'PY2'
+  pr="$(round_pr "$dir" "$kind-$n" 2>/dev/null || true)"
+  wt="$(python3 - "$dir/meta.json" "$pr" 2>/dev/null <<'PY2' || true
 import json,sys
 m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
 print(p.get("worktree") or "")
 PY2
 )"
-  base="$(python3 - "$dir/meta.json" "$pr" <<'PY2'
+  base="$(python3 - "$dir/meta.json" "$pr" 2>/dev/null <<'PY2' || true
 import json,sys
 m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
 print(p.get("base") or "")
@@ -1656,9 +1673,10 @@ PY2
   if [ -n "$wt" ] && [ -d "$wt" ]; then out="$(git -C "$wt" status --short 2>&1 || true)"; [ -n "$out" ] && printf '%s\n' "$out" || echo "（无）"
   else echo "（工作树不可用）"; fi
   echo "最后 10 条事件："
-  python3 "$PY_SUMMARIZE" --tail "$f.jsonl" 10
+  if [ -s "$f.jsonl" ]; then python3 "$PY_SUMMARIZE" --tail "$f.jsonl" 10 || echo "（事件尾不可用）"
+  else echo "（事件尾不可用）"; fi
   echo "被打断时正在跑的命令："
-  python3 - "$f.jsonl" <<'PY2'
+  if [ -s "$f.jsonl" ]; then python3 - "$f.jsonl" <<'PY2' || echo "（命令状态不可用）"
 import json,sys
 active={}
 for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
@@ -1673,6 +1691,7 @@ if active:
     for command in active.values(): print(command)
 else: print("（事件流中没有未完成的 commandExecution）")
 PY2
+  else echo "（命令状态不可用）"; fi
 }
 latest_n() {
   python3 - "$1" "$2" <<'PY2'
@@ -1870,7 +1889,7 @@ EOF
 cmd_wait() {
   init_repo_context; require_project
   local timeout=300 interval=20 progress=300 report=1 ids=() targets=()
-  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0 timed_out=0 progress_dir=""
+  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0 timed_out=0 progress_dir="" cycle_out=""
   local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1907,11 +1926,11 @@ EOF
   done
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s，进展周期 ${progress}s"
   while [ "$waited" -lt "$timeout" ]; do
-    left=0
+    left=0; cycle_out="$progress_dir/cycle.out"; : > "$cycle_out"
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$st" "$progress"
+      python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$st" "$progress" >> "$cycle_out"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
         waiting_id="$id"
@@ -1920,6 +1939,7 @@ EOF
         waiting=1
       fi
     done
+    [ ! -s "$cycle_out" ] || cat "$cycle_out"
     [ "$waiting" -eq 0 ] || break
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
@@ -1972,11 +1992,14 @@ for tid in sorted(os.listdir(root)):
     p = os.path.join(root, tid, "meta.json")
     if not os.path.isfile(p): continue
     m = json.load(open(p)); th = m.get("threads") or {}
+    prs=m.get("prs") or {}; default=m.get("default_pr"); pr=prs.get(default) if default else None
+    if pr is None and len(prs)==1: pr=next(iter(prs.values()))
+    branch=((pr or {}).get("branch") if prs else m.get("branch")) or "—"
     parts = []
     for name, t in th.items():
         runs = t.get("runs") or []
         parts.append(f"{name}[{t.get('role','?')}/{t.get('engine','?')}×{len(runs)}]")
-    print(f"  {tid:16} 分支 {m.get('branch') or '-':40} 线程: {' '.join(parts) or '（无）'}")
+    print(f"  {tid:16} 分支 {branch:40} 线程: {' '.join(parts) or '（无）'}")
 PY2
 }
 

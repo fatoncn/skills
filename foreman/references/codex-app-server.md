@@ -154,7 +154,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 ## turn/steer 与排队转引导（2026-09-11）
 
-cookie 的最终口径是「先发消息，再改引导」：编排者默认用 `foreman run` 追加任务，正在跑就排队，结束了就起下一轮；看到排队提示后，需要立即纠偏才用 `foreman steer <id> --from-queue N --thread <名>`。直接 `steer <id> --thread <名> "文本"` / `--file <f>` 保留。
+中途需求变化时，在跑线程不会自动看到，编排者默认立刻用 `foreman steer <id> --thread <名>`（或 `--file <f>`）通知并以 `tail` 确认；只有与本轮无关、留到下一轮也不会造成两轮改同一处的追加任务才用下一轮 `run`。已排队的轮次需要立即生效时用 `steer --from-queue N --thread <名>`。
 
 0.153.4 本机 `codex app-server generate-json-schema --out <目录>` 的 v2 schema：
 

@@ -741,6 +741,9 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
     except (OSError, ValueError):
         prior = None
 
+    active_status = status in ("RUNNING", "QUEUED", "WAITING")
+    event_times = [value for value in (_event_time(event) for event in events) if value is not None]
+    execution_started_at = min(event_times) if event_times else None
     active = {}
     known_active = (prior or {}).get("active_commands") or {}
     last_event_at = started
@@ -757,12 +760,15 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
                              "at": event_at or known_at or now}
         elif method == "item/completed" and ident:
             active.pop(ident, None)
+    if not active_status:
+        active = {}
 
     current_count = len(events)
     if prior is None:
         state = {"line_count": current_count, "line_status": status, "last_output": now,
                  "seen_count": current_count, "last_event_at": last_event_at,
-                 "idle_warned": False, "command_warned": [], "active_commands": active}
+                 "idle_warned": False, "command_warned": [], "active_commands": active,
+                 "execution_started_at": execution_started_at}
         json.dump(state, open(state_path, "w", encoding="utf-8"), ensure_ascii=False)
         return []
 
@@ -777,15 +783,16 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
         prior["last_event_at"] = now
     prior["seen_count"] = current_count
     prior["seen_status"] = status
-    warned = set(prior.get("command_warned") or [])
+    execution_started_at = execution_started_at or prior.get("execution_started_at")
+    warned = set(prior.get("command_warned") or []) if active_status else set()
     warned.intersection_update(active)
     lines = []
 
     idle_for = now - float(prior.get("last_event_at", started))
-    if idle_for >= 600 and not prior.get("idle_warned"):
+    if active_status and idle_for >= 600 and not prior.get("idle_warned"):
         lines.append(f"⚠ {label} {_human_seconds(now-started)}：{int(idle_for // 60)} 分钟无新事件（最后：{last}）")
         prior["idle_warned"] = True
-    for ident, command in active.items():
+    for ident, command in (active.items() if active_status else ()):
         duration = now - float(command["at"])
         if duration >= 600 and ident not in warned:
             lines.append(f"⚠ {label} {_human_seconds(now-started)}：命令已跑 {int(duration // 60)} 分钟：{command['command']}")
@@ -795,7 +802,10 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
     due = now - float(prior.get("last_output", now)) >= int(progress_seconds)
     if not lines and int(progress_seconds) > 0 and due and changed:
         added = max(0, current_count - int(prior.get("line_count", 0)))
-        remaining = "—" if not run_limit else _human_seconds(started + run_limit - now)
+        if not execution_started_at:
+            remaining = "排队中，未开始计执行预算"
+        else:
+            remaining = "—" if not run_limit else _human_seconds(execution_started_at + run_limit - now)
         command = "无"
         if active:
             latest = max(active.values(), key=lambda item: item["at"])
@@ -810,6 +820,7 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
         prior["line_status"] = status
     prior["command_warned"] = sorted(warned)
     prior["active_commands"] = active
+    prior["execution_started_at"] = execution_started_at
     json.dump(prior, open(state_path, "w", encoding="utf-8"), ensure_ascii=False)
     return [_one_line(line, 500) for line in lines]
 
@@ -828,9 +839,14 @@ def listing(issues_home: str) -> int:
         if selected_pr is None and len(prs) == 1:
             selected_pr = next(iter(prs.values()))
         selected_pr = selected_pr or {}
-        branch = meta.get("branch") or selected_pr.get("branch") or "—"
-        base = meta.get("base") or selected_pr.get("base") or "—"
-        worktree = meta.get("worktree") or selected_pr.get("worktree") or ""
+        if prs:
+            branch = selected_pr.get("branch") or "—"
+            base = selected_pr.get("base") or "—"
+            worktree = selected_pr.get("worktree") or ""
+        else:
+            branch = meta.get("branch") or "—"
+            base = meta.get("base") or "—"
+            worktree = meta.get("worktree") or ""
         runs = sorted({re.sub(r"\.cancelled$", ".jsonl", f) for f in os.listdir(issue_dir)
                        if re.fullmatch(r"run-\d+\.(?:jsonl|cancelled)", f)})
         cost = 0.0

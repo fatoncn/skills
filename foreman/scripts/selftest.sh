@@ -134,6 +134,13 @@ printf '%s\n' '{"_fleet":"thread","threadId":"timeout-test"}' '{"method":"item/s
 printf 'codex' > "$timeout47_dir/run-1.engine"; printf 'implement' > "$timeout47_dir/run-1.role"; printf 'here' > "$timeout47_dir/run-1.pr"; : > "$timeout47_dir/run-1.argv"
 timeout47_out="$("$F" report 47 2>&1)"
 if printf '%s\n' "$timeout47_out" | grep -q '^--- 超时时的状态 ---$' && printf '%s\n' "$timeout47_out" | grep -q '^已落 commit 列表：$' && printf '%s\n' "$timeout47_out" | grep -q '^工作树改动文件：$' && printf '%s\n' "$timeout47_out" | grep -q '^最后 10 条事件：$' && printf '%s\n' "$timeout47_out" | grep -q '^long-running-command$'; then ok "rc=143 后 report 自动合成超时现场"; else bad "report 超时现场" "$timeout47_out"; fi
+cp "$timeout47_dir/run-1.jsonl" "$T/timeout47.jsonl.saved"; : > "$timeout47_dir/run-1.jsonl"
+timeout47_empty="$("$F" report 47 1 2>&1)"; timeout47_empty_rc=$?
+if [ "$timeout47_empty_rc" -eq 0 ] && printf '%s\n' "$timeout47_empty" | grep -q '^--- 超时时的状态 ---$' && printf '%s\n' "$timeout47_empty" | grep -q '事件尾不可用' && printf '%s\n' "$timeout47_empty" | grep -q '命令状态不可用'; then ok "rc=143 空日志仍独立合成现场"; else bad "report 空日志超时现场" "rc=$timeout47_empty_rc $timeout47_empty"; fi
+mv "$timeout47_dir/meta.json" "$timeout47_dir/meta.json.saved"; rm -f "$timeout47_dir/run-1.jsonl"
+timeout47_nometa="$("$F" report 47 1 2>&1)"; timeout47_nometa_rc=$?
+if [ "$timeout47_nometa_rc" -eq 0 ] && printf '%s\n' "$timeout47_nometa" | grep -q '^--- 超时时的状态 ---$' && printf '%s\n' "$timeout47_nometa" | grep -q '工作树不可用' && printf '%s\n' "$timeout47_nometa" | grep -q '事件日志不可用'; then ok "rc=143 缺 meta / 日志仍合成可用部分"; else bad "report 缺 meta 超时现场" "rc=$timeout47_nometa_rc $timeout47_nometa"; fi
+mv "$timeout47_dir/meta.json.saved" "$timeout47_dir/meta.json"; cp "$T/timeout47.jsonl.saved" "$timeout47_dir/run-1.jsonl"
 expect_grep "超时现场报告测试清理" "已删登记" "$F" cleanup 47 --force
 expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
 expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-mech --role mechanical --prompt "$T/brief.md" --title "机械实现" --timeout 30
@@ -293,6 +300,36 @@ printf '%s' "$wait50_pid" > "$wait50_dir/run-1.pid"; printf '%s' "$(date +%s)" >
 wait50_out="$("$F" wait 50 --timeout 3 --interval 1 --progress 0 --no-report 2>&1)"; wait50_rc=$?
 if [ "$wait50_rc" -eq 0 ] && printf '%s\n' "$wait50_out" | grep -q '结束 rc=0'; then ok "wait 正常结束 rc=0 不受影响"; else bad "wait 正常结束" "rc=$wait50_rc $wait50_out"; fi
 wait "$wait50_pid" 2>/dev/null || true; rm -f "$wait50_dir"/run-1.*
+expect_grep "wait 多线程集中输出测试登记" "PR「here」" "$F" here 51
+wait51_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/51/meta.json' -print -quit)")"; sleep 300 & wait51_pid=$!
+make_hold_fixture "$wait51_dir" a-fast 1 "$wait51_pid" here implement; rm -f "$wait51_dir/hold-a-fast/queue/run-1.request.json"; printf '{"run":"run-1"}' > "$wait51_dir/hold-a-fast/active.json"
+make_hold_fixture "$wait51_dir" z-slow 2 "$wait51_pid" here implement; rm -f "$wait51_dir/hold-z-slow/queue/run-2.request.json"; printf '{"run":"run-2"}' > "$wait51_dir/hold-z-slow/active.json"
+printf 60 > "$wait51_dir/run-1.timeout"; printf 60 > "$wait51_dir/run-2.timeout"
+python3 - "$wait51_dir/run-1.jsonl" "$wait51_dir/run-2.jsonl" <<'PY2'
+import json,sys,time
+stamp=int(time.time()*1000)
+with open(sys.argv[1],"w") as f: f.write(json.dumps({"_fleet":"thread","threadId":"fast","_at":stamp})+"\n")
+with open(sys.argv[2],"w") as f:
+    f.write(json.dumps({"_fleet":"thread","threadId":"slow","_at":stamp})+"\n")
+    row=json.dumps({"method":"selftest/noop","params":{},"_at":stamp})+"\n"
+    f.write(row*120000)
+PY2
+( sleep 1.2; python3 - "$wait51_dir/run-1.jsonl" "$wait51_dir/run-2.jsonl" <<'PY2'
+import json,sys,time
+stamp=int(time.time()*1000)
+for path,text in zip(sys.argv[1:],("fast-progress","slow-progress")):
+    with open(path,"a") as f: f.write(json.dumps({"method":"item/completed","params":{"item":{"id":text,"type":"agentMessage","text":text}},"_at":stamp})+"\n")
+PY2
+) &
+wait51_timed="$( ( "$F" wait 51 --timeout 3 --interval 1 --progress 1 --no-report 2>&1 || true ) | python3 -c 'import sys,time
+for line in sys.stdin: print(f"{time.monotonic():.6f}\t{line.rstrip()}",flush=True)' )"
+if printf '%s\n' "$wait51_timed" | python3 -c 'import sys
+rows=[line.rstrip().split("\t",1) for line in sys.stdin if "进展 51 run#" in line]
+assert len(rows)>=2, rows
+pair=rows[:2]; assert "run#1" in pair[0][1] and "run#2" in pair[1][1], pair
+assert float(pair[1][0])-float(pair[0][0]) < .2, pair'; then ok "wait 同周期先解析全部线程再集中输出"; else bad "wait 多线程进展未集中" "$wait51_timed"; fi
+kill "$wait51_pid" 2>/dev/null; wait "$wait51_pid" 2>/dev/null || true; rm -rf "$wait51_dir/hold-a-fast" "$wait51_dir/hold-z-slow"; rm -f "$wait51_dir"/run-1.* "$wait51_dir"/run-2.*
+expect_grep "wait 多线程集中输出测试清理" "已删登记" "$F" cleanup 51 --force
 expect_grep "旧轮 closeout 测试登记" "PR「here」" "$F" here 44
 old44_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/44/meta.json' -print -quit)")"; make_hold_fixture "$old44_dir" implement 1 999999 here implement
 rm -f "$old44_dir/run-1.pr" "$old44_dir/hold-implement/queue/run-1.request.json"
@@ -436,6 +473,13 @@ for list48_n in 1 2 3 4 5; do printf '%s\n' '{"_fleet":"thread","threadId":"list
 list48_out="$("$F" list)"
 list48_row="$(printf '%s\n' "$list48_out" | grep '^48 ' | head -1)"
 if printf '%s\n' "$list48_row" | grep -Eq '^48 +— +— +— +aaaaa ' && ! printf '%s\n' "$list48_row" | grep -q '?'; then ok "list 的 here 空分支 / 基线显示 —，引擎列逐轮保留"; else bad "list here 分支 / 引擎列" "$list48_out"; fi
+python3 - "$list48_meta" <<'PY2'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m["branch"]="old-branch"; m["base"]="old-base"; m["worktree"]="/old/worktree"
+m["prs"]["here"].update({"branch":"new-branch","base":"new-base"}); json.dump(m,open(p,"w"))
+PY2
+list48_mixed="$("$F" list)"; list48_mixed_row="$(printf '%s\n' "$list48_mixed" | grep '^48 ' | head -1)"
+if printf '%s\n' "$list48_mixed_row" | grep -Eq '^48 +new-branch +new-base ' && printf '%s\n' "$list48_mixed" | grep -Eq '^  48 +分支 new-branch +' && ! printf '%s\n' "$list48_mixed" | grep -q 'old-branch'; then ok "list 两张表以新版选中 PR 覆盖旧顶层字段"; else bad "list 新旧账本优先级" "$list48_mixed"; fi
 echo "== 守卫 =="
 python3 - "$FOREMAN_HOME/config.toml" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r'(?m)^thread_name = .*$', 'thread_name = "x {ids}"', s); open(p,'w').write(s)
@@ -499,6 +543,21 @@ python3 "$SKILL_DIR/scripts/summarize.py" --progress "$off_log" "$off_state" "�
 printf '%s\n' '{"method":"item/completed","params":{"item":{"id":"msg-off","type":"agentMessage","text":"new"}},"_at":1100000}' >> "$off_log"
 off_out="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$off_log" "$off_state" "票 off run#1" RUNNING 0 1301)"
 [ -z "$off_out" ] && ok "wait --progress 0 关闭周期进展" || bad "wait --progress 0 仍输出进展" "$off_out"
+
+terminal_log="$T/terminal.jsonl"; printf 1000 > "$T/terminal.started"; printf 3600 > "$T/terminal.timeout"
+printf '%s\n' '{"method":"item/started","params":{"item":{"id":"cmd-terminal","type":"commandExecution","command":"still-marked-running"}},"_at":1000000}' > "$terminal_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$terminal_log" "$T/terminal-done.state" "票 done run#1" RUNNING 300 1000 >/dev/null
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$terminal_log" "$T/terminal-live.state" "票 live run#2" RUNNING 300 1000 >/dev/null
+terminal_done="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$terminal_log" "$T/terminal-done.state" "票 done run#1" DONE 300 1700)"
+terminal_live="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$terminal_log" "$T/terminal-live.state" "票 live run#2" RUNNING 300 1700)"
+if ! printf '%s\n' "$terminal_done" | grep -Eq '无新事件|命令已跑' && printf '%s\n' "$terminal_live" | grep -q '命令已跑' && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["active_commands"] == {}' "$T/terminal-done.state"; then ok "多线程中先 DONE 的线程清除运行中异常状态"; else bad "终态线程仍报运行中异常" "$terminal_done / $terminal_live"; fi
+
+budget_log="$T/budget.jsonl"; budget_state="$T/budget.state"; printf 1000 > "$T/budget.started"; printf 1800 > "$T/budget.timeout"; : > "$budget_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$budget_log" "$budget_state" "票 budget run#1" QUEUED 300 1000 >/dev/null
+budget_queued="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$budget_log" "$budget_state" "票 budget run#1" WAITING 300 1301)"
+printf '%s\n' '{"method":"item/started","params":{"item":{"id":"cmd-budget","type":"commandExecution","command":"work"}},"_at":2200000}' > "$budget_log"
+budget_running="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$budget_log" "$budget_state" "票 budget run#1" RUNNING 300 2500)"
+if printf '%s\n' "$budget_queued" | grep -q '排队中，未开始计执行预算' && printf '%s\n' "$budget_running" | grep -q '用时 25m00s.*距 run --timeout 25m00s'; then ok "排队时间不扣 run 执行预算"; else bad "run 执行预算起点" "$budget_queued / $budget_running"; fi
 printf '%s\n' '{"method":"warning","params":{"message":"warning: Skill descriptions were shortened to fit the context"}}' '{"method":"warning","params":{"message":"keep this warning"}}' > "$T/warnings.jsonl"
 : > "$T/warnings.stderr"; echo done > "$T/warnings.last.md"
 warning_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/warnings.jsonl" "$T/warnings.stderr" "$T/warnings.last.md" 2>&1)"; warning_rc=$?
