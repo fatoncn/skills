@@ -142,6 +142,11 @@ def permission_reply(stem: pathlib.Path, tool: str, tool_input: dict) -> dict:
     req = load_request(stem)
     log = pathlib.Path(req["jsonl_path"])
     digest = input_digest(tool_input)
+    if req.get("review_readonly") == "tools_only":
+        reason = "Claude 复审权限 MCP 一律拒绝升级；只使用 Read / Glob / Grep"
+        foreman_event(log, {"type": "permission", "tool": tool, "decision": "deny", "reason": reason,
+                            "input_digest": digest})
+        return {"behavior": "deny", "message": reason}
     command = command_for(tool, tool_input)
     reason = forbidden_reason(command, bool(req.get("closeout"))) if command else None
     if reason:
@@ -291,6 +296,29 @@ def user_mcp_servers() -> dict:
         return servers if isinstance(servers, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def build_settings(roots: list[str], *, full: bool = False, closeout: bool = False,
+                   review_readonly: bool = False) -> dict:
+    denied = deny_rules(closeout)
+    if review_readonly:
+        denied = ["Bash(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)", *denied]
+    return {"sandbox": {"enabled": not full, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
+                         "allowUnsandboxedCommands": False, "allowWrite": roots},
+            "permissions": {"deny": list(dict.fromkeys(denied)), "ask": ["AskUserQuestion"]}}
+
+
+def write_doctor_config(output_dir: pathlib.Path, work_dir: str) -> int:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    roots = unique_paths([work_dir, common_gitdir(work_dir)])
+    write_json(output_dir / "settings.json", build_settings(roots))
+    servers = user_mcp_servers()
+    servers["foreman"] = {"type": "stdio", "command": sys.executable,
+                          "args": [str(SCRIPT), "permission-server", "--run", str(output_dir / "doctor")]}
+    write_private_json(output_dir / "mcp.json", {"mcpServers": servers})
+    print(json.dumps({"settings": str(output_dir / "settings.json"), "mcp": str(output_dir / "mcp.json"),
+                      "mcp_servers": sorted(servers)}, ensure_ascii=False))
+    return 0
 
 
 def deny_rules(closeout: bool) -> list[str]:
@@ -447,10 +475,12 @@ def run_bridge(request_path: pathlib.Path) -> int:
         except Exception:
             version = "unknown"
         version = version or "unknown"
+        review_readonly = req.get("review_readonly") if req.get("review_readonly") == "tools_only" else None
         foreman_event(jsonl, {"engine": "claude", "cli_version": version, "session_id": req.get("session_id"),
                                "role": req.get("role"), "model": req.get("model"), "effort": req.get("effort"),
                                "permission_mode": permission_mode, "cwd": req.get("cwd"),
-                               "work_dir": work_dir or None, "writable_roots": roots, "started_at": started})
+                               "work_dir": work_dir or None, "writable_roots": roots,
+                               "review_readonly": review_readonly, "started_at": started})
         if invalid_full:
             terminal_reason = "bypassPermissions 缺少严格布尔授权标记或非空原话"
             raise RuntimeError(terminal_reason)
@@ -463,21 +493,25 @@ def run_bridge(request_path: pathlib.Path) -> int:
             raise RuntimeError(terminal_reason)
         settings_path = pathlib.Path(str(stem) + ".settings.json")
         system_path = pathlib.Path(str(stem) + ".system.md")
-        settings = {"sandbox": {"enabled": not full, "failIfUnavailable": True, "autoAllowBashIfSandboxed": False,
-                                 "allowUnsandboxedCommands": False, "allowWrite": roots},
-                    "permissions": {"deny": deny_rules(bool(req.get("closeout"))), "ask": ["AskUserQuestion"]}}
+        settings = build_settings(roots, full=full, closeout=bool(req.get("closeout")),
+                                  review_readonly=review_readonly == "tools_only")
         write_json(settings_path, settings)
-        servers = user_mcp_servers()
+        servers = user_mcp_servers() if req.get("inherit_user_mcp", True) else {}
         if not full:
             servers["foreman"] = {"type": "stdio", "command": sys.executable,
                                   "args": [str(SCRIPT), "permission-server", "--run", str(stem)]}
         write_private_json(mcp_path, {"mcpServers": servers})
         dev = pathlib.Path(req["dev_instructions_path"]).read_text(encoding="utf-8")
+        mcp_fact = ("- 本轮不继承用户 MCP；只挂 foreman 权限 MCP，任何权限升级一律拒绝。\n"
+                    if review_readonly == "tools_only" else
+                    "- 用户级 MCP 从 ~/.claude.json 的 mcpServers 内存读取后写入本轮 MCP 配置；foreman MCP 只处理权限与提问。\n")
+        question_fact = ("- 本轮没有提问工具；需要澄清时在最终报告说明。\n"
+                         if review_readonly == "tools_only" else
+                         "- 需要澄清时只用 AskUserQuestion，并等待回答；不要自行启动 claude 或 codex 子进程。\n")
         facts = ("\n\n---\n\n# Claude 引擎事实\n\n"
                  "- Bash 沙箱只约束 Bash 启动的子进程；本轮 cwd 内的可写范围仍以任务书为准。\n"
                  f"- Claude settings 放开的写路径：{', '.join(roots) or '无'}。\n"
-                 "- 用户级 MCP 从 ~/.claude.json 的 mcpServers 内存读取后写入本轮 MCP 配置；foreman MCP 只处理权限与提问。\n"
-                 "- 需要澄清时只用 AskUserQuestion，并等待回答；不要自行启动 claude 或 codex 子进程。\n")
+                 + mcp_fact + question_fact)
         system_path.write_text(dev + facts, encoding="utf-8")
         if not full:
             ok, why = preflight_permission(stem)
@@ -491,6 +525,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
                 "--mcp-config", str(mcp_path)]
         if not full:
             argv += ["--permission-prompt-tool", "mcp__foreman__approve"]
+        if req.get("tools"):
+            argv += ["--tools", str(req["tools"])]
         argv += ["--append-system-prompt-file", str(system_path), "--max-turns", str(req.get("max_turns") or 80),
                  "--max-budget-usd", str(req.get("max_budget_usd") or 5)]
         if req.get("session_id"):
@@ -544,7 +580,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
                         protocol_failed = True
                         foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
                         request_stop(False)
-                    else:
+                    elif req.get("persist_session", True):
                         update_thread_ref(pathlib.Path(req["meta_path"]), str(req["thread"]), str(init_session))
             if event.get("type") == "result":
                 result_event = event
@@ -593,6 +629,9 @@ def run_bridge(request_path: pathlib.Path) -> int:
         signal.signal(signal.SIGTERM, old_term)
         if stderr_fh is not None:
             stderr_fh.close()
+        final_text = (result_event or {}).get("result")
+        if isinstance(final_text, str) and req.get("last_path"):
+            pathlib.Path(req["last_path"]).write_text(final_text, encoding="utf-8")
         usage = (result_event or {}).get("usage") or {}
         cost = (result_event or {}).get("total_cost_usd")
         foreman_event(jsonl, {"type": "turn_summary", "rc": final_rc, "raw_rc": raw_rc, "subtype": subtype,
@@ -613,9 +652,14 @@ def main() -> int:
     run.add_argument("request")
     perm = sub.add_parser("permission-server")
     perm.add_argument("--run", required=True)
+    doctor = sub.add_parser("doctor-config")
+    doctor.add_argument("--output-dir", required=True)
+    doctor.add_argument("--work-dir", required=True)
     args = parser.parse_args()
     if args.command == "permission-server":
         return serve_permission(pathlib.Path(args.run))
+    if args.command == "doctor-config":
+        return write_doctor_config(pathlib.Path(args.output_dir), args.work_dir)
     request_path = pathlib.Path(args.request)
     try:
         return run_bridge(request_path)

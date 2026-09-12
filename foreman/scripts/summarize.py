@@ -506,7 +506,8 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     print(f"=== {eng} run 摘要 · {os.path.basename(log_path)}" + (f" · role={effective_role}" if effective_role else "") + " ===")
     if eng == "claude":
         print(f"session={state['id'] or '—'} model={state['model'] or '—'} effort={state['effort'] or '—'} "
-              f"permission_mode={state.get('permission_mode') or '—'} sandbox_scope=bash_children")
+              f"permission_mode={state.get('permission_mode') or '—'} sandbox_scope=bash_children"
+              + (f" review_readonly={marker['review_readonly']}" if marker.get("review_readonly") else ""))
         if state.get("permission_mode") == "bypassPermissions":
             print("!FULL ⚠ 本轮使用完全权限（无沙箱、无审批）")
     for note in state["notices"]:

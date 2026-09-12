@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # foreman — 机械动作层：项目规则、worktree 生命周期、执行器调用、日志解析、验证命令。
 # 所有判断（拆任务、写任务书、验收）都在 SKILL.md 里由编排者做，不在这里。
-# 默认执行器是 codex（app-server 协议，scripts/codex_appserver.py）；pi 可选；claude 执行器是副线（未实现）。
+# 默认执行器是 codex（app-server 协议）；claude 为 Claude Code CLI 非交互引擎；pi 可选。
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1012,6 +1012,25 @@ build_thread_name() {   # $1 issue $2 显式标题 $3 任务书路径 $4 阶段�
   printf '%s' "$tpl"
 }
 
+claude_apply_steers() {  # <票目录> <线程> <prompt>
+  local dir="$1" tname="$2" prompt="$3" inbox="$1/hold-$2/steer" pending=()
+  [ -d "$inbox" ] || return 0
+  while IFS= read -r path; do [ -n "$path" ] && pending[${#pending[@]}]="$path"; done <<EOF
+$(find "$inbox" -maxdepth 1 -name 'claude-*.json' -type f -print 2>/dev/null | sort)
+EOF
+  [ ${#pending[@]} -gt 0 ] || return 0
+  python3 - "$prompt" "$inbox" "${pending[@]}" <<'PY'
+import json, os, pathlib, sys
+prompt, inbox, *paths = sys.argv[1:]
+messages = [json.loads(pathlib.Path(path).read_text(encoding="utf-8"))["text"] for path in paths]
+target = pathlib.Path(prompt)
+target.write_text("## 编排者追加说明\n\n" + "\n\n".join(messages) + "\n\n---\n\n" + target.read_text(encoding="utf-8"), encoding="utf-8")
+sent = pathlib.Path(inbox) / "sent"; sent.mkdir(parents=True, exist_ok=True)
+for path in paths:
+    os.replace(path, sent / pathlib.Path(path).name)
+PY
+}
+
 cmd_run() {
   local issue="" prompt_file="" role="" closeout=0 engine="" model="" effort="" detach=0 timeout=1800 title="" tname="" prname=""
   local writable="" extra_ctx="" thinking="" qtimeout="" full_access_reason="" full_access_flag=0 no_check=0
@@ -1119,6 +1138,7 @@ cmd_run() {
     cp "$prompt_file" "$dir/run-$n.prompt.md"
   fi
   prompt_file="$dir/run-$n.prompt.md"
+  [ "$engine" != "claude" ] || claude_apply_steers "$dir" "$tname" "$prompt_file"
   POSITION_WRITABLE="$writable"; prepend_position "$prompt_file"; POSITION_WRITABLE=""
   # run-N.role 给 summarize 选探针放行表：收尾轮写 closeout（阶段标记，放行对自己 PR 的 push / gh 写），其它写角色名
   if [ "$closeout" -eq 1 ]; then printf 'closeout' > "$dir/run-$n.role"; else printf '%s' "$role" > "$dir/run-$n.role"; fi
@@ -1211,7 +1231,7 @@ EOF
         "timeout=@json:$timeout" "questions_path=$dir/run-$n.questions.json" "answer_path=$dir/run-$n.answer.json" \
         "question_timeout=@json:$qtimeout" "user_explicitly_approved_full_access=@json:$([ "$full_access" -eq 1 ] && echo true || echo false)" \
         "full_access_reason=$full_access_reason" "closeout=@json:$([ "$closeout" -eq 1 ] && echo true || echo false)" \
-        "jsonl_path=$dir/run-$n.jsonl" "stderr_path=$dir/run-$n.stderr" "claude_json_path=$dir/run-$n.claude.json" \
+        "jsonl_path=$dir/run-$n.jsonl" "stderr_path=$dir/run-$n.stderr" "last_path=$dir/run-$n.last.md" "claude_json_path=$dir/run-$n.claude.json" \
         "thread_title=$thread_name" "meta_path=$dir/meta.json" \
         "max_turns=@json:$max_turns" "max_budget_usd=@json:$max_budget_usd"
       printf '%s' "$PR_NAME" > "$dir/run-$n.pr"
@@ -1274,7 +1294,7 @@ cmd_review() {
       *) [ -z "$issue" ] && issue="$1" || die "review: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]"
+  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi|claude] [--model m] [--effort e] [--detach] [--timeout 1800]"
   if [ -n "$focus" ]; then [ -f "$focus" ] || die "review: --prompt 文件不存在: ${focus}"; focus="$(cd "$(dirname "$focus")" && pwd)/$(basename "$focus")"; fi
   init_repo_context; require_git; require_project; require_issue "$issue"
   require_roles_confirmed
@@ -1282,9 +1302,17 @@ cmd_review() {
   local review_role_file
   review_role_file="$(role_prompt_file review)"
   [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
-  case "$engine" in codex|pi) ;; *) die "review: --engine 只能是 codex / pi（收到 '$engine'）" ;; esac
-  [ -n "$model" ] || model="$(role_cfg review model)"
-  [ -n "$effort" ] || effort="$(role_cfg review effort)"
+  case "$engine" in codex|pi|claude) ;; *) die "review: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
+  if [ "$engine" = claude ]; then
+    [ -n "$model" ] || model="$(claude_role_cfg review model)"
+    [ -n "$effort" ] || effort="$(claude_role_cfg review effort)"
+    [ -n "$model" ] && [ -n "$effort" ] || die "角色 review 没有 claude 档位，在 [roles.review.claude] 配 model / effort"
+    case "$model" in sonnet|fable|opus|best|haiku|claude-*) ;; *) die "review: Claude --model 非法（收到 '$model'）" ;; esac
+    case "$effort" in low|medium|high|xhigh|max) ;; *) die "review: Claude --effort 非法（收到 '$effort'）" ;; esac
+  else
+    [ -n "$model" ] || model="$(role_cfg review model)"
+    [ -n "$effort" ] || effort="$(role_cfg review effort)"
+  fi
   # 硬规矩（用户 09-11）：复审永远是新线程（ephemeral、thread_id 为空），绝不沿用实现或收尾的会话
 
   local dir wt base; dir="$(issue_dir "$issue")"; resolve_pr "$issue" "$prname"; wt="$PR_WT"; base="$PR_BASE"
@@ -1301,7 +1329,7 @@ $unclean"
   require_pr_idle "$issue" "$PR_NAME" "review-$n"
 
   local inbox
-  if [ "$engine" = "codex" ]; then
+  if [ "$engine" = "codex" ] || [ "$engine" = "claude" ]; then
     inbox="$dir/review-$n-inputs"; rm -rf "$inbox"; mkdir -p "$inbox"
   else
     local rwt; rwt="$(cfg repo.worktree_root)/$(cfg repo.worktree_prefix '')review-$issue"
@@ -1365,6 +1393,41 @@ EOF
       "questions_path=$dir/review-$n.questions.json" "answer_path=$dir/review-$n.answer.json" \
       "question_timeout=@json:0"
     stage_call "$dir" review "$n" "$wt" "$timeout" "" codex -- python3 "$PY_APPSERVER" run "$dir/review-$n.request.json"
+  elif [ "$engine" = "claude" ]; then
+    assemble_dev_instructions "$review_role_file" "$issue" "" "$dir/review-$n.dev.md" 1
+    cat > "$dir/review-$n.prompt.md" <<EOF
+对这次改动做对抗性复审。
+
+你在只读工具集里，只能用 Read / Glob / Grep；没有 Bash / Write / Edit / Agent。
+diff、任务书、交付报告与被审 worktree 里的上下文都用 Read 读，不要尝试写文件或调用 shell。
+
+你不判「需求做对没有」；你看的是这次改动有没有破坏项目约定、仓库约定、最佳实践，
+给意见和依据，采不采纳由编排者拍板。
+
+输入（绝对路径，直接用 Read 读）：
+  改动 diff:              $inbox/REVIEW_DIFF.patch
+  任务书:                 $inbox/REVIEW_BRIEF.md
+  被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
+线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准。
+
+按你的输出格式给意见。
+EOF
+    append_review_focus "$dir/review-$n.prompt.md" "$focus"; prepend_position "$dir/review-$n.prompt.md"
+    thread_set "$issue" "review-$n" engine claude; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" ephemeral "@json:true" >/dev/null 2>&1 || true; thread_set "$issue" "review-$n" runs "review-$n"
+    local claude_max_turns claude_max_budget
+    claude_max_turns="$(cfg claude.max_turns 80)"; claude_max_budget="$(cfg claude.max_budget_usd 5)"
+    write_request "$dir/review-$n.request.json" \
+      "issue=$issue" "thread=review-$n" "role=review" "model=$model" "effort=$effort" \
+      "prompt_path=$dir/review-$n.prompt.md" "dev_instructions_path=$dir/review-$n.dev.md" \
+      "cwd=$PROJECT_ROOT" "work_dir=$wt" "writable_roots=@json:[]" "session_id=@json:null" \
+      "timeout=@json:$timeout" "questions_path=$dir/review-$n.questions.json" "answer_path=$dir/review-$n.answer.json" \
+      "question_timeout=@json:0" "user_explicitly_approved_full_access=@json:false" "full_access_reason=" \
+      "closeout=@json:false" "review_readonly=tools_only" "inherit_user_mcp=@json:false" \
+      "persist_session=@json:false" "tools=Read,Glob,Grep" "no_session_persistence=@json:true" \
+      "jsonl_path=$dir/review-$n.jsonl" "stderr_path=$dir/review-$n.stderr" "last_path=$dir/review-$n.last.md" "claude_json_path=$dir/review-$n.claude.json" \
+      "thread_title=$(build_thread_name "$issue" "$rtitle" /dev/null "复审 #$n")" "meta_path=$dir/meta.json" \
+      "max_turns=@json:$claude_max_turns" "max_budget_usd=@json:$claude_max_budget"
+    stage_call "$dir" review "$n" "$wt" "$timeout" "" claude -- python3 "$PY_CLAUDE" run "$dir/review-$n.request.json"
   else
     command -v pi >/dev/null || die "pi 未安装"
     thread_set "$issue" "review-$n" engine pi; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" runs "review-$n"
@@ -1374,7 +1437,7 @@ EOF
       "复审 REVIEW_DIFF.patch 里的改动。任务书在 REVIEW_BRIEF.md，被审 agent 自己的交付报告在 REVIEW_REPORT.md。按你的输出格式给结论。$( [ -n "$focus" ] && printf '\n\n## 复审关注点（编排者给的，按这个看）\n%s' "$(cat "$focus")" || printf '\n没有额外关注点：按任务书「要求」逐条核对。' )"
   fi
 
-  case "$engine" in codex) require_concurrency_slot ;; esac
+  case "$engine" in codex) require_concurrency_slot ;; claude) require_claude_slot ;; esac
   unlock_runs
   launch_call "$issue" "$dir" review "$n" "$detach"
   if [ "$detach" -eq 0 ]; then
@@ -1440,7 +1503,23 @@ cmd_steer() {
     [ -n "$text$file" ] || die "steer: 引导消息不能为空"
   fi
   init_repo_context; require_project; require_issue "$issue"
-  local dir; dir="$(issue_dir "$issue")"; hd="$(hold_dir "$dir" "$tname")"
+  local dir thread_engine; dir="$(issue_dir "$issue")"; thread_engine="$(thread_get "$issue" "$tname" engine)"
+  if [ "$thread_engine" = "claude" ]; then
+    [ -z "$from" ] || die "claude 引擎没有当前轮注入；--from-queue 只用于 codex 常驻执行体"
+    [ -z "$file" ] || text="$(cat "$file")"
+    local inbox; inbox="$dir/hold-$tname/steer"; mkdir -p "$inbox"
+    path="$(python3 - "$inbox" "$text" <<'PY'
+import json, pathlib, sys, time, uuid
+inbox, text = pathlib.Path(sys.argv[1]), sys.argv[2]
+path = inbox / f"claude-{time.time_ns()}-{uuid.uuid4().hex}.json"
+path.write_text(json.dumps({"text": text, "at": int(time.time()*1000), "state": "queued_next_run"}, ensure_ascii=False) + "\n", encoding="utf-8")
+print(path)
+PY
+)" || return $?
+    echo "claude 引擎：steer 已排队，下一轮 run 生效（当前轮不中断）"
+    return 0
+  fi
+  hd="$(hold_dir "$dir" "$tname")"
   if hold_alive "$hd" && [ "$(cat "$hd/steer.pid" 2>/dev/null || true)" != "$(cat "$hd/bridge.pid")" ]; then
     die "当前常驻执行体尚不支持 steer（升级前启动）；等它结束后 release，再用 run 新起执行体。队列未改动。"
   fi
@@ -1999,6 +2078,7 @@ EOF
       local eng role check; eng="$(cat "$f.engine" 2>/dev/null || echo codex)"; role="$(cat "$f.role" 2>/dev/null || true)"; check="$(check_result "$f")"
       local tn; tn="$(cat "$f.thread" 2>/dev/null || true)"; [ -n "$tn" ] && [ "$tn" != "$role" ] && role="$role@$tn"
       [ -f "$f.full-access" ] && role="$role!FULL"
+      if [ "$eng" = "claude" ] && find "$(issue_dir "$id")/hold-${tn:-implement}/steer" -maxdepth 1 -name 'claude-*.json' -type f -print -quit 2>/dev/null | grep -q .; then role="$role+NEXT"; fi
       case "$st" in
         CANCELLED)       printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" "$(cat "$f.cancelled")" ;;
         RUNNING|WAITING) printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  pid %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" "$(cat "$f.pid")" ;;
@@ -2008,6 +2088,14 @@ EOF
         THREAD_BUSY)     printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  线程被别的客户端占着（桌面端打开了它），关掉再续，急就 release 后 run --thread <新名> 另起\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
         *)               printf '%-16s %-9s %-6s %-10s %-8s %-8s %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
       esac
+    done
+    local steer_file steer_thread steer_count
+    for steer_file in "$(issue_dir "$id")"/hold-*/steer/claude-*.json; do
+      [ -f "$steer_file" ] || continue
+      steer_thread="$(basename "$(dirname "$(dirname "$steer_file")")")"; steer_thread="${steer_thread#hold-}"
+      steer_count="$(find "$(dirname "$steer_file")" -maxdepth 1 -name 'claude-*.json' -type f | wc -l | tr -d ' ')"
+      printf '%-16s %-9s %-6s %-10s %-8s %-8s %s\n' "$id" "steer" "claude" "${steer_thread}+NEXT" "QUEUED" "—" "$steer_count 条，下一轮 run 生效"
+      any=1; break
     done
   done
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
@@ -2224,8 +2312,46 @@ cmd_cleanup() {
 
 # ---------- doctor ----------
 
+doctor_claude() {
+  local wt="${1:-$MAIN_REPO}"
+  echo; echo "--- claude ---"
+  if command -v claude >/dev/null; then
+    echo "claude:  $(command -v claude) → $(claude --version 2>&1)"
+    local auth; auth="$(claude auth status 2>/dev/null || true)"
+    printf '%s' "$auth" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); print("         login=" + str(bool(d.get("loggedIn"))).lower() + "  auth=" + str(d.get("authMethod") or "—") + "  account=" + str(d.get("subscriptionType") or d.get("apiProvider") or "—"))
+except Exception: print("         登录状态无法解析（未打印原始输出）")'
+  else
+    echo "!! 找不到 claude（安装 Claude Code CLI 并先登录）"
+  fi
+  local missing="" role
+  for role in research implement review accept mechanical; do
+    [ -n "$(claude_role_cfg "$role" model)" ] && [ -n "$(claude_role_cfg "$role" effort)" ] || missing="${missing:+$missing,}$role"
+  done
+  [ -z "$missing" ] && echo "  [OK]  [roles.*.claude] 五个参考角色齐全" || echo "  [!!]  缺 [roles.<名>.claude]: $missing"
+  echo "  并发池: $(active_claude_runs) / 上限 $(claude_concurrency_limit)"
+  local tmp meta rc=0; tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-doctor-claude.XXXXXX")"
+  meta="$(python3 "$PY_CLAUDE" doctor-config --output-dir "$tmp" --work-dir "${wt:-$PROJECT_ROOT}" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && python3 - "$tmp/settings.json" "$tmp/mcp.json" <<'PY'
+import json, sys
+settings, mcp = (json.load(open(path)) for path in sys.argv[1:])
+sandbox = settings["sandbox"]
+assert all(key in sandbox for key in ("enabled", "failIfUnavailable", "autoAllowBashIfSandboxed", "allowUnsandboxedCommands"))
+assert isinstance(settings["permissions"]["deny"], list) and all(isinstance(x, str) for x in settings["permissions"]["deny"])
+assert isinstance(mcp.get("mcpServers"), dict)
+PY
+  then
+    echo "  [OK]  settings / MCP 静态校验（sandbox 四键 + deny 形状 + JSON）"
+    printf '%s' "$meta" | python3 -c 'import json,sys; d=json.load(sys.stdin); names=[x for x in d["mcp_servers"] if x!="foreman"]; print("  继承的用户 MCP: " + (", ".join(names) if names else "无"))'
+  else
+    echo "  [!!]  Claude settings / MCP 静态校验失败: $(printf '%s' "$meta" | tail -1)"
+  fi
+  rm -rf "$tmp"
+}
+
 cmd_doctor() {
-  local wt="${1:-}"
+  local wt="${1:-}" codex_ready=1
   echo "--- 二进制 ---"
   command -v python3 >/dev/null && echo "python3: $(python3 --version 2>&1)" || echo "!! 缺 python3"
   python3 -c 'import tomllib' 2>/dev/null || echo "!! python3 需要 3.11+（tomllib）"
@@ -2233,9 +2359,9 @@ cmd_doctor() {
   command -v rg >/dev/null && echo "rg:      $(command -v rg) → $(rg --version | head -1)" || echo "rg:      未装（建议 brew install ripgrep：执行者常先敲 rg，缺它会多耗一轮）"
   if [ -n "$CODEX_BIN" ]; then
     echo "codex:   $CODEX_BIN → $("$CODEX_BIN" --version 2>&1)"
-    "$CODEX_BIN" login status 2>&1 | sed 's/^/         /'
+    "$CODEX_BIN" login status 2>&1 | sed 's/^/         /' || true
   else
-    echo "!! 找不到 codex（装 ChatGPT 桌面端或设 FOREMAN_CODEX_BIN）"; return 1
+    echo "!! 找不到 codex（装 ChatGPT 桌面端或设 FOREMAN_CODEX_BIN）"; codex_ready=0
   fi
   command -v pi >/dev/null && echo "pi:      $(pi --version 2>&1)（可选执行器）" || echo "pi:      未安装（可选，默认不用）"
 
@@ -2262,8 +2388,9 @@ cmd_doctor() {
 
   echo; echo "--- codex home ---"
   if [ -z "${FOREMAN_CODEX_HOME:-}" ] && [ -z "$(gcfg codex.home "")" ]; then
-    echo "!! $CODEX_HOME_HINT"; return 0
+    echo "!! $CODEX_HOME_HINT"; doctor_claude "$wt"; return 0
   fi
+  if [ "$codex_ready" -eq 0 ]; then doctor_claude "$wt"; return 1; fi
   ensure_codex_home
   if [ "$CODEX_HOME_MODE" = "shared" ]; then echo "模式=shared  CODEX_HOME=$CODEX_HOME_DIR  （桌面端能看到 foreman 线程；执行者继承桌面端 config.toml 的 MCP / 插件 / notify / 全局 AGENTS.md）"
   else echo "模式=$CODEX_HOME_MODE  CODEX_HOME=$CODEX_HOME_DIR  auth.json → $(readlink "$CODEX_HOME_DIR/auth.json" 2>/dev/null)  （桌面端看不到线程，用 foreman tail / report）"; fi
@@ -2295,6 +2422,7 @@ cmd_doctor() {
   [ "$rc" -ne 0 ] && echo "  [OK]  只读档真的写不了（复审就地跑）" || echo "  [!!]  只读档竟然可写 —— 复审隔离失效"
   rm -f "$probe"
   echo; echo "提示: 若 curl 报连 127.0.0.1 失败，那是没开 network_access 的表现（设了代理时「没网」长这样），不是代理问题。"
+  doctor_claude "$wt"
 }
 
 # ---------- dispatch ----------
@@ -2328,7 +2456,7 @@ foreman <command>            执行器: codex（默认，app-server）| claude�
                            --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
                            写码角色 rc=0 后自动 detached 跑 check；--no-check 只跳过本轮
                            codex 与 claude 使用独立并发池；claude 档位来自 [roles.<名>.claude]，池上限来自 [engines.claude] concurrency（默认 3）
-  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
+  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|claude|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
                            口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N

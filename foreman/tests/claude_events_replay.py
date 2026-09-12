@@ -81,6 +81,13 @@ def selftest():
           and any("tool_use Write" in row for row in rows) and any("tool_result ok" in row for row in rows)
           and any(row.startswith("[result]") for row in rows))
 
+    real = summarize.scan(load("real-run.jsonl"))
+    check("真实 CLI 流字段齐全且可解析", real["id"] == "session-real"
+          and real["model"] == "claude-sonnet-5" and real["effort"] == "low" and real["settled"]
+          and real["turns"] == 1 and real["tool_calls"] == 3 and real["tokens"] > 0
+          and real["files"] == [("Edit", "/workspace/project/README.md")]
+          and "## STATUS\nDONE" in real["final"] and not real["tool_errors"])
+
     deny = summarize.scan(load("deny_rc0.jsonl"))
     deny_report = capture(summarize.report, str(CLAUDE / "deny_rc0.jsonl"), None)
     check("deny 且 rc0 仍需人工判断", deny["settled"] and deny["permission_denials"] and deny["forbidden"]
@@ -134,6 +141,15 @@ def selftest():
     bypass_report = capture(summarize.report, str(CLAUDE / "bypass.jsonl"), None)
     check("bypass !FULL 横幅", "!FULL ⚠ 本轮使用完全权限（无沙箱、无审批）" in bypass_report
           and "permission_mode=bypassPermissions" in bypass_report)
+
+    review_events = json.loads(json.dumps(success_events))
+    review_events[0]["_foreman"]["role"] = "review"
+    review_events[0]["_foreman"]["review_readonly"] = "tools_only"
+    with tempfile.TemporaryDirectory() as tmp:
+        review_log = pathlib.Path(tmp) / "review.jsonl"
+        review_log.write_text("\n".join(json.dumps(event, ensure_ascii=False) for event in review_events) + "\n")
+        review_report = capture(summarize.report, str(review_log), None)
+    check("Claude 复审横幅展示 tools_only", "review_readonly=tools_only" in review_report)
 
     explicit = summarize.scan(success_events, "claude")
     not_first = [{"_fleet": "thread", "threadId": "old"}, success_events[0]]

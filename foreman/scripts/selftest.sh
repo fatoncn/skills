@@ -20,6 +20,7 @@ chmod +x "$T/bin/python3"
 export PATH="$T/bin:$PATH"
 export FOREMAN_HOME="$T/home" FOREMAN_CODEX_BIN="$T/fake-codex"
 printf '#!/bin/sh\necho "fake codex: connection refused" >&2\nexit 1\n' > "$T/fake-codex"; chmod +x "$T/fake-codex"
+ln -s "$SKILL_DIR/tests/claude_replay.py" "$T/bin/claude"
 pass=0; fails=()
 ok()   { pass=$((pass+1)); echo "  [OK]  $1"; }
 bad()  { fails+=("$1"); echo "  [!!]  $1${2:+ —— $2}"; }
@@ -1022,7 +1023,7 @@ manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 
 echo "== claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean full_access; do
+for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
   if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
     ok "Claude 回放：${claude_case}"
   else
@@ -1088,6 +1089,26 @@ python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
 import pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
 PY2
+
+expect_rc "Claude 复审使用只读工具集" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" review 1 --engine claude --model sonnet --effort low --timeout 30
+claude_review_req="$(find "$steer_dir" -maxdepth 1 -name 'review-*.request.json' -print | sort -V | tail -1)"
+python3 - "$claude_review_req" <<'PY2' && ok "Claude 复审 argv / MCP / 标记契约" || bad "Claude 复审契约"
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); stem=str(p)[:-len('.request.json')]; req=json.load(open(p))
+argv=pathlib.Path(stem+'.argv').read_bytes().split(b'\0'); settings=json.load(open(stem+'.settings.json')); meta=json.load(open(stem+'.claude.json'))
+events=[json.loads(line) for line in pathlib.Path(stem+'.jsonl').read_text().splitlines() if line]
+assert req['review_readonly']=='tools_only' and req['inherit_user_mcp'] is False and req['question_timeout']==0
+assert b'--no-session-persistence' in argv and b'--tools' in argv and b'Read,Glob,Grep' in argv
+assert meta['mcp_servers']==['foreman'] and all(x in settings['permissions']['deny'] for x in ('Bash(*)','Write(*)','Edit(*)','MultiEdit(*)'))
+assert events[0]['_foreman']['review_readonly']=='tools_only'
+PY2
+expect_grep "Claude 复审拒绝 --full-access" "未知参数" "$F" review 1 --engine claude --full-access x
+expect_grep "Claude steer 只排下一轮" "claude 引擎：steer 已排队，下一轮 run 生效（当前轮不中断）" "$F" steer 1 --thread claude-haiku "只使用追加说明"
+expect_grep "status 标出 Claude 待生效 steer" "claude.*NEXT" "$F" status 1
+expect_rc "Claude 下一轮消费 steer" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-next --timeout 30 --no-check
+claude_steer_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+if grep -q '^## 编排者追加说明$' "${claude_steer_req%.request.json}.prompt.md" && grep -q '只使用追加说明' "${claude_steer_req%.request.json}.prompt.md"; then ok "Claude steer 在下轮 prompt 顶部生效"; else bad "Claude steer 未进入下轮 prompt"; fi
+expect_grep "doctor 包含 claude 零 token 节" "--- claude ---" "$F" doctor "$T/proj/app"
 
 # 快照夹具在基线生成，保存完整归一化 JSON；失败直接打印逐字段 unified diff。
 snapshot_mode=(--compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json")

@@ -67,6 +67,9 @@ def fake_claude(argv: list[str]) -> int:
     if "--version" in argv:
         print("2.1.268 (Claude Code)")
         return 0
+    if argv[:2] == ["auth", "status"]:
+        print("loggedIn: true\naccountType: subscription")
+        return 0
     scenario = os.environ.get("CLAUDE_REPLAY_SCENARIO", "success")
     session = arg_value(argv, "--resume") or "session-replay-001"
     if scenario == "resume_mismatch":
@@ -139,13 +142,14 @@ def fake_claude(argv: list[str]) -> int:
     if scenario == "success_stderr_warning":
         print("warning: cached rate limit notice", file=sys.stderr, flush=True)
     print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "完成"}]}}), flush=True)
-    print(json.dumps({"type": "result", "subtype": "success", "session_id": session,
+    print(json.dumps({"type": "result", "subtype": "success", "session_id": session, "result": "## STATUS\nDONE",
                       "usage": {"input_tokens": 10, "output_tokens": 4}, "total_cost_usd": 0.01}), flush=True)
     return 0
 
 
 def request(root: pathlib.Path, scenario: str, *, session: str = "", full: object = False,
-            full_reason: str | None = None, closeout: bool = False, qtimeout: int = 1) -> pathlib.Path:
+            full_reason: str | None = None, closeout: bool = False, qtimeout: int = 1,
+            review: bool = False) -> pathlib.Path:
     stem = root / scenario
     prompt = root / f"{scenario}.prompt.md"
     dev = root / f"{scenario}.dev.md"
@@ -162,7 +166,11 @@ def request(root: pathlib.Path, scenario: str, *, session: str = "", full: objec
         "question_timeout": qtimeout, "user_explicitly_approved_full_access": full,
         "full_access_reason": ("用户明确要求完全权限" if full is True else "") if full_reason is None else full_reason,
         "closeout": closeout,
+        "review_readonly": "tools_only" if review else None, "inherit_user_mcp": not review,
+        "persist_session": not review, "tools": "Read,Glob,Grep" if review else "",
+        "no_session_persistence": review,
         "jsonl_path": str(stem) + ".jsonl", "stderr_path": str(stem) + ".stderr",
+        "last_path": str(stem) + ".last.md",
         "claude_json_path": str(stem) + ".claude.json", "thread_title": scenario,
         "meta_path": str(meta), "max_turns": 8, "max_budget_usd": 0.5,
     }
@@ -239,6 +247,7 @@ def normalize_snapshot(value, tmp_root: pathlib.Path, skill_dir: pathlib.Path):
     value = replace_root(value, tmp_root, "<TMP>")
     value = replace_root(value, pathlib.Path.home(), "<HOME>")
     value = re.sub(r"foreman-selftest\.[A-Za-z0-9]+--bare", "<REPO_SLUG>", value)
+    value = re.sub(r"(?<=/)\d{2}-\d{2}-\d{2}(?=/)", "<DATE>", value)
     value = re.sub(r"(/issues/<REPO_SLUG>/)1(?=/)", r"\1<ISSUE:1>", value)
     value = re.sub(r"(?<![A-Za-z])((?:run|review)-\d+)", r"<ROUND:\1>", value)
     return value
@@ -283,7 +292,7 @@ def codex_snapshot(d1: pathlib.Path, d2: pathlib.Path, tmp_root: pathlib.Path, s
     hold_argv = [re.sub(r"/(1|2)/(hold-)", r"/<ISSUE:\1>/\2", item) for item in hold_argv]
     return {
         "schema": 3,
-        "normalization": ["<SKILL>", "<TMP>", "<HOME>", "<REPO_SLUG>", "<ISSUE:N>", "<ROUND:kind-N>"],
+        "normalization": ["<SKILL>", "<TMP>", "<HOME>", "<REPO_SLUG>", "<DATE>", "<ISSUE:N>", "<ROUND:kind-N>"],
         "cases": cases,
         "hold_start_argv": hold_argv,
     }
@@ -320,6 +329,9 @@ def snapshot_command(argv: list[str]) -> int:
 def selftest() -> int:
     with tempfile.TemporaryDirectory(prefix="foreman-claude-replay.") as td:
         root = pathlib.Path(td)
+        normalized_date = normalize_snapshot("feat/26-09-13/b ticket-26-09-13", root, HERE.parents[1])
+        assert normalized_date == "feat/<DATE>/b ticket-26-09-13"
+        print("claude replay: snapshot_date_normalization PASS")
         run_case(root, "success", 0)
         print("claude replay: mcp_private_cleanup PASS")
         print("claude replay: first_line_paths PASS")
@@ -387,6 +399,29 @@ def selftest() -> int:
         full_req, _ = run_case(root, "success_full", 0, full=True)
         argv = pathlib.Path(str(full_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
         assert b"bypassPermissions" in argv and b"--permission-prompt-tool" not in argv
+        review_req, review_data = run_case(root, "success_review", 0, review=True)
+        review_stem = pathlib.Path(str(review_req)[:-len(".request.json")])
+        review_argv = review_stem.with_suffix(".argv").read_bytes().split(b"\0")
+        review_settings = json.loads(review_stem.with_suffix(".settings.json").read_text())
+        review_meta = json.loads(review_stem.with_suffix(".claude.json").read_text())
+        assert b"--no-session-persistence" in review_argv and b"--tools" in review_argv and b"Read,Glob,Grep" in review_argv
+        assert all(rule in review_settings["permissions"]["deny"] for rule in
+                   ("Bash(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)"))
+        assert review_meta["mcp_servers"] == ["foreman"]
+        assert review_data[0]["_foreman"]["review_readonly"] == "tools_only"
+        assert review_stem.with_suffix(".last.md").read_text() == "## STATUS\nDONE"
+        assert "success_review" not in json.loads((root / "meta.json").read_text()).get("threads", {})
+        review_mcp = review_stem.with_suffix(".review-test-mcp.json")
+        review_mcp.write_text(json.dumps({"mcpServers": {"foreman": {"command": sys.executable,
+            "args": [str(BRIDGE), "permission-server", "--run", str(review_stem)]}}}))
+        review_rpc = Rpc(review_mcp)
+        try:
+            review_rpc.call("initialize", {})
+            review_decision = review_rpc.approve("AskUserQuestion", {"questions": [{"question": "写吗？"}]})
+        finally:
+            review_rpc.close()
+        assert review_decision["behavior"] == "deny"
+        print("claude replay: review_tools_only PASS")
         resume_req, _ = run_case(root, "success_resume", 0, session="resume-secret")
         argv = pathlib.Path(str(resume_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
         assert b"--resume" in argv and b"resume-secret" in argv
