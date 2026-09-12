@@ -1436,6 +1436,8 @@ PY
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
+  local round_engine; round_engine="$(cat "$dir/$kind-$n.engine" 2>/dev/null || echo codex)"
+  [ "$round_engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; print_check_report "$dir/$kind-$n"; return 0; fi
   [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 143 ] && timed_out=1
   wt_touched_probe "$issue" "$dir" "$kind" "$n"

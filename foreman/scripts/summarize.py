@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """把执行器的事件流压成编排者能直接读的摘要。
 
-支持三种事件流，靠内容自动辨认:
+支持两种事件流，靠内容自动辨认:
 
   appserver  {"jsonrpc":"2.0","method":"thread/started",…}   codex app-server（默认执行器）
-  codex-exec {"type":"thread.started"}                        旧 `codex exec --json`（兼容 pi-fleet 留下的日志）
   pi         {"type":"session"}                               pi（可选执行器）
 
-三种流在非交互模式下都没有审批环节，失败会静静躺在流里——编排者不解析就会把失败当成功。
+app-server 能处理审批与提问；两种流的失败仍可能只落在事件流里，编排者不解析就会把失败当成功。
 这个脚本负责把「没跑完」「命令报错」「碰了禁区命令」「向编排者提过问」四类信号顶到最前面。
 
 越界探针 FORBIDDEN 是所有执行器共用的单一真源，不要复制一份出去。
@@ -56,12 +55,6 @@ CLOSEOUT_ALLOW = [
     re.compile(r"\bgh\s+pr\s+edit\b"),
 ]
 
-# codex 用 item.type=="error" 报运行提示，不是任务失败，不能一律当红灯
-BENIGN_ERROR = [
-    re.compile(r"[Ss]kill descriptions? .*(shortened|removed)"),
-    re.compile(r"Exceeded skills context budget"),
-]
-
 TRUNC = 4000
 
 
@@ -104,8 +97,6 @@ def detect_engine(events) -> str:
         if event.get("jsonrpc") == "2.0" or event.get("_fleet"):
             return "appserver"
         kind = event.get("type")
-        if kind in ("thread.started", "turn.started", "turn.completed", "turn.failed", "item.completed"):
-            return "codex"
         if kind in ("session", "agent_start", "message_end", "agent_settled", "tool_execution_start"):
             return "pi"
     return "appserver"
@@ -249,54 +240,6 @@ def scan_pi(events, role=None):
             body = text_of(message)
             if body:
                 state["final"] = body
-    return state
-
-
-# ---------- codex exec（旧档，兼容） ----------
-
-def scan_codex(events, role=None):
-    state = blank_state()
-    state["engine"] = "codex"
-    started = 0
-    for event in events:
-        kind = event.get("type")
-        if kind == "thread.started":
-            state["id"] = event.get("thread_id")
-        elif kind == "turn.started":
-            started += 1
-        elif kind == "turn.completed":
-            state["turns"] += 1
-            usage = event.get("usage") or {}
-            state["in_tokens"] += int(usage.get("input_tokens") or 0)
-            state["out_tokens"] += int(usage.get("output_tokens") or 0)
-            state["cached_tokens"] += int(usage.get("cached_input_tokens") or 0)
-        elif kind == "turn.failed":
-            state["errors"].append(stringify(event.get("error") or event.get("message") or event, 800))
-        elif kind == "item.completed":
-            item = event.get("item") or {}
-            itype = item.get("type")
-            if itype == "command_execution":
-                state["tool_calls"] += 1
-                command = item.get("command") or ""
-                exit_code = item.get("exit_code")
-                if exit_code not in (0, None) or item.get("status") == "failed":
-                    state["tool_errors"].append((f"exit {exit_code}", f"{stringify(command, 200)}\n      {stringify(item.get('aggregated_output'), 300)}"))
-                probe_forbidden(state, command, stringify(command, 300), role)
-            elif itype in ("file_change", "patch_apply"):
-                for change in item.get("changes") or []:
-                    state["files"].append((change.get("kind", "?"), change.get("path", "?")))
-            elif itype == "agent_message":
-                body = (item.get("text") or "").strip()
-                if body:
-                    state["final"] = body
-            elif itype == "error":
-                message = item.get("message") or ""
-                if any(p.search(message) for p in BENIGN_ERROR):
-                    state["notices"].append(stringify(message, 300))
-                else:
-                    state["errors"].append(stringify(message, 800))
-    state["settled"] = started > 0 and state["turns"] >= started
-    state["tokens"] = state["in_tokens"] + state["out_tokens"]
     return state
 
 
@@ -521,8 +464,6 @@ def scan(events, engine: str | None = None, role: str | None = None):
     engine = engine or detect_engine(events)
     if engine == "appserver":
         return scan_appserver(events, role)
-    if engine == "codex":
-        return scan_codex(events, role)
     return scan_pi(events, role)
 
 
@@ -539,7 +480,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
                             if result["status"] in ("failed", "declined") or result["exit"] not in (0, None)]
     historical_command_failures = sum(result["failures"] for result in state["command_results"].values())
     eng = state["engine"]
-    codex_like = eng in ("codex", "appserver")
+    codex_like = eng == "appserver"
 
     print(f"=== {eng} run 摘要 · {os.path.basename(log_path)}" + (f" · role={role}" if role else "") + " ===")
     for note in state["notices"]:
@@ -582,8 +523,6 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     if not state["settled"]:
         if eng == "appserver":
             blockers.append(f"turn 没有正常完成（status={state['status'] or '未知'}）：可能超时被杀、被中断、模型侧失败或协议错误")
-        elif eng == "codex":
-            blockers.append("有 turn 没有 turn.completed：可能超时被杀、崩溃或被中断")
         else:
             blockers.append("会话没有正常结束（无 agent_settled）：可能超时被杀、崩溃或被中断")
     if state["errors"]:
@@ -919,11 +858,11 @@ def listing(issues_home: str) -> int:
                 last = "RUNNING?"
                 continue
             state = scan(events)
-            if state["engine"] in ("codex", "appserver"):
+            if state["engine"] == "appserver":
                 cx_tokens += state["tokens"]
             else:
                 cost += state["cost"]
-            engines.append({"codex": "c", "appserver": "a", "pi": "p"}.get(state["engine"], "?"))
+            engines.append({"appserver": "a", "pi": "p"}.get(state["engine"], "?"))
             last = "ok" if state["settled"] and not state["errors"] else "CHECK"
         spend = f"${cost:.3f}" if cost else ""
         if cx_tokens:
@@ -933,14 +872,14 @@ def listing(issues_home: str) -> int:
     if not rows:
         print("（没有登记的 issue）")
         return 0
-    header = ("issue", "branch", "base", "gh", "runs(a/c/p)", "spend", "check", "last", "worktree")
+    header = ("issue", "branch", "base", "gh", "runs(a/p)", "spend", "check", "last", "worktree")
     widths = [max(len(str(r[i])) for r in ([header] + rows)) for i in range(len(header))]
     line = lambda r: "  ".join(str(r[i]).ljust(widths[i]) for i in range(len(header)))
     print(line(header))
     print("  ".join("-" * w for w in widths))
     for row in rows:
         print(line(row))
-    print("\nruns 列每字符代表一轮: a=codex app-server, c=codex exec(旧), p=pi, ?=未知（按轮次顺序）")
+    print("\nruns 列每字符代表一轮: a=codex app-server, p=pi, ?=未知（按轮次顺序）")
     print("codex 走 ChatGPT 订阅额度，没有美元成本，只计 token。")
     return 0
 
@@ -975,7 +914,7 @@ if __name__ == "__main__":
         sys.exit(0)
     if not argv:
         print(
-            "用法: summarize.py [--engine appserver|codex|pi] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
+            "用法: summarize.py [--engine appserver|pi] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
             "      summarize.py --list <issues-dir>\n"
             "      summarize.py --thread <run.jsonl>   # 取 thread_id\n"
             "      summarize.py --final <run.jsonl>    # 只吐交付报告\n"
