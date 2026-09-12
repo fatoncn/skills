@@ -37,7 +37,14 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
 PY2
 }
 
-expect_rc "app-server 可编排 stdio 回放夹具自检" 0 python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest
+replay_out="$(python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest 2>&1)"; replay_rc=$?
+if [ "$replay_rc" -eq 0 ] && printf '%s\n' "$replay_out" | grep -q 'fixture baseline:'; then ok "app-server 可编排 stdio 回放夹具自检"; else bad "app-server 回放夹具" "$replay_out"; fi
+for replay_case in outer-first inner-first 'timeout cleanup' 'nested error' 'EOF cleanup' 'unknown/late diagnostic'; do
+  if printf '%s\n' "$replay_out" | grep -q "request routing: ${replay_case} PASS"; then ok "请求 id 分发：${replay_case}"; else bad "请求 id 分发：${replay_case}"; fi
+done
+for replay_case in 'root final survives child final' 'stale turn ignored' 'child completion does not settle root' 'pre-response notifications replayed' 'no inferred root completion'; do
+  if printf '%s\n' "$replay_out" | grep -q "turn identity: ${replay_case} PASS"; then ok "主轮身份：${replay_case}"; else bad "主轮身份：${replay_case}"; fi
+done
 
 grep -P '' /dev/null >/dev/null 2>&1; grep_p_rc=$?
 if [ "$grep_p_rc" -ne 2 ]; then
@@ -368,9 +375,9 @@ if [ -n "$req3" ]; then
   mkdir -p "$d2/hold-implement/queue"; : > "$d2/hold-implement/queue/run-$nn.request.json"
   old_started=$(( $(date +%s) - 65 )); printf '%s' "$old_started" > "$d2/run-$nn.started"
   expect_grep "wait 把 QUEUED 轮次当在跑" "等待 1 个会话" "$F" wait 2 --timeout 1 --no-report
-  queued_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $6}')"
+  queued_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $7}')"
   rm -f "$d2/hold-implement/queue/run-$nn.request.json"; printf '{"run":"run-%s"}' "$nn" > "$d2/hold-implement/active.json"
-  running_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $6}')"
+  running_elapsed="$($F status 2 | awk -v n="run#$nn" '$2==n {print $7}')"
   elapsed_seconds() { case "$1" in *m*s) printf '%s' "$1" | awk -F'm|s' '{print $1*60+$2}' ;; *) return 1 ;; esac; }
   qsec="$(elapsed_seconds "$queued_elapsed")"; rsec="$(elapsed_seconds "$running_elapsed")"
   if [ "$rsec" -ge "$qsec" ] && [ "$(cat "$d2/run-$nn.started")" = "$old_started" ]; then ok "QUEUED→RUNNING 主用时沿用派发时间不归零"; else bad "QUEUED→RUNNING 用时归零"; fi
@@ -762,6 +769,27 @@ with patch.object(b.subprocess,"Popen") as popen, patch.object(b.threading.Threa
     finally: server._log.close(); server._stderr.close()
 print("存在 / 缺失 / 命令失败 / 超时，缓存及缺失事件断言通过")
 PY2
+echo "== 自动 check =="
+auto="$T/auto-check"; mkdir -p "$auto"
+printf 'true\n' > "$auto/run-1.check.commands"; : > "$auto/run-1.check.pending"; printf 0 > "$auto/run-1.rc"
+"$F" __auto_check "$auto" run 1 "$T/proj/app"
+[ "$(cat "$auto/run-1.check.rc")" = 0 ] && grep -q '### true -> exit 0' "$auto/run-1.check.log" && ok "自动 check PASS 写 log / rc" || bad "自动 check PASS 产物"
+[ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$auto/run-1")" = DONE ] && ok "check PASS 后 call_state=DONE" || bad "check PASS 终态"
+printf 'false\n' > "$auto/run-2.check.commands"; : > "$auto/run-2.check.pending"; printf 0 > "$auto/run-2.rc"
+"$F" __auto_check "$auto" run 2 "$T/proj/app"
+[ "$(cat "$auto/run-2.check.rc")" = 1 ] && [ "$(cat "$auto/run-2.check.failed-command")" = false ] && ok "自动 check FAIL 记录失败命令" || bad "自动 check FAIL 产物"
+expect_grep "report check FAIL 带人工判断与输出尾" "check：FAIL" env FOREMAN_SELFTEST=1 "$F" __check_report "$auto/run-2"
+printf 'true\n' > "$auto/run-3.check.commands"; : > "$auto/run-3.check.pending"; printf 4 > "$auto/run-3.rc"
+"$F" __auto_check "$auto" run 3 "$T/proj/app"
+grep -q 'SKIPPED: 执行体 rc=4' "$auto/run-3.check.status" && [ ! -f "$auto/run-3.check.log" ] && ok "执行体 rc 非零跳过 check" || bad "非零 rc 仍跑 check"
+: > "$auto/run-4.check.pending"; printf 0 > "$auto/run-4.rc"
+[ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$auto/run-4")" = CHECKING ] && ok "call_state 暴露 CHECKING" || bad "CHECKING 状态"
+FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-5" implement 1
+grep -q -- '--no-check' "$auto/run-5.check.status" && ok "run --no-check 标记跳过" || bad "--no-check"
+FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-6" research 0
+grep -q '只读角色' "$auto/run-6.check.status" && ok "只读角色跳过 check" || bad "只读角色 check"
+FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-7" implement 0
+grep -q 'UNCONFIGURED' "$auto/run-7.check.status" && ok "无 verify / package scripts 显示未配置" || bad "check 未配置"
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"

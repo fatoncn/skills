@@ -455,8 +455,8 @@ def scan_appserver(events, role=None):
                 exit_code = item.get("exitCode")
                 status = item.get("status")
                 cwd = item.get("cwd") or ""
-                identity = json.dumps([command, cwd], ensure_ascii=False, sort_keys=True, default=str)
-                command_key = hashlib.sha256(identity.encode()).hexdigest()
+                command_identity = json.dumps([command, cwd], ensure_ascii=False, sort_keys=True, default=str)
+                command_key = hashlib.sha256(command_identity.encode()).hexdigest()
                 failed = status in ("failed", "declined") or exit_code not in (0, None)
                 previous = state["command_results"].get(command_key, {})
                 state["command_results"][command_key] = {
@@ -782,7 +782,7 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None):
     except (OSError, ValueError):
         prior = None
 
-    active_status = status in ("RUNNING", "QUEUED", "WAITING")
+    active_status = status in ("RUNNING", "QUEUED", "WAITING", "CHECKING")
     event_times = [value for value in (_event_time(event) for event in events) if value is not None]
     execution_started_at = min(event_times) if event_times else None
     active = {}
@@ -894,8 +894,23 @@ def listing(issues_home: str) -> int:
         cx_tokens = 0
         engines = []
         last = "—"
+        check = "—"
         for run in runs:
             stem = os.path.join(issue_dir, run[:-len(".jsonl")])
+            try:
+                check_rc = open(stem + ".check.rc", encoding="utf-8").read().strip()
+                check = "PASS" if check_rc == "0" else "FAIL"
+            except OSError:
+                try:
+                    check_status = open(stem + ".check.status", encoding="utf-8").read().strip()
+                    check = "未配置" if check_status == "UNCONFIGURED" else "跳过"
+                except OSError:
+                    main_rc = None
+                    try:
+                        main_rc = open(stem + ".rc", encoding="utf-8").read().strip()
+                    except OSError:
+                        pass
+                    check = "中" if main_rc == "0" and os.path.isfile(stem + ".check.pending") else "—"
             if os.path.isfile(stem + ".cancelled"):
                 engines.append("-")
                 last = "CANCELLED: " + open(stem + ".cancelled", encoding="utf-8", errors="replace").read().strip()[:40]
@@ -916,11 +931,11 @@ def listing(issues_home: str) -> int:
         if cx_tokens:
             spend += (" +" if spend else "") + f"{cx_tokens // 1000}k tok"
         rows.append((name, branch, base, meta.get("gh_issue", "—"), "".join(engines) or "—",
-                     spend or "—", last, "有" if os.path.isdir(worktree) else "已清理"))
+                     spend or "—", check, last, "有" if os.path.isdir(worktree) else "已清理"))
     if not rows:
         print("（没有登记的 issue）")
         return 0
-    header = ("issue", "branch", "base", "gh", "runs(a/c/p)", "spend", "last", "worktree")
+    header = ("issue", "branch", "base", "gh", "runs(a/c/p)", "spend", "check", "last", "worktree")
     widths = [max(len(str(r[i])) for r in ([header] + rows)) for i in range(len(header))]
     line = lambda r: "  ".join(str(r[i]).ljust(widths[i]) for i in range(len(header)))
     print(line(header))

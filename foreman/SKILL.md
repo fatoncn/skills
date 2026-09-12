@@ -2,7 +2,7 @@
 name: foreman
 description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，指挥本地编码 agent（默认 codex，走 app-server 协议；pi 可选）在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.3.1"
+  version: "1.3.2"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码

@@ -1,5 +1,12 @@
 # foreman 版本记录
 
+## 1.3.2 — 2026-09-12
+
+- issue #22：新增隔离 CODEX_HOME / 插件环境的可编排 app-server stdio 回放夹具，固定协议基线并纳入 selftest。
+- issue #20：app-server 响应按请求 id 分发到独立槽，嵌套等待、超时、EOF 和迟到响应均有界收尾。
+- issue #21：实时桥与摘要共用根 thread/turn 身份判定，启动前通知缓冲回放，协作子线程独立展示并分列 token。
+- issue #18：写码轮 rc=0 后自动 detached 跑 check，report/status/list/wait 展示结果与 CHECKING，支持单轮 `--no-check`。
+
 ## 1.3.1 — 2026-09-12
 
 - issue #14：run 到时仍按原语义硬中断并记 rc=143；report 自动从事件流与 worktree 合成 commit、未提交文件、末尾事件及被打断命令，不主动向 turn 注入 prompt。

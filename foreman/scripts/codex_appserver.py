@@ -33,6 +33,9 @@ import sys
 import threading
 import time
 
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 from appserver_identity import TurnIdentity
 
 CLIENT_NAME = "foreman"
@@ -362,8 +365,13 @@ def enqueue_steer(directory, tname, message):
     # 转排队也遵守 run 的同 PR 单执行者守卫；业务拒绝保留到 failed 回执。
     for mark in list(directory.glob("run-*.pr")) + list(directory.glob("review-*.pr")):
         prefix = str(mark)[:-3]
-        if mark.read_text() != pr or Path(prefix + ".rc").exists():
+        checking = (Path(prefix + ".check.pending").exists()
+                    and not Path(prefix + ".check.rc").exists()
+                    and Path(prefix + ".rc").read_text().strip() == "0") if Path(prefix + ".rc").exists() else False
+        if mark.read_text() != pr or (Path(prefix + ".rc").exists() and not checking):
             continue
+        if checking:
+            raise ValueError(f"PR「{pr}」上 {Path(prefix).name} 正在 CHECKING：同一 PR 同时只准一条线程")
         thread_file = Path(prefix + ".thread")
         other = thread_file.read_text() if thread_file.exists() else Path(prefix).name
         if other == tname:
