@@ -1315,7 +1315,7 @@ $unclean"
   改动 diff:              $inbox/REVIEW_DIFF.patch
   任务书:                 $inbox/REVIEW_BRIEF.md
   被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
-当前目录就是被审 worktree，可以读原始代码与约定文件（项目根 / 仓库 AGENTS.md）做上下文。
+线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准，可以读原始代码与约定文件做上下文。
 
 环境提示：只读沙箱下 macOS 自带 git 会往 stderr 打 \`couldn't create cache file '/tmp/xcrun_db-…'\`，那是 xcrun 缓存写不了，不是 git 命令失败，按 stdout 判断即可。
 
@@ -1354,7 +1354,7 @@ EOF
   改动 diff:              $inbox/REVIEW_DIFF.patch
   任务书:                 $inbox/REVIEW_BRIEF.md
   被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
-当前目录就是被审 worktree，可以读原始代码与约定文件（项目根 / 仓库 AGENTS.md）做上下文。
+线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准，可以读原始代码与约定文件做上下文。
 
 环境提示：只读沙箱下 macOS 自带 git 会往 stderr 打 \`couldn't create cache file '/tmp/xcrun_db-…'\`，那是 xcrun 缓存写不了，不是 git 命令失败，按 stdout 判断即可。
 
@@ -1869,18 +1869,20 @@ EOF
 
 cmd_wait() {
   init_repo_context; require_project
-  local timeout=300 interval=20 report=1 ids=() targets=()
-  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0
+  local timeout=300 interval=20 progress=300 report=1 ids=() targets=()
+  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0 timed_out=0 progress_dir=""
   local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
       --interval) interval="$2"; shift 2 ;;
+      --progress) progress="$2"; shift 2 ;;
       --no-report) report=0; shift ;;
       -*) die "wait: 未知参数 $1" ;;
       *) ids[${#ids[@]}]="$1"; shift ;;
     esac
   done
+  case "$progress" in ''|*[!0-9]*) die "wait: --progress 必须是非负整数秒" ;; esac
   if [ ${#ids[@]} -eq 0 ]; then
     while IFS= read -r line; do [ -n "$line" ] && ids[${#ids[@]}]="$line"; done <<EOF
 $(all_issues)
@@ -1897,12 +1899,19 @@ $(latest_calls_by_thread "$(issue_dir "$id")")
 EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
-  echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
+  progress_dir="$(mktemp -d)"
+  for t in "${targets[@]}"; do
+    id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+    f="$(issue_dir "$id")/$kind-$n"
+    python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$(call_state "$f")" "$progress" >/dev/null
+  done
+  echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s，进展周期 ${progress}s"
   while [ "$waited" -lt "$timeout" ]; do
     left=0
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
+      python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$st" "$progress"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
         waiting_id="$id"
@@ -1915,6 +1924,7 @@ EOF
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
+  [ "$waited" -lt "$timeout" ] || timed_out=1
   [ "$waiting" -eq 0 ] || echo "⏳ WAITING：票 $waiting_id / 线程 $waiting_thread / ${waiting_summary}；将照常打印全表后返回 rc=3"
   for t in "${targets[@]}"; do
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
@@ -1927,6 +1937,13 @@ EOF
       *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
     esac
   done
+  if [ "$timed_out" -eq 1 ] && [ "$waiting" -eq 0 ] && [ "$still" -gt 0 ]; then
+    for t in "${targets[@]}"; do
+      id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+      f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
+      case "$st" in RUNNING|QUEUED|WAITING) echo "== $id $kind#$n wait 超时事件尾（最近 20 条）"; python3 "$PY_SUMMARIZE" --tail "$f.jsonl" ;; esac
+    done
+  fi
   if [ "$report" -eq 1 ]; then
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
@@ -1937,6 +1954,7 @@ EOF
       else ( cmd_report_inner "$id" "$n" ) || echo "$id run#${n}（无日志，跳过摘要）"; fi
     done
   fi
+  rm -rf "$progress_dir"
   [ "$waiting" -eq 0 ] || return 3
   [ "$still" -eq 0 ] || return 2
   return 0
@@ -2157,14 +2175,14 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
-                           run 是默认追加入口；已排队的 run 想立即生效用 --from-queue N，直接文本用于纠偏
+                           口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N
                            turn 已结束则转为新排队轮次，30 秒内等回执；默认线程 implement
   questions [<id>...]      执行者向编排者提的、还没回答的问题
   answer <id> [--qid q] <文本>|--file f
                            回答执行者的提问（超过 codex.question_timeout 没回会给兜底答复）
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
-  wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑，3 = 执行者在提问（问题已打出，answer 后再 wait）
+  wait [<id>...] [--timeout 300] [--progress 300|0] [--interval 20] [--no-report]   有进展才按周期打印；超时附事件尾；返回 2 = 还在跑，3 = 执行者在提问
   report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）

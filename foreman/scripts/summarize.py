@@ -644,7 +644,17 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
 
 def tail(log_path: str, count: int = 20) -> int:
     """人读的进度视图：最近 N 个 item 级事件。跑到一半随时可看。"""
-    events = load(log_path)
+    events = load(log_path) if os.path.isfile(log_path) else []
+    rows = event_rows(events)
+    for row in rows[-count:]:
+        print(row)
+    if not rows:
+        print("（还没有 item 级事件）")
+    return 0
+
+
+def event_rows(events):
+    """事件流共用的一行摘要；tail 与 wait 进展都从这里取。"""
     rows = []
     for event in events:
         foreman = event.get("_fleet")
@@ -672,16 +682,136 @@ def tail(log_path: str, count: int = 20) -> int:
                 rows.append(f"🔎 {stringify(item.get('query'), 120)}")
             else:
                 rows.append(f"[{itype}]")
+        elif method == "item/started":
+            item = params.get("item") or {}
+            itype = item.get("type")
+            if itype == "commandExecution":
+                rows.append(f"$ {stringify(item.get('command'), 160)}  （运行中）")
+            elif itype == "mcpToolCall":
+                rows.append(f"[工具运行中] {stringify(item.get('tool') or item.get('name') or item, 160)}")
         elif method == "item/autoApprovalReview/completed":
             r = params.get("review") or {}; a = params.get("action") or {}
             rows.append(f"[自动审查 {r.get('status')} risk={r.get('riskLevel')}] {stringify(a.get('command') or a.get('type'), 140)}")
         elif method in ("turn/started", "turn/completed", "thread/status/changed", "error"):
             rows.append(f"[{method}] {stringify(params.get('turn', {}).get('status') if method == 'turn/completed' else params, 160)}")
-    for row in rows[-count:]:
-        print(row)
-    if not rows:
-        print("（还没有 item 级事件）")
-    return 0
+    return rows
+
+
+def _one_line(value, limit=160):
+    text = " ".join(str(value or "—").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _human_seconds(seconds):
+    seconds = max(0, int(seconds))
+    if seconds >= 3600:
+        return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def _event_time(event):
+    raw = event.get("_at") or event.get("at")
+    if not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if event.get("_at") is not None or value > 10_000_000_000:
+        value /= 1000
+    return value
+
+
+def progress(log_path, state_path, label, status, progress_seconds, now=None):
+    """输出 wait 的零或多条单行进展，并把跨轮询状态写入临时文件。"""
+    now = float(now if now is not None else time.time())
+    events = load(log_path) if os.path.isfile(log_path) else []
+    scanned = scan(events)
+    scanned["writable_extra"] = _extra_writable_roots(log_path)
+    rows = event_rows(events)
+    last = _one_line(rows[-1] if rows else "尚无事件")
+    stem = log_path[:-len(".jsonl")] if log_path.endswith(".jsonl") else log_path
+    try:
+        started = float(open(stem + ".started", encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        started = now
+    try:
+        run_limit = int(open(stem + ".timeout", encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        run_limit = 0
+    try:
+        prior = json.load(open(state_path, encoding="utf-8"))
+    except (OSError, ValueError):
+        prior = None
+
+    active = {}
+    known_active = (prior or {}).get("active_commands") or {}
+    last_event_at = started
+    for event in events:
+        event_at = _event_time(event)
+        if event_at is not None:
+            last_event_at = max(last_event_at, event_at)
+        method = event.get("method")
+        item = (event.get("params") or {}).get("item") or {}
+        ident = item.get("id")
+        if method == "item/started" and item.get("type") == "commandExecution" and ident:
+            known_at = (known_active.get(ident) or {}).get("at")
+            active[ident] = {"command": _one_line(stringify(item.get("command"), 180)),
+                             "at": event_at or known_at or now}
+        elif method == "item/completed" and ident:
+            active.pop(ident, None)
+
+    current_count = len(events)
+    if prior is None:
+        state = {"line_count": current_count, "line_status": status, "last_output": now,
+                 "seen_count": current_count, "last_event_at": last_event_at,
+                 "idle_warned": False, "command_warned": [], "active_commands": active}
+        json.dump(state, open(state_path, "w", encoding="utf-8"), ensure_ascii=False)
+        return []
+
+    status_changed = status != prior.get("seen_status", prior.get("line_status"))
+    old_seen = int(prior.get("seen_count", 0))
+    if current_count != old_seen or status_changed:
+        prior["idle_warned"] = False
+    if current_count != old_seen:
+        new_times = [value for value in (_event_time(event) for event in events[old_seen:]) if value is not None]
+        prior["last_event_at"] = max(new_times) if new_times else now
+    elif status_changed:
+        prior["last_event_at"] = now
+    prior["seen_count"] = current_count
+    prior["seen_status"] = status
+    warned = set(prior.get("command_warned") or [])
+    warned.intersection_update(active)
+    lines = []
+
+    idle_for = now - float(prior.get("last_event_at", started))
+    if idle_for >= 600 and not prior.get("idle_warned"):
+        lines.append(f"⚠ {label} {_human_seconds(now-started)}：{int(idle_for // 60)} 分钟无新事件（最后：{last}）")
+        prior["idle_warned"] = True
+    for ident, command in active.items():
+        duration = now - float(command["at"])
+        if duration >= 600 and ident not in warned:
+            lines.append(f"⚠ {label} {_human_seconds(now-started)}：命令已跑 {int(duration // 60)} 分钟：{command['command']}")
+            warned.add(ident)
+
+    changed = current_count != prior.get("line_count") or status != prior.get("line_status")
+    due = now - float(prior.get("last_output", now)) >= int(progress_seconds)
+    if not lines and int(progress_seconds) > 0 and due and changed:
+        added = max(0, current_count - int(prior.get("line_count", 0)))
+        remaining = "—" if not run_limit else _human_seconds(started + run_limit - now)
+        command = "无"
+        if active:
+            latest = max(active.values(), key=lambda item: item["at"])
+            command = f"{_one_line(latest['command'], 100)}（{_human_seconds(now-latest['at'])}）"
+        files = len({path for _, path in _visible_changed_files(scanned)})
+        lines.append(f"进展 {label}：用时 {_human_seconds(now-started)}，距 run --timeout {remaining}，"
+                     f"新增事件 {added}，最后：{last}，运行中命令：{command}，改动文件 {files}，tokens {scanned['tokens']}")
+
+    if lines:
+        prior["last_output"] = now
+        prior["line_count"] = current_count
+        prior["line_status"] = status
+    prior["command_warned"] = sorted(warned)
+    prior["active_commands"] = active
+    json.dump(prior, open(state_path, "w", encoding="utf-8"), ensure_ascii=False)
+    return [_one_line(line, 500) for line in lines]
 
 
 def listing(issues_home: str) -> int:
@@ -768,13 +898,19 @@ if __name__ == "__main__":
         sys.exit(0)
     if len(argv) >= 2 and argv[0] == "--tail":
         sys.exit(tail(argv[1], int(argv[2]) if len(argv) > 2 else 20))
+    if len(argv) >= 6 and argv[0] == "--progress":
+        for line in progress(argv[1], argv[2], argv[3], argv[4], int(argv[5]),
+                             float(argv[6]) if len(argv) > 6 else None):
+            print(line)
+        sys.exit(0)
     if not argv:
         print(
             "用法: summarize.py [--engine appserver|codex|pi] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
             "      summarize.py --list <issues-dir>\n"
             "      summarize.py --thread <run.jsonl>   # 取 thread_id\n"
             "      summarize.py --final <run.jsonl>    # 只吐交付报告\n"
-            "      summarize.py --tail <run.jsonl> [N] # 最近 N 个 item 级事件",
+            "      summarize.py --tail <run.jsonl> [N] # 最近 N 个 item 级事件\n"
+            "      summarize.py --progress <run.jsonl> <state.json> <label> <status> <seconds> [now]",
             file=sys.stderr,
         )
         sys.exit(2)

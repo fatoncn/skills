@@ -277,6 +277,22 @@ wait43_out="$("$F" wait 43 --timeout 1 --interval 1 --no-report 2>&1)"; wait43_r
 if [ "$wait43_rc" -eq 2 ] && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#1 .*RUNNING' && printf '%s\n' "$wait43_out" | grep -q '^== 43 run#2 CANCELLED'; then ok "wait 显示取消尾轮且继续等活动旧轮"; else bad "wait 被 CANCELLED 尾轮提前收敛" "rc=$wait43_rc"; fi
 kill "$wait43_pid" 2>/dev/null; wait "$wait43_pid" 2>/dev/null || true; rm -rf "$wait43_dir/hold-cancel-tail"; rm -f "$wait43_dir"/run-1.* "$wait43_dir"/run-2.*
 expect_grep "wait 取消尾轮测试清理" "已删登记" "$F" cleanup 43 --force
+expect_grep "wait 超时事件尾测试登记" "PR「here」" "$F" here 49
+wait49_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/49/meta.json' -print -quit)")"; sleep 300 & wait49_pid=$!
+printf 'implement' > "$wait49_dir/run-1.thread"; printf 'implement' > "$wait49_dir/run-1.role"; printf 'codex' > "$wait49_dir/run-1.engine"; printf 'here' > "$wait49_dir/run-1.pr"
+printf '%s' "$wait49_pid" > "$wait49_dir/run-1.pid"; printf '%s' "$(date +%s)" > "$wait49_dir/run-1.started"; printf 30 > "$wait49_dir/run-1.timeout"; : > "$wait49_dir/run-1.argv"
+printf '%s\n' '{"_fleet":"thread","threadId":"wait-tail"}' '{"method":"item/completed","params":{"item":{"id":"msg-tail","type":"agentMessage","text":"timeout-tail-marker"}}}' > "$wait49_dir/run-1.jsonl"
+wait49_out="$("$F" wait 49 --timeout 1 --interval 1 --progress 0 --no-report 2>&1)"; wait49_rc=$?
+if [ "$wait49_rc" -eq 2 ] && printf '%s\n' "$wait49_out" | grep -q 'wait 超时事件尾' && printf '%s\n' "$wait49_out" | grep -q 'timeout-tail-marker'; then ok "wait 超时 rc=2 附事件尾"; else bad "wait 超时事件尾" "rc=$wait49_rc $wait49_out"; fi
+kill "$wait49_pid" 2>/dev/null; wait "$wait49_pid" 2>/dev/null || true; rm -f "$wait49_dir"/run-1.*
+expect_grep "wait 正常结束测试登记" "PR「here」" "$F" here 50
+wait50_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/50/meta.json' -print -quit)")"; sleep 300 & wait50_pid=$!
+printf 'implement' > "$wait50_dir/run-1.thread"; printf 'implement' > "$wait50_dir/run-1.role"; printf 'codex' > "$wait50_dir/run-1.engine"; printf 'here' > "$wait50_dir/run-1.pr"
+printf '%s' "$wait50_pid" > "$wait50_dir/run-1.pid"; printf '%s' "$(date +%s)" > "$wait50_dir/run-1.started"; printf 30 > "$wait50_dir/run-1.timeout"; : > "$wait50_dir/run-1.argv"; printf '%s\n' '{"_fleet":"thread","threadId":"wait-done"}' > "$wait50_dir/run-1.jsonl"
+( sleep 1.2; printf 0 > "$wait50_dir/run-1.rc"; kill "$wait50_pid" 2>/dev/null ) &
+wait50_out="$("$F" wait 50 --timeout 3 --interval 1 --progress 0 --no-report 2>&1)"; wait50_rc=$?
+if [ "$wait50_rc" -eq 0 ] && printf '%s\n' "$wait50_out" | grep -q '结束 rc=0'; then ok "wait 正常结束 rc=0 不受影响"; else bad "wait 正常结束" "rc=$wait50_rc $wait50_out"; fi
+wait "$wait50_pid" 2>/dev/null || true; rm -f "$wait50_dir"/run-1.*
 expect_grep "旧轮 closeout 测试登记" "PR「here」" "$F" here 44
 old44_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/44/meta.json' -print -quit)")"; make_hold_fixture "$old44_dir" implement 1 999999 here implement
 rm -f "$old44_dir/run-1.pr" "$old44_dir/hold-implement/queue/run-1.request.json"
@@ -453,6 +469,36 @@ sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/pr
 expect_no_grep "系统临时目录不计工作目录之外" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_no_grep "accept 交付目录 fileChange 从模型改动列表排除" '/workspace/proj/other/b.ts' python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md"
 expect_no_grep "fileChange 只列事实、不判只看不改角色作废" '改了这轮作废' python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+echo "== wait 进展摘要 =="
+progress_log="$T/progress.jsonl"; progress_state="$T/progress.state.json"
+printf 1000 > "$T/progress.started"; printf 3600 > "$T/progress.timeout"
+printf '%s\n' '{"_fleet":"thread","threadId":"progress-test","_at":1000000}' > "$progress_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$progress_log" "$progress_state" "票 p run#1" RUNNING 300 1000 >/dev/null
+printf '%s\n' '{"method":"item/completed","params":{"item":{"id":"file-1","type":"fileChange","changes":[{"kind":"update","path":"a.sh"}]}},"_at":1100000}' >> "$progress_log"
+progress_early="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$progress_log" "$progress_state" "票 p run#1" RUNNING 300 1200)"
+progress_due="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$progress_log" "$progress_state" "票 p run#1" RUNNING 300 1301)"
+if [ -z "$progress_early" ] && printf '%s\n' "$progress_due" | grep -q '新增事件 1.*最后：✎'; then ok "wait 周期到且有新事件才输出进展行"; else bad "wait 有新事件进展周期" "$progress_early / $progress_due"; fi
+progress_quiet="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$progress_log" "$progress_state" "票 p run#1" RUNNING 300 1602)"
+[ -z "$progress_quiet" ] && ok "wait 周期到但无新事件不输出" || bad "wait 无事件仍输出" "$progress_quiet"
+
+idle_log="$T/idle.jsonl"; idle_state="$T/idle.state.json"; printf 1000 > "$T/idle.started"; printf 3600 > "$T/idle.timeout"
+printf '%s\n' '{"_fleet":"thread","threadId":"idle-test","_at":1000000}' > "$idle_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$idle_log" "$idle_state" "票 idle run#1" RUNNING 300 1000 >/dev/null
+idle_out="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$idle_log" "$idle_state" "票 idle run#1" RUNNING 300 1601; python3 "$SKILL_DIR/scripts/summarize.py" --progress "$idle_log" "$idle_state" "票 idle run#1" RUNNING 300 1700)"
+[ "$(printf '%s\n' "$idle_out" | grep -c '分钟无新事件')" -eq 1 ] && ok "wait 无事件 10 分钟只提示一次" || bad "wait 无事件重复提示" "$idle_out"
+
+long_log="$T/long-command.jsonl"; long_state="$T/long-command.state.json"; printf 1000 > "$T/long-command.started"; printf 3600 > "$T/long-command.timeout"
+printf '%s\n' '{"method":"item/started","params":{"item":{"id":"cmd-long","type":"commandExecution","command":"slow-test"}},"_at":1000000}' > "$long_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$long_log" "$long_state" "票 long run#1" RUNNING 300 1000 >/dev/null
+long_out="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$long_log" "$long_state" "票 long run#1" RUNNING 300 1601; python3 "$SKILL_DIR/scripts/summarize.py" --progress "$long_log" "$long_state" "票 long run#1" RUNNING 300 1700)"
+[ "$(printf '%s\n' "$long_out" | grep -c '命令已跑.*slow-test')" -eq 1 ] && ok "wait 长命令 10 分钟只提示一次" || bad "wait 长命令重复提示" "$long_out"
+
+off_log="$T/progress-off.jsonl"; off_state="$T/progress-off.state.json"; printf 1000 > "$T/progress-off.started"; printf 3600 > "$T/progress-off.timeout"
+printf '%s\n' '{"_fleet":"thread","threadId":"off-test","_at":1000000}' > "$off_log"
+python3 "$SKILL_DIR/scripts/summarize.py" --progress "$off_log" "$off_state" "票 off run#1" RUNNING 0 1000 >/dev/null
+printf '%s\n' '{"method":"item/completed","params":{"item":{"id":"msg-off","type":"agentMessage","text":"new"}},"_at":1100000}' >> "$off_log"
+off_out="$(python3 "$SKILL_DIR/scripts/summarize.py" --progress "$off_log" "$off_state" "票 off run#1" RUNNING 0 1301)"
+[ -z "$off_out" ] && ok "wait --progress 0 关闭周期进展" || bad "wait --progress 0 仍输出进展" "$off_out"
 printf '%s\n' '{"method":"warning","params":{"message":"warning: Skill descriptions were shortened to fit the context"}}' '{"method":"warning","params":{"message":"keep this warning"}}' > "$T/warnings.jsonl"
 : > "$T/warnings.stderr"; echo done > "$T/warnings.last.md"
 warning_out="$(python3 "$SKILL_DIR/scripts/summarize.py" "$T/warnings.jsonl" "$T/warnings.stderr" "$T/warnings.last.md" 2>&1)"; warning_rc=$?

@@ -234,7 +234,7 @@ Refs #<issue>   （Closes 在 PR 不进默认分支时不自动生效，合入�
 - 主会话已判过、**不用再问**的取舍清单
 
 ## 工作循环
-读当前 review → 逐条判断 → 修（攒齐一次 push）→ 回复并 resolve → 交报告结束。不必每轮请示；只有需求边界或业务口径要变时停下来问。push 后的 CI 与下一轮 review 由编排者在宿主后台用 `wait` + `gh` 轮询；红了或有新 finding 再另派一轮。
+读当前 review → 逐条判断 → 修（攒齐一次 push）→ 回复并 resolve → 交报告结束。不必每轮请示；只有需求边界或业务口径要变时停下来问。push 后的 CI 与下一轮 review 由编排者用宿主后台命令轮询 `gh pr checks` / `gh run view`；红了或有新 finding 再另派一轮。
 1. 两处都要读：inline review thread，以及被路由进 PR summary 评论、没有 thread 也没 resolve 按钮的条目。每次 push 都会触发新一轮 review。
 2. 不默认采纳：逐条结合任务书口径、整体架构、真实执行路径和测试证据判断；只有问题真实成立、且改动的整体收益明确大于风险时才改。明确无效、过期、超出本 PR 范围的可以不改，但要说明依据。
 3. 轮次：一轮 = 一次 push 触发并跑出结论的 review；同步基线的 merge push 不算。低风险只修确认成立的 high / medium；中高风险第 2 轮只修第 1 轮修复本身引入的新 high / medium。low / nit / 风格 / 超范围重构建议一律回复判断并 resolve，不为它们再 push。到上限仍有未决项：列表（位置 / 严重度 / 判断 / 建议处置）停下来交编排者，不自动进下一轮。
