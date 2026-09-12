@@ -22,7 +22,7 @@
 CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 → initialize {clientInfo, capabilities:{experimentalApi:true, optOutNotificationMethods:[…]}}
 → initialized（通知）
-→ thread/start {cwd, sandbox:"workspace-write"|"read-only", approvalPolicy:"never", developerInstructions, model, ephemeral, serviceTier?}
+→ thread/start {cwd, sandbox:"workspace-write"|"read-only", approvalPolicy:"on-request", approvalsReviewer:"auto_review", developerInstructions, model, ephemeral, serviceTier?}
    或 thread/resume {threadId, excludeTurns:true, cwd, sandbox, developerInstructions, model}
 → turn/start {threadId, input:[{type:"text", text}], effort?, sandboxPolicy?}
 ← 通知流 … item/started / item/completed / thread/tokenUsage/updated / error
@@ -87,7 +87,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 | 字段 | 说明 |
 |---|---|
-| `codex_bin`, `home`, `cwd` | 二进制、CODEX_HOME、工作目录（worktree） |
+| `codex_bin`, `home`, `cwd` | 二进制、CODEX_HOME、项目根；worktree 另由 `work_dir` 传入（见下文「线程 cwd = 项目根」） |
 | `sandbox` | `workspace-write` / `read-only`（thread 级） |
 | `sandbox_policy` | turn 级结构化策略（见上） |
 | `config_overrides` | `[[key, tomlValue], …]` 进程级 `-c` |
@@ -126,7 +126,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 - **shared home 下 `thread/resume` 可能被桌面端抢锁**（2026-09-11 首张真票实测）：桌面端 ChatGPT 自带的 app-server 一旦打开同一条线程，resume 回 -32600「already has an active writer」，run 立即失败（rc=3）；本机并没有 foreman 自己的进程残留。处置：关掉桌面端那条线程再续，或 `release` 后 `run --thread <新名>` 另起并在 prompt 里补上下文（1.1.2 起 foreman 自己持锁，桌面端反而打不开它）；桌面端只看不开就不会占锁。
 - `item/completed` 的 `fileChange`（apply_patch）与 `commandExecution` 事件形状与 schema 一致；apply_patch 的工具返回是 `{}`。
 - `thread/tokenUsage/updated.tokenUsage.total` 字段是 camelCase（`inputTokens` / `cachedInputTokens` / `outputTokens`）。
-- 后台 detach（setsid）+ `wait` + `tail` 全链路可用；`status` 在 3 秒内即显示 RUNNING。
+- 后台 detach（setsid）+ `wait` + `tail` 全链路可用；`status` 在 3 秒内即显示 RUNNING。编排者优先把 `wait --timeout <按本轮总时长> --progress <通知节奏>` 放 Monitor；只能跑一次性后台 Bash 时，timeout 改成想看一次摘要的间隔；前台只等短活。
 - **shell 工具依赖同目录的 `codex-code-mode-host`**（`features.code_mode_host` 稳定开启，关掉就没有 shell）。`codex` 若经软链调用，argv[0] 所在目录必须也有这个兄弟程序，否则 `Code Mode … fail closed`、模型一条命令都跑不了。执行体已把二进制解析成真实路径；`~/.local/bin` 也补了软链。
 - `approval_policy=never` 下守卫（`guardian_approval`）会直接拒绝 `rm -f` 这类命令（stderr 出现 `Rejected(... rm -f style commands are not permitted)`），不是沙箱、不产生事件；模型会收到拒绝文本。
 - **「替我审批」实测**（`on-request` + `auto_review`，探针 t3）：`thread/start` 响应回显 `approvalsReviewer=auto_review`；模型要写工作区外文件时，事件流出现 `item/autoApprovalReview/started` → `guardianWarning`（"Automatic approval review approved (risk: low, authorization: high): …"）→ `item/autoApprovalReview/completed`（`review.status/riskLevel/userAuthorization/rationale` + `action.command`），**不会**以 `requestApproval` 回到执行体；命令随后作为普通 `commandExecution` 执行成功。summarize 已把每次自动审查决定列成一节并计入「需要编排者判断」。
@@ -154,7 +154,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 ## turn/steer 与排队转引导（2026-09-11）
 
-cookie 的最终口径是「先发消息，再改引导」：编排者默认用 `foreman run` 追加任务，正在跑就排队，结束了就起下一轮；看到排队提示后，需要立即纠偏才用 `foreman steer <id> --from-queue N --thread <名>`。直接 `steer <id> --thread <名> "文本"` / `--file <f>` 保留。
+中途需求变化时，在跑线程不会自动看到，编排者默认立刻用 `foreman steer <id> --thread <名>`（或 `--file <f>`）通知并以 `tail` 确认；只有与本轮无关、留到下一轮也不会造成两轮改同一处的追加任务才用下一轮 `run`。已排队的轮次需要立即生效时用 `steer --from-queue N --thread <名>`。
 
 0.153.4 本机 `codex app-server generate-json-schema --out <目录>` 的 v2 schema：
 

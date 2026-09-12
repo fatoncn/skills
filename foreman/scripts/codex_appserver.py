@@ -189,7 +189,9 @@ class AppServer:
         self._log = open(path, "a", encoding="utf-8")
 
     def log_event(self, obj: dict):
-        self._log.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        stamped = dict(obj)
+        stamped.setdefault("_at", now_ms())
+        self._log.write(json.dumps(stamped, ensure_ascii=False) + "\n")
         self._log.flush()
 
     def _write(self, obj: dict):

@@ -1315,7 +1315,7 @@ $unclean"
   改动 diff:              $inbox/REVIEW_DIFF.patch
   任务书:                 $inbox/REVIEW_BRIEF.md
   被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
-当前目录就是被审 worktree，可以读原始代码与约定文件（项目根 / 仓库 AGENTS.md）做上下文。
+线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准，可以读原始代码与约定文件做上下文。
 
 环境提示：只读沙箱下 macOS 自带 git 会往 stderr 打 \`couldn't create cache file '/tmp/xcrun_db-…'\`，那是 xcrun 缓存写不了，不是 git 命令失败，按 stdout 判断即可。
 
@@ -1354,7 +1354,7 @@ EOF
   改动 diff:              $inbox/REVIEW_DIFF.patch
   任务书:                 $inbox/REVIEW_BRIEF.md
   被审 agent 的交付报告:  $inbox/REVIEW_REPORT.md
-当前目录就是被审 worktree，可以读原始代码与约定文件（项目根 / 仓库 AGENTS.md）做上下文。
+线程 cwd 是项目根；被审 worktree 以本轮位置块的工作目录为准，可以读原始代码与约定文件做上下文。
 
 环境提示：只读沙箱下 macOS 自带 git 会往 stderr 打 \`couldn't create cache file '/tmp/xcrun_db-…'\`，那是 xcrun 缓存写不了，不是 git 命令失败，按 stdout 判断即可。
 
@@ -1505,7 +1505,7 @@ wt_touched_probe() {  # <issue> <票目录> <kind> <n>
 }
 cmd_report_inner() {
   local issue="$1" n="${2:-}" filter_pr="${3:-}" kind=run
-  local dir; dir="$(issue_dir "$issue")"
+  local dir summary_rc=0 timed_out=0; dir="$(issue_dir "$issue")"
   case "$n" in review*) kind=review; n="${n#review}" ;; esac
   if [ -z "$n" ]; then
     if [ -n "$filter_pr" ]; then
@@ -1523,20 +1523,38 @@ PY
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; return 0; fi
+  [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 143 ] && timed_out=1
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
-  [ -f "$dir/$kind-$n.jsonl" ] || die "没有 $kind-$n"
+  if [ ! -f "$dir/$kind-$n.jsonl" ]; then
+    [ "$timed_out" -eq 1 ] || die "没有 $kind-$n"
+    echo "!! $kind-$n 事件日志不可用"
+    timeout_state_report "$dir" "$kind" "$n"
+    return 0
+  fi
   if [ "$(call_state "$dir/$kind-$n")" = "RUNNING" ]; then
     if [ ! -s "$dir/$kind-$n.last.md" ]; then
       echo "run #$n 进行中；上一轮交付：foreman report $issue $((n-1))"
     else echo "（$kind-$n 仍在运行中，以下为截至此刻的部分事件流）"; fi
   fi
   local role=""; [ -f "$dir/$kind-$n.role" ] && role="$(cat "$dir/$kind-$n.role")"
-  python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md"
+  python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md" || summary_rc=$?
+  timeout_state_report "$dir" "$kind" "$n"
+  [ "$timed_out" -eq 1 ] && return 0
+  return "$summary_rc"
+}
+timeout_round_exists() { # <票目录>；meta 丢失时只为 rc=143 的 report 放行
+  local rc
+  for rc in "$1"/run-*.rc "$1"/review-*.rc; do
+    [ -f "$rc" ] || continue
+    [ "$(cat "$rc" 2>/dev/null || true)" = 143 ] && return 0
+  done
+  return 1
 }
 cmd_report() {
   local issue="${1:-}" n="" prname=""; [ -n "$issue" ] || die "用法: foreman report <票 id> [N|reviewN] [--pr <名>]"; shift || true
   while [ $# -gt 0 ]; do case "$1" in --pr) prname="$2"; shift 2 ;; -*) die "report: 未知参数 $1" ;; *) [ -z "$n" ] && n="$1" || die "report: 多余参数 $1"; shift ;; esac; done
-  init_repo_context; require_project; require_issue "$issue"
+  init_repo_context; require_project
+  [ -f "$(issue_dir "$issue")/meta.json" ] || timeout_round_exists "$(issue_dir "$issue")" || require_issue "$issue"
   [ -z "$prname" ] || resolve_pr "$issue" "$prname"
   cmd_report_inner "$issue" "$n" "$prname"
 }
@@ -1629,6 +1647,51 @@ call_state() {
   if [ -f "$f.argv" ]; then printf 'DEAD'; return 0; fi
   if [ -f "$f.jsonl" ]; then printf 'PAST'; return 0; fi
   printf 'NONE'
+}
+timeout_state_report() { # <票目录> <kind> <n>；只在硬超时 rc=143 后合成现场
+  local dir="$1" kind="$2" n="$3" f="$1/$2-$3" pr wt base out
+  [ "$(cat "$f.rc" 2>/dev/null || true)" = 143 ] || return 0
+  pr="$(round_pr "$dir" "$kind-$n" 2>/dev/null || true)"
+  wt="$(python3 - "$dir/meta.json" "$pr" 2>/dev/null <<'PY2' || true
+import json,sys
+m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
+print(p.get("worktree") or "")
+PY2
+)"
+  base="$(python3 - "$dir/meta.json" "$pr" 2>/dev/null <<'PY2' || true
+import json,sys
+m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
+print(p.get("base") or "")
+PY2
+)"
+  echo; echo "--- 超时时的状态 ---"
+  echo "已落 commit 列表："
+  if [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$base" ]; then
+    out="$(git -C "$wt" log --oneline "origin/$base..HEAD" 2>&1 || true)"; [ -n "$out" ] && printf '%s\n' "$out" || echo "（无）"
+  else echo "（工作树或基线不可用）"; fi
+  echo "工作树改动文件："
+  if [ -n "$wt" ] && [ -d "$wt" ]; then out="$(git -C "$wt" status --short 2>&1 || true)"; [ -n "$out" ] && printf '%s\n' "$out" || echo "（无）"
+  else echo "（工作树不可用）"; fi
+  echo "最后 10 条事件："
+  if [ -s "$f.jsonl" ]; then python3 "$PY_SUMMARIZE" --tail "$f.jsonl" 10 || echo "（事件尾不可用）"
+  else echo "（事件尾不可用）"; fi
+  echo "被打断时正在跑的命令："
+  if [ -s "$f.jsonl" ]; then python3 - "$f.jsonl" <<'PY2' || echo "（命令状态不可用）"
+import json,sys
+active={}
+for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
+    try: event=json.loads(line)
+    except ValueError: continue
+    method=event.get("method"); item=(event.get("params") or {}).get("item") or {}; ident=item.get("id")
+    if method=="item/started" and item.get("type")=="commandExecution" and ident:
+        active[ident]=item.get("command") or "（命令文本缺失）"
+    elif method=="item/completed" and ident:
+        active.pop(ident,None)
+if active:
+    for command in active.values(): print(command)
+else: print("（事件流中没有未完成的 commandExecution）")
+PY2
+  else echo "（命令状态不可用）"; fi
 }
 latest_n() {
   python3 - "$1" "$2" <<'PY2'
@@ -1825,18 +1888,20 @@ EOF
 
 cmd_wait() {
   init_repo_context; require_project
-  local timeout=300 interval=20 report=1 ids=() targets=()
-  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0
+  local timeout=300 interval=20 progress=300 report=1 ids=() targets=()
+  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0 timed_out=0 progress_dir="" cycle_out=""
   local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --timeout) timeout="$2"; shift 2 ;;
       --interval) interval="$2"; shift 2 ;;
+      --progress) progress="$2"; shift 2 ;;
       --no-report) report=0; shift ;;
       -*) die "wait: 未知参数 $1" ;;
       *) ids[${#ids[@]}]="$1"; shift ;;
     esac
   done
+  case "$progress" in ''|*[!0-9]*) die "wait: --progress 必须是非负整数秒" ;; esac
   if [ ${#ids[@]} -eq 0 ]; then
     while IFS= read -r line; do [ -n "$line" ] && ids[${#ids[@]}]="$line"; done <<EOF
 $(all_issues)
@@ -1853,12 +1918,19 @@ $(latest_calls_by_thread "$(issue_dir "$id")")
 EOF
   done
   if [ ${#targets[@]} -eq 0 ]; then echo "没有正在运行的会话（用 status 看最近一轮的结果）"; return 0; fi
-  echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s"
+  progress_dir="$(mktemp -d)"
+  for t in "${targets[@]}"; do
+    id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+    f="$(issue_dir "$id")/$kind-$n"
+    python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$(call_state "$f")" "$progress" >/dev/null
+  done
+  echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s，进展周期 ${progress}s"
   while [ "$waited" -lt "$timeout" ]; do
-    left=0
+    left=0; cycle_out="$progress_dir/cycle.out"; : > "$cycle_out"
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
+      python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$st" "$progress" >> "$cycle_out"
       case "$st" in RUNNING|QUEUED|WAITING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
         waiting_id="$id"
@@ -1867,10 +1939,12 @@ EOF
         waiting=1
       fi
     done
+    [ ! -s "$cycle_out" ] || cat "$cycle_out"
     [ "$waiting" -eq 0 ] || break
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
+  [ "$waited" -lt "$timeout" ] || timed_out=1
   [ "$waiting" -eq 0 ] || echo "⏳ WAITING：票 $waiting_id / 线程 $waiting_thread / ${waiting_summary}；将照常打印全表后返回 rc=3"
   for t in "${targets[@]}"; do
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
@@ -1883,6 +1957,13 @@ EOF
       *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
     esac
   done
+  if [ "$timed_out" -eq 1 ] && [ "$waiting" -eq 0 ] && [ "$still" -gt 0 ]; then
+    for t in "${targets[@]}"; do
+      id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+      f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
+      case "$st" in RUNNING|QUEUED|WAITING) echo "== $id $kind#$n wait 超时事件尾（最近 20 条）"; python3 "$PY_SUMMARIZE" --tail "$f.jsonl" ;; esac
+    done
+  fi
   if [ "$report" -eq 1 ]; then
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
@@ -1893,6 +1974,7 @@ EOF
       else ( cmd_report_inner "$id" "$n" ) || echo "$id run#${n}（无日志，跳过摘要）"; fi
     done
   fi
+  rm -rf "$progress_dir"
   [ "$waiting" -eq 0 ] || return 3
   [ "$still" -eq 0 ] || return 2
   return 0
@@ -1910,11 +1992,14 @@ for tid in sorted(os.listdir(root)):
     p = os.path.join(root, tid, "meta.json")
     if not os.path.isfile(p): continue
     m = json.load(open(p)); th = m.get("threads") or {}
+    prs=m.get("prs") or {}; default=m.get("default_pr"); pr=prs.get(default) if default else None
+    if pr is None and len(prs)==1: pr=next(iter(prs.values()))
+    branch=((pr or {}).get("branch") if prs else m.get("branch")) or "—"
     parts = []
     for name, t in th.items():
         runs = t.get("runs") or []
         parts.append(f"{name}[{t.get('role','?')}/{t.get('engine','?')}×{len(runs)}]")
-    print(f"  {tid:16} 分支 {m.get('branch') or '-':40} 线程: {' '.join(parts) or '（无）'}")
+    print(f"  {tid:16} 分支 {branch:40} 线程: {' '.join(parts) or '（无）'}")
 PY2
 }
 
@@ -2113,14 +2198,14 @@ foreman <command>            执行器: codex（默认，app-server）| pi（可
   review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|codex-exec|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
-                           run 是默认追加入口；已排队的 run 想立即生效用 --from-queue N，直接文本用于纠偏
+                           口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N
                            turn 已结束则转为新排队轮次，30 秒内等回执；默认线程 implement
   questions [<id>...]      执行者向编排者提的、还没回答的问题
   answer <id> [--qid q] <文本>|--file f
                            回答执行者的提问（超过 codex.question_timeout 没回会给兜底答复）
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
-  wait [<id>...] [--timeout 300] [--interval 20] [--no-report]   等收敛并打印摘要；返回 2 = 还在跑，3 = 执行者在提问（问题已打出，answer 后再 wait）
+  wait [<id>...] [--timeout 300] [--progress 300|0] [--interval 20] [--no-report]   有进展才按周期打印；超时附事件尾；返回 2 = 还在跑，3 = 执行者在提问
   report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）

@@ -1,5 +1,12 @@
 # foreman 版本记录
 
+## 1.3.1 — 2026-09-12
+
+- issue #14：run 到时仍按原语义硬中断并记 rc=143；report 自动从事件流与 worktree 合成 commit、未提交文件、末尾事件及被打断命令，不主动向 turn 注入 prompt。
+- issue #15：收尾执行者 push 并回复 / resolve 本轮线程后立即交报告；CI 与下一轮 review 改由编排者在宿主后台等待，红了或有新 finding 再派下一轮。
+- issue #16：list 直接从新版 `prs` 账本取默认（或唯一）PR 的分支 / 基线，缺失统一显示 `—`；引擎列保持每字符代表一轮并补清晰图例。
+- issue #17：wait 支持有变化才按 `--progress` 周期输出单行进展，长时间无事件 / 长命令各单次提示，rc=2 超时附事件尾；tail 也会列出 started 的命令 / 工具事件；文档按 Monitor、后台一次性 Bash、前台三种跑法说明 timeout。
+
 ## 1.3.0 — 2026-09-12
 
 - issue #1-1：多 PR 默认用 `<角色>@<pr>` 线程并行，已有角色线程稳定复用。
