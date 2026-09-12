@@ -410,10 +410,12 @@ def scan_appserver(events, role=None):
         params = event.get("params") or {}
         if not method:
             continue
+        if not legacy_identity and method == "turn/started":
+            identity.observe_child_turn(event)
         scope = "root" if legacy_identity else identity.scope(event)
         if scope == "root":
             identity.register_collaboration(event)
-        if method == "turn/started" and scope == "child":
+        if method == "turn/completed" and scope == "child":
             identity.observe_child_turn(event)
         if scope == "child":
             label = identity.child_label(event) or "subagent"
@@ -504,6 +506,13 @@ def scan_appserver(events, role=None):
                 state["tokens"] = _usage_int(usage, "totalTokens", "total_tokens") or (state["in_tokens"] + state["out_tokens"])
         elif method == "item/commandExecution/requestApproval" and "id" in event:
             pass  # 决定在 _fleet.approval 里记
+    for usage in state["child_tokens"].values():
+        total = usage.get("total") or usage
+        if isinstance(total, dict):
+            child_in = _usage_int(total, "inputTokens", "input_tokens")
+            child_out = _usage_int(total, "outputTokens", "output_tokens")
+            state["tokens"] += (_usage_int(total, "totalTokens", "total_tokens")
+                                or child_in + child_out)
     return state
 
 
@@ -542,7 +551,8 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
           f"tools={state['tool_calls']}" + (f"  files={len(visible_files)}" if codex_like else "")
           + (f"  web_search={state['web_searches']}" if state["web_searches"] else "") + dur)
     if codex_like:
-        print(f"tokens: in={state['in_tokens']} (cached {state['cached_tokens']})  out={state['out_tokens']}"
+        print(f"tokens: root in={state['in_tokens']} (cached {state['cached_tokens']})  "
+              f"root out={state['out_tokens']}  total={state['tokens']}"
               "   —— ChatGPT 订阅额度计费，无单次美元成本")
         for label_, usage in state.get("child_tokens", {}).items():
             total = usage.get("total") or usage

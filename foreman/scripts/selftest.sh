@@ -39,10 +39,11 @@ PY2
 
 replay_out="$(python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest 2>&1)"; replay_rc=$?
 if [ "$replay_rc" -eq 0 ] && printf '%s\n' "$replay_out" | grep -q 'fixture baseline:'; then ok "app-server 可编排 stdio 回放夹具自检"; else bad "app-server 回放夹具" "$replay_out"; fi
-for replay_case in outer-first inner-first 'timeout cleanup' 'nested error' 'EOF cleanup' 'unknown/late diagnostic'; do
+for replay_case in outer-first inner-first 'timeout cleanup' 'nested error' 'EOF cleanup' 'unknown/late diagnostic' \
+  'expired nested response' 'pending duplicate + diagnostic suppression' 'request_user_input -> consume_steers -> turn/steer'; do
   if printf '%s\n' "$replay_out" | grep -q "request routing: ${replay_case} PASS"; then ok "请求 id 分发：${replay_case}"; else bad "请求 id 分发：${replay_case}"; fi
 done
-for replay_case in 'root final survives child final' 'stale turn ignored' 'child completion does not settle root' 'pre-response notifications replayed' 'no inferred root completion'; do
+for replay_case in 'root final survives child final' 'stale turn ignored' 'child completion does not settle root' 'pre-response notifications replayed' 'no inferred root completion' 'child second turn tracked'; do
   if printf '%s\n' "$replay_out" | grep -q "turn identity: ${replay_case} PASS"; then ok "主轮身份：${replay_case}"; else bad "主轮身份：${replay_case}"; fi
 done
 
@@ -782,7 +783,7 @@ expect_grep "report check FAIL 带人工判断与输出尾" "check：FAIL" env F
 printf 'true\n' > "$auto/run-3.check.commands"; : > "$auto/run-3.check.pending"; printf 4 > "$auto/run-3.rc"
 "$F" __auto_check "$auto" run 3 "$T/proj/app"
 grep -q 'SKIPPED: 执行体 rc=4' "$auto/run-3.check.status" && [ ! -f "$auto/run-3.check.log" ] && ok "执行体 rc 非零跳过 check" || bad "非零 rc 仍跑 check"
-: > "$auto/run-4.check.pending"; printf 0 > "$auto/run-4.rc"
+: > "$auto/run-4.check.pending"; printf 0 > "$auto/run-4.rc"; printf '%s' "$$" > "$auto/run-4.check.pid"
 [ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$auto/run-4")" = CHECKING ] && ok "call_state 暴露 CHECKING" || bad "CHECKING 状态"
 FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-5" implement 1
 grep -q -- '--no-check' "$auto/run-5.check.status" && ok "run --no-check 标记跳过" || bad "--no-check"
@@ -790,6 +791,78 @@ FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-6" research 0
 grep -q '只读角色' "$auto/run-6.check.status" && ok "只读角色跳过 check" || bad "只读角色 check"
 FOREMAN_SELFTEST=1 "$F" __prepare_auto_check "$auto/run-7" implement 0
 grep -q 'UNCONFIGURED' "$auto/run-7.check.status" && ok "无 verify / package scripts 显示未配置" || bad "check 未配置"
+
+printf "printf checked > '%s'\n" "$auto/empty.checked" > "$auto/run-8.check.commands"; : > "$auto/run-8.check.pending"; : > "$auto/run-8.rc"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 8 "$T/proj/app"
+sleep .2
+if [ ! -f "$auto/run-8.check.rc" ] && [ ! -f "$auto/run-8.check.status" ]; then ok "空 rc 不会提前跳过 check"; else bad "空 rc 被当成终态"; fi
+printf 0 > "$auto/run-8.rc"
+for _ in $(seq 1 100); do [ -f "$auto/run-8.check.rc" ] && break; sleep .05; done
+[ "$(cat "$auto/run-8.check.rc" 2>/dev/null)" = 0 ] && [ -f "$auto/empty.checked" ] && ok "rc 写完整后 detached check 执行" || bad "完整 rc 未触发 check"
+
+printf 'sleep 30\n' > "$auto/run-9.check.commands"; : > "$auto/run-9.check.pending"; printf 0 > "$auto/run-9.rc"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 9 "$T/proj/app"; sleep .2
+kill -KILL "$(cat "$auto/run-9.check.pid")" 2>/dev/null || true; sleep .2
+if [ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$auto/run-9")" = DONE ] && [ "$(FOREMAN_SELFTEST=1 "$F" __check_result "$auto/run-9")" = 'FAIL（worker 消失）' ]; then ok "worker 消失不永久 CHECKING"; else bad "worker 消失状态"; fi
+
+printf "sleep 1; date +%%s > '%s'\n" "$auto/check-ended" > "$auto/run-10.check.commands"; : > "$auto/run-10.check.pending"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 10 "$T/proj/app"
+mkdir -p "$auto/hold-check/queue"; printf '{"thread_id":"root","idle_seconds":5}' > "$auto/hold-check/hold.json"
+python3 -B - "$SKILL_DIR/scripts/codex_appserver.py" "$auto" <<'PY2'
+import importlib.util,json,pathlib,sys,time
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+root=pathlib.Path(sys.argv[2]); hold=root/"hold-check"
+for n in (10, 12):
+    req={"out_rc":str(root/f"run-{n}.rc"), "out_jsonl":str(root/f"run-{n}.jsonl"),
+         "out_stderr":str(root/f"run-{n}.stderr"), "timeout":5}
+    (hold/"queue"/f"run-{n}.request.json").write_text(json.dumps(req))
+class Proc:
+    def poll(self): return None
+class Server:
+    proc=Proc()
+    def set_log(self, path): pass
+    def next_message(self, timeout): return {}
+    def dispatch(self, msg): pass
+    def close(self): pass
+    def log_event(self, event):
+        if event.get("_fleet") == "hold_turn_done" and event.get("run") == "run-12.jsonl":
+            (hold/"release").touch()
+class Runner:
+    def __init__(self, cfg):
+        self.cfg=cfg; self.thread_id="root"; self.boot_info={}; self.server=None
+        self.turn_id=None; self.turn_status=None; self.interrupt_requested=False
+    def boot(self): self.server=Server(); return self.server
+    def turn(self):
+        if pathlib.Path(self.cfg["out_jsonl"]).stem == "run-12":
+            assert (root/"check-ended").exists(), "second turn started before check ended"
+            (root/"next-started").write_text(str(int(time.time())))
+        return 0
+    def finish(self, rc): pass
+    def handle_server_request(self, msg): pass
+    def handle_notification(self, msg): pass
+    def _classify_failure(self, exc): return 3
+b.Runner=Runner
+assert b.Holder(str(hold)).serve() == 0
+PY2
+[ -f "$auto/run-10.check.rc" ] && [ "$(cat "$auto/check-ended")" -le "$(cat "$auto/next-started")" ] && ok "Holder 双队列等 check 终态才领取下一轮" || bad "Holder/check 双队列互斥"
+
+printf 'false\n' > "$auto/run-11.check.commands"; : > "$auto/run-11.check.pending"; printf 0 > "$auto/run-11.rc"; "$F" __auto_check "$auto" run 11 "$T/proj/app"
+printf 'true\n' > "$auto/run-11.check.commands"; : > "$auto/run-11.check.pending"; rm -f "$auto/run-11.check.rc" "$auto/run-11.check.status"; "$F" __auto_check "$auto" run 11 "$T/proj/app"
+[ ! -f "$auto/run-11.check.failed-command" ] && ok "成功重跑清理旧 failed-command" || bad "failed-command 残留"
+
+printf 'here' > "$steer_dir/run-94.pr"; printf 'implement' > "$steer_dir/run-94.thread"; printf 0 > "$steer_dir/run-94.rc"; : > "$steer_dir/run-94.check.pending"; printf '%s' "$$" > "$steer_dir/run-94.check.pid"
+expect_grep "同线程 CHECKING 时 shell 派发守卫拒绝" "CHECKING" "$F" run 1 --thread implement --prompt "$T/brief.md" --title blocked-by-check
+rm -f "$steer_dir"/run-94.*
+
+printf '%s\n' '{"_fleet":"thread","threadId":"root"}' '{"method":"turn/completed","params":{"threadId":"root","turn":{"id":"turn","status":"completed"}}}' '{"_fleet":"turn_summary","threadId":"root","turnId":"turn","status":"completed"}' > "$steer_dir/run-93.jsonl"
+: > "$steer_dir/run-93.stderr"; printf '## STATUS\nDONE\n' > "$steer_dir/run-93.last.md"; printf 0 > "$steer_dir/run-93.rc"; printf 1 > "$steer_dir/run-93.check.rc"; printf false > "$steer_dir/run-93.check.failed-command"; printf 'failed output\n' > "$steer_dir/run-93.check.log"; printf implement > "$steer_dir/run-93.role"
+report_check_out="$("$F" report 1 93 2>&1)"
+if printf '%s\n' "$report_check_out" | grep -q '需要人工/编排者判断' && printf '%s\n' "$report_check_out" | grep -q '失败命令: false'; then ok "report 完整 check FAIL 横幅"; else bad "report check FAIL 横幅" "$report_check_out"; fi
+rm -f "$steer_dir"/run-93.*
+
+manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; "$F" check 1 true >/dev/null; "$F" check 1 true >/dev/null
+manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
+[ "$manual_after" -eq $((manual_before+2)) ] && ok "手动 check 同秒日志名唯一" || bad "手动 check 日志覆盖"
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"

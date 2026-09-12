@@ -41,12 +41,24 @@ class TurnIdentity:
             return
         for thread_id in item.get("receiverThreadIds") or []:
             if thread_id not in self.children:
-                self.children[thread_id] = {"turn": None, "label": f"subagent-{len(self.children) + 1}"}
+                self.children[thread_id] = {"turn": None, "turns_seen": set(),
+                                            "label": f"subagent-{len(self.children) + 1}"}
 
     def observe_child_turn(self, event):
         thread, turn = event_ids(event)
-        if thread in self.children and turn:
-            self.children[thread]["turn"] = turn
+        child = self.children.get(thread)
+        if not child or not turn:
+            return
+        method = event.get("method")
+        seen = child.setdefault("turns_seen", set())
+        if method == "turn/started":
+            # 只接受尚未见过的新轮；旧 turn/started 迟到不能把当前轮回退。
+            if turn != child.get("turn") and turn not in seen:
+                child["turn"] = turn
+            seen.add(turn)
+        elif method == "turn/completed" and (child.get("turn") in (None, turn)):
+            child["turn"] = turn
+            seen.add(turn)
 
     def child_label(self, event):
         thread, _ = event_ids(event)

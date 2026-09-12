@@ -221,9 +221,9 @@ class AppServer:
         """发请求并阻塞等它的响应；等待期间照常分发其它消息。"""
         req_id = self._next_id
         self._next_id += 1
-        slot = {"response": None}
-        self._pending[req_id] = slot
         deadline = time.time() + timeout
+        slot = {"response": None, "deadline": deadline}
+        self._pending[req_id] = slot
         try:
             self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
             while slot["response"] is None:
@@ -260,6 +260,8 @@ class AppServer:
             reason = None
             if slot is None:
                 reason = "unknown_id"
+            elif time.time() >= slot["deadline"]:
+                reason = "expired"
             elif slot["response"] is not None:
                 reason = "duplicate_response"
             else:
@@ -318,6 +320,54 @@ def write_json(path, value):
         tmp.unlink(missing_ok=True)
 
 
+def check_state(prefix):
+    """与 shell call_state/check_result 相同的自动 check 占用口径。"""
+    prefix = Path(prefix)
+    pending = Path(str(prefix) + ".check.pending")
+    if not pending.exists():
+        return "TERMINAL"
+    if Path(str(prefix) + ".check.rc").exists():
+        return "TERMINAL"
+    try:
+        status = Path(str(prefix) + ".check.status").read_text().strip()
+    except OSError:
+        status = ""
+    if re.match(r"^(SKIPPED|UNCONFIGURED|FAILED)(?::|$)", status):
+        return "TERMINAL"
+    rc_path = Path(str(prefix) + ".rc")
+    try:
+        rc = rc_path.read_text().strip()
+    except OSError:
+        return "PENDING_RUN"
+    if not re.fullmatch(r"[0-9]+", rc):
+        return "PENDING_RUN"
+    if rc != "0":
+        return "TERMINAL"
+    try:
+        pid = int(Path(str(prefix) + ".check.pid").read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return "WORKER_GONE"
+    return "CHECKING"
+
+
+def wait_for_check(prefix):
+    """Holder 不领取下一轮，直到上一轮自动 check 已发布终态。"""
+    prefix = Path(prefix)
+    while True:
+        state = check_state(prefix)
+        if state == "WORKER_GONE":
+            status = Path(str(prefix) + ".check.status")
+            tmp = status.with_name(status.name + ".tmp")
+            tmp.write_text("FAILED: check worker 消失", encoding="utf-8")
+            os.replace(tmp, status)
+            Path(str(prefix) + ".check.pending").unlink(missing_ok=True)
+            return
+        if state != "CHECKING":
+            return
+        time.sleep(.05)
+
+
 def run_numbers(directory):
     return sorted({int(m[1]) for p in Path(directory).glob("run-*.*")
                    if (m := re.fullmatch(r"run-(\d+)\..+", p.name))})
@@ -365,9 +415,7 @@ def enqueue_steer(directory, tname, message):
     # 转排队也遵守 run 的同 PR 单执行者守卫；业务拒绝保留到 failed 回执。
     for mark in list(directory.glob("run-*.pr")) + list(directory.glob("review-*.pr")):
         prefix = str(mark)[:-3]
-        checking = (Path(prefix + ".check.pending").exists()
-                    and not Path(prefix + ".check.rc").exists()
-                    and Path(prefix + ".rc").read_text().strip() == "0") if Path(prefix + ".rc").exists() else False
+        checking = check_state(prefix) == "CHECKING"
         if mark.read_text() != pr or (Path(prefix + ".rc").exists() and not checking):
             continue
         if checking:
@@ -622,10 +670,12 @@ class Runner:
     def _apply_notification(self, msg: dict):
         method = msg.get("method")
         params = msg.get("params") or {}
+        if method == "turn/started":
+            self.identity.observe_child_turn(msg)
         scope = self.identity.scope(msg)
         if scope == "root":
             self.identity.register_collaboration(msg)
-        if method == "turn/started" and scope == "child":
+        if method == "turn/completed" and scope == "child":
             self.identity.observe_child_turn(msg)
         if scope == "child":
             label = self.identity.child_label(msg)
@@ -996,8 +1046,7 @@ class Holder:
                         with open(req["out_stderr"], "a", encoding="utf-8") as fh:
                             fh.write(note + "\n")
                     if req.get("out_rc"):
-                        with open(req["out_rc"], "w", encoding="utf-8") as fh:
-                            fh.write(str(rc))
+                        write_json(req["out_rc"], rc)
                 finally:
                     try:
                         os.remove(path)
@@ -1074,11 +1123,12 @@ class Holder:
                     self.current = None
                     r.finish(trc)
                     if req.get("out_rc"):
-                        with open(req["out_rc"], "w", encoding="utf-8") as fh:
-                            fh.write(str(trc))
+                        write_json(req["out_rc"], trc)
                     (Path(self.dir) / "active.json").unlink(missing_ok=True)
                     srv.set_log(hold_log)
                     srv.log_event({"_fleet": "hold_turn_done", "run": os.path.basename(req.get("out_jsonl") or ""), "rc": trc})
+                if req.get("out_rc"):
+                    wait_for_check(Path(req["out_rc"]).with_suffix(""))
                 last_activity = time.time()
                 if srv.proc.poll() is not None:
                     self._fail_queued(3, "codex_appserver: app-server 已退出，排队的轮次作废")
