@@ -1627,8 +1627,10 @@ $(verify_of_repo)
 EOF
   fi
   [ ${#cmds[@]} -gt 0 ] || die "check: 没有验收命令（foreman.toml 的 verify.commands 为空且当前仓库 package.json 没有 type-check / lint），请显式给命令"
-  local dir out failed=0
-  dir="$(issue_dir "$issue")"; out="$dir/check-${FOREMAN_CHECK_LOG_STAMP:-$(date +%Y%m%dT%H%M%S)}-$$.log"
+  local dir out failed=0 stamp
+  dir="$(issue_dir "$issue")"; stamp="$(date +%Y%m%dT%H%M%S)"
+  [ "${FOREMAN_SELFTEST:-}" = 1 ] && [ -n "${FOREMAN_CHECK_LOG_STAMP:-}" ] && stamp="$FOREMAN_CHECK_LOG_STAMP"
+  out="$dir/check-${stamp}-$$.log"
   run_check_commands "$wt" "$out" "${cmds[@]}" || failed=$?
   echo; echo "完整输出: $out"
   [ "$failed" -eq 0 ] && echo "RESULT: ALL PASS" || echo "RESULT: FAIL"
@@ -1664,6 +1666,7 @@ auto_check_wait() { # <dir> <kind> <n> <worktree>
   while :; do
     rc="$(cat "$f.rc" 2>/dev/null || true)"
     rc="$(printf '%s' "$rc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ "${FOREMAN_SELFTEST:-}" = 1 ] && [ -z "$rc" ] && : > "$f.check.empty-rc-seen"
     case "$rc" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
   done
   if [ "$rc" != 0 ]; then printf 'SKIPPED: 执行体 rc=%s' "$rc" > "$f.check.status"; rm -f "$f.check.pending"; return 0; fi
@@ -1686,8 +1689,16 @@ os.execvp(sys.argv[1],sys.argv[1:])' bash "$SCRIPT_PATH" __auto_check "$1" "$2" 
 }
 
 cleanup_failed_dispatch() { # <stem>
-  local f="$1" pid i
+  local f="$1" pid i dir base active q claimed=0
   [ -n "$f" ] || return 0
+  dir="$(dirname "$f")"; base="${f##*/}"
+  [ -f "$f.pid" ] && claimed=1
+  for active in "$dir"/hold-*/active.json; do
+    [ -f "$active" ] || continue
+    grep -q '"run"[[:space:]]*:[[:space:]]*"'"$base"'"' "$active" && claimed=1
+  done
+  [ "$claimed" -eq 0 ] || return 0
+  for q in "$dir"/hold-*/queue/"$base.request.json"; do [ -f "$q" ] && rm -f "$q"; done
   pid="$(cat "$f.check.pid" 2>/dev/null || true)"
   case "$pid" in ''|*[!0-9]*) ;; *)
     kill -TERM "$pid" 2>/dev/null || true
@@ -1696,6 +1707,7 @@ cleanup_failed_dispatch() { # <stem>
   ;; esac
   rm -f "$f.check.pid" "$f.check.pending"
   printf 'FAILED: 派发失败' > "$f.check.status"
+  printf '派发失败，队列请求未被领取，已撤回' > "$f.cancelled"
 }
 
 wait_auto_check() { while [ "$(call_state "$1")" = CHECKING ]; do sleep 1; done; }

@@ -827,26 +827,32 @@ class Runner:
     def _classify_failure(self, exc) -> int:
         srv = self.server
         assert srv is not None
-        srv.log_event({"_fleet": "protocol_error", "error": str(exc)})
+        error = str(exc)
+        srv.log_event({"_fleet": "protocol_error", "error": error})
         sys.stderr.write(f"codex_appserver: {exc}\n")
         rc = 3 if self.turn_id is None else 1
-        detail = str(exc)
-        try:
-            srv._stderr.flush()
-            with open(srv.stderr_path, encoding="utf-8", errors="replace") as fh:
-                detail += "\n" + fh.read()[-8192:]
-        except OSError:
-            pass
+        if "active writer" in error:
+            rc = 5
+            hint = "这条线程正被别的客户端打开着（shared home 下多半是 Codex 桌面端），关掉它再续；急的话 foreman release 后 run --thread <新名> 另起并在 prompt 里补上下文"
+            srv.log_event({"_fleet": "thread_busy", "hint": hint, "error": error})
+            sys.stderr.write(f"codex_appserver: THREAD_BUSY {hint}\n")
+            return rc
+        detail = error
+        if "stdout 关闭" in error:
+            detail = ""
+            try:
+                srv._stderr.flush()
+                with open(srv.stderr_path, "rb") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    fh.seek(max(0, size - 8192))
+                    detail = fh.read(8192).decode("utf-8", errors="replace")
+            except OSError:
+                pass
         kind = classify_unavailable(detail)
         if kind:
             rc = 4
-            self.mark_unavailable(srv, kind, str(exc))
-        elif "active writer" in str(exc):
-            # shared home：桌面端打开了这条线程就持有写锁，resume 被拒。不是任务失败，也不是执行器不可用。
-            rc = 5
-            hint = "这条线程正被别的客户端打开着（shared home 下多半是 Codex 桌面端），关掉它再续；急的话 foreman release 后 run --thread <新名> 另起并在 prompt 里补上下文"
-            srv.log_event({"_fleet": "thread_busy", "hint": hint, "error": str(exc)})
-            sys.stderr.write(f"codex_appserver: THREAD_BUSY {hint}\n")
+            self.mark_unavailable(srv, kind, error)
         return rc
 
     def run(self) -> int:

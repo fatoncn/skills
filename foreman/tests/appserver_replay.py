@@ -215,6 +215,36 @@ def orphan_diagnostics():
     print("request routing: unknown/late diagnostic PASS")
 
 
+def failure_classification_uses_only_eof_tail():
+    bridge = load_bridge()
+    class MemoryServer:
+        def __init__(self, stderr_path):
+            self.stderr_path = str(stderr_path)
+            self._stderr = open(stderr_path, "ab")
+            self.events = []
+        def log_event(self, event):
+            self.events.append(event)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stderr = Path(tmp) / "stderr"
+        def classify(error, content):
+            stderr.write_bytes(content)
+            server = MemoryServer(stderr)
+            runner = bridge.Runner({})
+            runner.server = server
+            try:
+                return runner._classify_failure(bridge.ProtocolError(error))
+            finally:
+                server._stderr.close()
+        history = b"connection refused\n" + b"x" * 9000
+        assert classify("invalid params", b"INFO login helper initialized\n") == 3
+        assert classify("active writer", b"INFO login helper initialized\n") == 5
+        assert classify("app-server 在等待 initialize 响应时退出（stdout 关闭）",
+                        b"connection refused\n") == 4
+        assert classify("app-server 在等待 initialize 响应时退出（stdout 关闭）", history) == 3
+    print("request routing: EOF-only stderr classification PASS")
+
+
 def expired_nested_response():
     steps = [
         {"method": "outer", "emit": [{"message": {"method": "notice"}}]},
@@ -447,7 +477,8 @@ def summary_uses_same_identity_rules():
 
 
 CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False),
-         outer_timeout, nested_error, eof_cleanup, orphan_diagnostics, expired_nested_response,
+         outer_timeout, nested_error, eof_cleanup, orphan_diagnostics, failure_classification_uses_only_eof_tail,
+         expired_nested_response,
          duplicate_pending_and_suppression, real_question_steer_chain,
          root_final_then_child_final, old_turn_is_ignored, child_completion_is_not_root_completion,
          pre_response_notifications_replayed, no_root_completion_is_not_inferred, child_second_turn_is_tracked,
