@@ -103,11 +103,79 @@ def command_for(tool: str, tool_input: dict) -> str:
 
 def command_segments(command: str) -> list[str]:
     """按 shell 控制操作符分段，并在权限检查前丢弃重定向目标。"""
-    segments = []
-    for raw in re.split(r"\|&|&&|\|\||[;&|\n]", command):
-        segment = re.sub(r"(?:^|\s)\d*(?:>>?|<<?)\s*(?:'[^']*'|\"[^\"]*\"|\S+)", " ", raw).strip()
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""
+    index = 0
+
+    def finish() -> None:
+        segment = "".join(current).strip()
         if segment:
             segments.append(segment)
+        current.clear()
+
+    while index < len(command):
+        char = command[index]
+        if quote:
+            current.append(char)
+            if char == "\\" and quote == '"' and index + 1 < len(command):
+                index += 1
+                current.append(command[index])
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(command):
+            current.extend((char, command[index + 1]))
+            index += 2
+            continue
+
+        fd_redirect = re.match(r"\d*>&\d+", command[index:])
+        file_redirect = re.match(r"(?:&>>?|\d*(?:>>|>|<<|<))", command[index:])
+        redirect = fd_redirect or file_redirect
+        if redirect:
+            index += len(redirect.group(0))
+            if fd_redirect:
+                continue
+            while index < len(command) and command[index] in " \t":
+                index += 1
+            target_quote = ""
+            while index < len(command):
+                target = command[index]
+                if target_quote:
+                    if target == "\\" and target_quote == '"' and index + 1 < len(command):
+                        index += 2
+                        continue
+                    if target == target_quote:
+                        target_quote = ""
+                    index += 1
+                    continue
+                if target in "'\"":
+                    target_quote = target
+                    index += 1
+                    continue
+                if target == "\\" and index + 1 < len(command):
+                    index += 2
+                    continue
+                if target.isspace() or target in ";|&":
+                    break
+                index += 1
+            continue
+
+        operator = next((item for item in ("&&", "||", "|&", ";", "|", "&", "\n")
+                         if command.startswith(item, index)), None)
+        if operator:
+            finish()
+            index += len(operator)
+            continue
+        current.append(char)
+        index += 1
+    finish()
     return segments
 
 
@@ -357,9 +425,11 @@ def deny_rules(closeout: bool) -> list[str]:
         rules.extend(deny_globs)
     if closeout:
         allowed_exact = {
-            "*git*push*", "*gh pr edit*", "*gh pr comment*", "*gh pr ready*", "*gh pr review*",
-            "*gh*api*graphql*",
-            *[f"*gh*api*{flag}*{method}*" for flag in ("-X", "--method") for method in ("POST", "PATCH")],
+            "*git *push*", "*gh pr edit*", "*gh pr comment*", "*gh pr ready*", "*gh pr review*",
+            "*gh *api *graphql*",
+            *[pattern for method in ("POST", "PATCH")
+              for pattern in (f"*gh *api* -X*{method}*", f"*gh *api* -X {method}*",
+                              f"*gh *api* --method*{method}*", f"*gh *api* --method {method}*")],
         }
         rules = [rule for rule in rules if rule not in allowed_exact]
     return list(dict.fromkeys(f"Bash({rule})" for rule in rules))
@@ -425,6 +495,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
     init_session = None
     interrupted = False
     proc: subprocess.Popen | None = None
+    proc_lock = threading.Lock()
     stderr_fh = None
     hard_stop_started = False
     finished = threading.Event()
@@ -432,12 +503,13 @@ def run_bridge(request_path: pathlib.Path) -> int:
         if os.environ.get("FOREMAN_SELFTEST") == "1" else INTERRUPT_GRACE
 
     def kill_group(sig: int) -> None:
-        if proc is None:
-            return
-        try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            pass
+        with proc_lock:
+            target = proc
+            if target is not None:
+                try:
+                    os.killpg(target.pid, sig)
+                except ProcessLookupError:
+                    pass
 
     def hard_stop_after_grace() -> None:
         if not finished.wait(grace):
@@ -445,14 +517,43 @@ def run_bridge(request_path: pathlib.Path) -> int:
 
     def request_stop(mark_interrupted: bool) -> None:
         nonlocal interrupted, hard_stop_started
-        interrupted = interrupted or mark_interrupted
-        kill_group(signal.SIGTERM)
-        if not hard_stop_started:
-            hard_stop_started = True
+        start_hard_stop = False
+        with proc_lock:
+            interrupted = interrupted or mark_interrupted
+            target = proc
+            if target is not None:
+                try:
+                    os.killpg(target.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            if not hard_stop_started:
+                hard_stop_started = True
+                start_hard_stop = True
+        if start_hard_stop:
             threading.Thread(target=hard_stop_after_grace, daemon=True).start()
 
     def on_term(_sig, _frame):
-        request_stop(True)
+        nonlocal interrupted, hard_stop_started
+        if not proc_lock.acquire(blocking=False):
+            # Python 信号处理器会在主线程重入；Popen 原子段持锁时只留标记，出锁立即终止。
+            interrupted = True
+            return
+        start_hard_stop = False
+        try:
+            interrupted = True
+            target = proc
+            if target is not None:
+                try:
+                    os.killpg(target.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            if not hard_stop_started:
+                hard_stop_started = True
+                start_hard_stop = True
+        finally:
+            proc_lock.release()
+        if start_hard_stop:
+            threading.Thread(target=hard_stop_after_grace, daemon=True).start()
 
     # 在创建任何轮次文件前安装，让启动期 TERM 也走同一清理路径。
     old_term = signal.signal(signal.SIGTERM, on_term)
@@ -547,10 +648,20 @@ def run_bridge(request_path: pathlib.Path) -> int:
             "permission_mode": permission_mode, "settings": str(settings_path), "mcp_servers": sorted(servers),
             "session_id": req.get("session_id"), "cli_version": version, "started_at": started})
 
+        if (os.environ.get("FOREMAN_SELFTEST") == "1"
+                and os.environ.get("FOREMAN_CLAUDE_STARTUP_DELAY_STAGE") == "pre_popen"):
+            delay = float(os.environ.get("FOREMAN_CLAUDE_STARTUP_DELAY", "0"))
+            if delay > 0:
+                time.sleep(delay)
         stderr_fh = stderr_path.open("wb")
         try:
-            proc = subprocess.Popen(argv, cwd=req["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=stderr_fh, start_new_session=True, bufsize=0)
+            with proc_lock:
+                if interrupted:
+                    raise InterruptedError("启动期收到终止信号")
+                proc = subprocess.Popen(argv, cwd=req["cwd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=stderr_fh, start_new_session=True, bufsize=0)
+        except InterruptedError:
+            raise
         except OSError as exc:
             final_rc, subtype, terminal_reason = 3, "launch_error", f"Claude 启动失败: {exc}"
             raise RuntimeError(terminal_reason)

@@ -1153,8 +1153,8 @@ cmd_run() {
     cp "$prompt_file" "$dir/run-$n.prompt.md"
   fi
   prompt_file="$dir/run-$n.prompt.md"
-  POSITION_WRITABLE="$writable"; prepend_position "$prompt_file"; POSITION_WRITABLE=""
   [ "$engine" != "claude" ] || claude_apply_steers "$dir" "$tname" "$prompt_file"
+  POSITION_WRITABLE="$writable"; prepend_position "$prompt_file"; POSITION_WRITABLE=""
   # run-N.role 给 summarize 选探针放行表：收尾轮写 closeout（阶段标记，放行对自己 PR 的 push / gh 写），其它写角色名
   if [ "$closeout" -eq 1 ]; then printf 'closeout' > "$dir/run-$n.role"; else printf '%s' "$role" > "$dir/run-$n.role"; fi
   if [ "$full_access" -eq 1 ]; then printf '%s' "$full_access_reason" > "$dir/run-$n.full-access"; else rm -f "$dir/run-$n.full-access"; fi

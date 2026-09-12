@@ -75,6 +75,8 @@ def fake_claude(argv: list[str]) -> int:
     if scenario == "resume_mismatch":
         session = "session-replay-mismatch"
     mcp_path = pathlib.Path(arg_value(argv, "--mcp-config"))
+    stem = pathlib.Path(str(mcp_path)[:-len(".mcp.json")])
+    pathlib.Path(str(stem) + ".fake-started").write_text("started", encoding="utf-8")
     assert mcp_path.is_file() and (mcp_path.stat().st_mode & 0o777) == 0o600
     if scenario != "no_session":
         print(json.dumps({"type": "system", "subtype": "init", "session_id": session}), flush=True)
@@ -403,15 +405,42 @@ def selftest() -> int:
             assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
         closeout_settings = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())
         closeout_rules = closeout_settings["permissions"]["deny"]
+        normal_must_deny = (
+            "gh api -X PUT repos/x", "gh api repos/x -XPUT", "git  push origin HEAD",
+            "gh api graphql -f query=x", "git checkout -- src/a.ts", "vercel env pull",
+        )
+        never_deny = (
+            "grep -n highlight business/api/graphql.ts",
+            "git checkout -b x && pnpm install --frozen-lockfile",
+            "vercel inspect dep | grep environment", 'rg -n "graphql" src',
+        )
+        for command in normal_must_deny:
+            assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
+        for command in never_deny:
+            assert not any(claude_rule_matches(rule, command) for rule in normal_deny), command
+            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
         for command in ("git push origin HEAD", "gh pr comment 1 -b ok", "gh api graphql -f query=x",
                         "gh api repos/x/pulls/1/comments -X POST"):
             assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        for command in ("gh api -X PUT repos/x", "gh api repos/x -XPUT", "git push -f origin HEAD"):
+        for command in ("gh api -X PUT repos/x", "gh api repos/x -XPUT",
+                        "git push -f origin HEAD", "git push origin HEAD --force"):
             assert any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+        closeout_allowed = (
+            "git push origin HEAD 2>&1",
+            "git push origin HEAD >/dev/null 2>&1 && gh pr ready 1",
+            'gh pr comment 1 --body "R&D"', "gh pr comment 1 --body 'a; b'",
+        )
+        for command in closeout_allowed:
+            assert bridge.closeout_command_allowed(command), command
+            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+        for command in ("git push origin feat/x-fix", "git push origin HEAD 2>&1"):
+            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
         for command in ("git push origin HEAD & git  reset --hard",
                         "git push origin HEAD $(git  reset --hard)",
                         "git push origin `git rev-parse HEAD`"):
             assert not bridge.closeout_command_allowed(command), command
+        print("claude replay: command_segments_quoted_redirection PASS")
+        print("claude replay: deny_rules_no_false_positive PASS")
         print("claude replay: deny_rules_shared_source PASS")
         run_case(root, "success_stderr_warning", 0)
         full_req, _ = run_case(root, "success_full", 0, full=True)
@@ -520,6 +549,30 @@ def selftest() -> int:
         assert "ref" not in startup_meta.get("threads", {}).get("startup_signal", {})
         assert not pathlib.Path(startup_stem + ".argv").exists()
         print("claude replay: startup_signal PASS")
+
+        pre_popen_req = request(root, "startup_pre_popen")
+        pre_popen_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
+                             CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1",
+                             FOREMAN_CLAUDE_STARTUP_DELAY_STAGE="pre_popen")
+        pre_popen_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(pre_popen_req)],
+                                          env=pre_popen_env)
+        pre_popen_stem = str(pre_popen_req)[:-len(".request.json")]
+        pre_popen_argv = pathlib.Path(pre_popen_stem + ".argv")
+        for _ in range(200):
+            if pre_popen_argv.exists():
+                break
+            time.sleep(0.01)
+        assert pre_popen_argv.exists()
+        pre_popen_proc.terminate()
+        assert pre_popen_proc.wait(timeout=5) == 143
+        pre_popen_data = events(pathlib.Path(pre_popen_stem + ".jsonl"))
+        pre_popen_meta = json.loads((root / "meta.json").read_text())
+        assert pre_popen_data[-1]["_foreman"]["rc"] == 143
+        assert pathlib.Path(pre_popen_stem + ".rc").read_text().strip() == "143"
+        assert not pathlib.Path(pre_popen_stem + ".fake-started").exists()
+        assert not pathlib.Path(pre_popen_stem + ".mcp.json").exists()
+        assert "ref" not in pre_popen_meta.get("threads", {}).get("startup_pre_popen", {})
+        print("claude replay: startup_pre_popen_signal PASS")
 
         # 纯函数级配置守卫也放进同一回放入口，避免依赖真实 CLI。
         settings = json.loads(pathlib.Path(str(full_req)[:-len(".request.json")] + ".settings.json").read_text())

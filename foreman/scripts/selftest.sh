@@ -1023,7 +1023,7 @@ manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 
 echo "== claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
+for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal startup_pre_popen_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql command_segments_quoted_redirection deny_rules_no_false_positive deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
   if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
     ok "Claude 回放：${claude_case}"
   else
@@ -1109,7 +1109,15 @@ expect_grep "Claude 非法派发不消费 steer" "--max-turns 必须是正整数
 expect_grep "Claude 非法派发后仍显示 NEXT" "claude.*NEXT" "$F" status 1
 expect_rc "Claude 下一轮消费 steer" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-next --timeout 30 --no-check
 claude_steer_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
-if grep -q '^## 编排者追加说明$' "${claude_steer_req%.request.json}.prompt.md" && grep -q '只使用追加说明' "${claude_steer_req%.request.json}.prompt.md"; then ok "Claude steer 在下轮 prompt 顶部生效"; else bad "Claude steer 未进入下轮 prompt"; fi
+python3 - "${claude_steer_req%.request.json}.prompt.md" <<'PY2' && ok "Claude steer 位于位置块后、任务书前" || bad "Claude steer 与位置块顺序错误"
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert text.startswith("# 本轮位置")
+position_end = text.index("\n\n---\n\n")
+steer = text.index("## 编排者追加说明")
+body = text.index("\ntask\n")
+assert position_end < steer < body and "只使用追加说明" in text[steer:body]
+PY2
 cat > "$T/doctor-claude-user.json" <<'EOF'
 {"mcpServers":{"secret-server":{"type":"http","command":"sentinel-command","url":"https://sentinel-token.example","headers":{"Authorization":"sentinel-token"},"env":{"API_TOKEN":"sentinel-token"}}}}
 EOF
