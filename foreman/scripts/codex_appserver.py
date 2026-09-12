@@ -163,6 +163,7 @@ class AppServer:
         self._q: "queue.Queue[dict | None]" = queue.Queue()
         self._next_id = 1
         self._pending: dict[int, dict] = {}
+        self._orphan_diagnostics = 0
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         self.on_server_request = None   # callable(msg) -> None（必须自己 respond）
@@ -215,20 +216,25 @@ class AppServer:
         """发请求并阻塞等它的响应；等待期间照常分发其它消息。"""
         req_id = self._next_id
         self._next_id += 1
-        self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
+        slot = {"response": None}
+        self._pending[req_id] = slot
         deadline = time.time() + timeout
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                raise ProtocolError(f"{method} 在 {timeout}s 内没有响应")
-            msg = self.next_message(timeout=remaining)
-            if msg is None:
-                raise ProtocolError(f"app-server 在等待 {method} 响应时退出（stdout 关闭）")
-            if msg.get("id") == req_id and "method" not in msg:
-                if "error" in msg:
-                    raise ProtocolError(f"{method} 出错: {json.dumps(msg['error'], ensure_ascii=False)[:800]}")
-                return msg.get("result") or {}
-            self.dispatch(msg)
+        try:
+            self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
+            while slot["response"] is None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise ProtocolError(f"{method} 在 {timeout}s 内没有响应")
+                msg = self.next_message(timeout=remaining)
+                if msg is None:
+                    raise ProtocolError(f"app-server 在等待 {method} 响应时退出（stdout 关闭）")
+                self.dispatch(msg)
+            response = slot["response"]
+            if "error" in response:
+                raise ProtocolError(f"{method} 出错: {json.dumps(response['error'], ensure_ascii=False)[:800]}")
+            return response.get("result") or {}
+        finally:
+            self._pending.pop(req_id, None)
 
     def next_message(self, timeout: float | None):
         """取下一条消息（已落盘）。None = 连接关闭。"""
@@ -244,7 +250,23 @@ class AppServer:
     def dispatch(self, msg: dict):
         if not msg:
             return
-        if "method" in msg and "id" in msg:
+        if "id" in msg and "method" not in msg:
+            slot = self._pending.get(msg.get("id"))
+            reason = None
+            if slot is None:
+                reason = "unknown_id"
+            elif slot["response"] is not None:
+                reason = "duplicate_response"
+            else:
+                slot["response"] = msg
+            if reason:
+                # 不缓存孤儿响应；最多落 32 条明细，随后只落一次抑制标记。
+                self._orphan_diagnostics += 1
+                if self._orphan_diagnostics <= 32:
+                    self.log_event({"_fleet": "orphan_response", "id": msg.get("id"), "reason": reason})
+                elif self._orphan_diagnostics == 33:
+                    self.log_event({"_fleet": "orphan_response_suppressed", "limit": 32})
+        elif "method" in msg and "id" in msg:
             if self.on_server_request:
                 self.on_server_request(msg)
             else:

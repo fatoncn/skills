@@ -69,6 +69,7 @@ class Replay:
             assert record["jsonrpc"] == ["2.0"] * len(record["jsonrpc"]), record
             assert record["codexHome"] == str(home), record
             assert record["inherited"] == [], record
+            record["events"] = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
             return result, record
 
 
@@ -119,7 +120,96 @@ def baseline_request():
     print("fixture baseline: initialize -> protocol 2025-04-01")
 
 
-CASES = [baseline_request]
+def nested_case(outer_first):
+    notice = {"method": "notice", "params": {}}
+    outer = {"id": 1, "result": {"value": "outer"}}
+    inner = {"id": 2, "result": {"value": "inner"}}
+    steps = [{"method": "outer", "emit": []}, {"method": "inner", "emit": []}]
+    if outer_first:
+        steps[0]["emit"] = [{"message": notice}, {"message": outer}]
+        steps[1]["emit"] = [{"message": inner}]
+    else:
+        steps[0]["emit"] = [{"message": notice}]
+        steps[1]["emit"] = [{"message": inner}, {"message": outer}]
+
+    def client(server, bridge):
+        nested = []
+        server.on_notification = lambda msg: nested.append(server.request("inner", {}, 2))
+        result = server.request("outer", {}, 2)
+        assert nested == [{"value": "inner"}]
+        return result
+
+    result, _ = Replay(steps).run(client)
+    assert result == {"value": "outer"}
+    print(f"request routing: {'outer-first' if outer_first else 'inner-first'} PASS")
+
+
+def outer_timeout():
+    replay = Replay([{"method": "outer", "emit": [{"delay": .15, "message": {"id": 1, "result": {}}}]}])
+    def client(server, bridge):
+        try:
+            server.request("outer", {}, .03)
+        except bridge.ProtocolError as exc:
+            assert "没有响应" in str(exc)
+            assert server._pending == {}
+            return "timeout"
+        raise AssertionError("timeout expected")
+    result, _ = replay.run(client)
+    assert result == "timeout"
+    print("request routing: timeout cleanup PASS")
+
+
+def nested_error():
+    steps = [
+        {"method": "outer", "emit": [{"message": {"method": "notice"}}]},
+        {"method": "inner", "emit": [
+            {"message": {"id": 2, "error": {"code": -1, "message": "inner failed"}}},
+            {"message": {"id": 1, "result": {"ok": True}}},
+        ]},
+    ]
+    def client(server, bridge):
+        errors = []
+        def notified(msg):
+            try: server.request("inner", {}, 2)
+            except bridge.ProtocolError as exc: errors.append(str(exc))
+        server.on_notification = notified
+        result = server.request("outer", {}, 2)
+        assert errors and "inner failed" in errors[0]
+        return result
+    result, _ = Replay(steps).run(client)
+    assert result == {"ok": True}
+    print("request routing: nested error PASS")
+
+
+def eof_cleanup():
+    def client(server, bridge):
+        try: server.request("outer", {}, 2)
+        except bridge.ProtocolError as exc:
+            assert "stdout 关闭" in str(exc) and server._pending == {}
+            return "eof"
+        raise AssertionError("EOF expected")
+    result, _ = Replay([{"method": "outer"}]).run(client)
+    assert result == "eof"
+    print("request routing: EOF cleanup PASS")
+
+
+def orphan_diagnostics():
+    emits = [{"message": {"id": 999, "result": {}}},
+             {"message": {"id": 1, "result": {"ok": True}}},
+             {"message": {"id": 1, "result": {"late": True}}}]
+    def client(server, bridge):
+        result = server.request("outer", {}, 2)
+        server.dispatch(server.next_message(1))
+        return result
+    result, record = Replay([{"method": "outer", "emit": emits}]).run(client)
+    assert result == {"ok": True}
+    reasons = [event.get("reason") for event in record["events"] if event.get("_fleet") == "orphan_response"]
+    assert reasons == ["unknown_id", "unknown_id"], reasons
+    print("request routing: unknown/late diagnostic PASS")
+
+
+CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False),
+         outer_timeout, nested_error, eof_cleanup, orphan_diagnostics]
 
 
 def selftest():
