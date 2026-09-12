@@ -21,6 +21,8 @@ import re
 import sys
 import time
 
+from appserver_identity import TurnIdentity
+
 # 越界命令探针：执行器侧靠角色文件（契约）约束，这里做事后检测，双保险。命中只是「需要编排者判断」，项目规则允许的由编排者放行。
 FORBIDDEN = [
     (re.compile(r"\bgit\s+push\b"), "git push"),
@@ -123,6 +125,7 @@ def blank_state() -> dict:
         "in_tokens": 0,
         "out_tokens": 0,
         "cached_tokens": 0,
+        "child_tokens": {},
         "turns": 0,
         "errors": [],
         "tool_errors": [],
@@ -318,6 +321,22 @@ def scan_appserver(events, role=None):
     state = blank_state()
     state["engine"] = "appserver"
     final_phase = None
+    root_thread = next((e.get("threadId") for e in events if e.get("_fleet") == "thread" and e.get("threadId")), None)
+    summary = next((e for e in reversed(events) if e.get("_fleet") == "turn_summary"), {})
+    root_thread = summary.get("threadId") or root_thread
+    root_turn = summary.get("turnId")
+    if not root_turn:
+        for event in events:
+            if event.get("method") == "turn/started":
+                params = event.get("params") or {}
+                if params.get("threadId") == root_thread:
+                    root_turn = (params.get("turn") or {}).get("id") or params.get("turnId")
+                    if root_turn:
+                        break
+    identity = TurnIdentity(root_thread, root_turn)
+    legacy_identity = not (root_thread and root_turn)
+    if legacy_identity:
+        state["notices"].append("旧 app-server 日志缺少根 thread/turn 身份，摘要按旧格式降级，无法排除串台事件")
     for event in events:
         foreman = event.get("_fleet")
         if foreman == "out":
@@ -374,6 +393,7 @@ def scan_appserver(events, role=None):
             state["status"] = event.get("status") or state["status"]
             state["duration_ms"] = event.get("durationMs")
             usage = event.get("tokenUsage") or {}
+            state["child_tokens"] = event.get("childTokenUsage") or {}
             total = usage.get("total") or usage
             if isinstance(total, dict):
                 state["in_tokens"] = _usage_int(total, "inputTokens", "input_tokens")
@@ -389,6 +409,22 @@ def scan_appserver(events, role=None):
         method = event.get("method")
         params = event.get("params") or {}
         if not method:
+            continue
+        scope = "root" if legacy_identity else identity.scope(event)
+        if scope == "root":
+            identity.register_collaboration(event)
+        if method == "turn/started" and scope == "child":
+            identity.observe_child_turn(event)
+        if scope == "child":
+            label = identity.child_label(event) or "subagent"
+            if method == "thread/tokenUsage/updated":
+                state["child_tokens"][label] = params.get("tokenUsage") or {}
+            elif method == "item/completed":
+                item = params.get("item") or {}
+                if item.get("type") == "agentMessage" and item.get("text"):
+                    state["notices"].append(f"{label}: " + stringify(item.get("text"), 120))
+            continue
+        if scope != "root":
             continue
         if method == "thread/started":
             thread = params.get("thread") or {}
@@ -508,6 +544,11 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     if codex_like:
         print(f"tokens: in={state['in_tokens']} (cached {state['cached_tokens']})  out={state['out_tokens']}"
               "   —— ChatGPT 订阅额度计费，无单次美元成本")
+        for label_, usage in state.get("child_tokens", {}).items():
+            total = usage.get("total") or usage
+            if isinstance(total, dict):
+                print(f"tokens[{label_}]: in={_usage_int(total, 'inputTokens', 'input_tokens')}  "
+                      f"out={_usage_int(total, 'outputTokens', 'output_tokens')}")
     else:
         print(f"cost=${state['cost']:.4f}  tokens={state['tokens']}")
 

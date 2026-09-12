@@ -33,6 +33,8 @@ import sys
 import threading
 import time
 
+from appserver_identity import TurnIdentity
+
 CLIENT_NAME = "foreman"
 CLIENT_VERSION = "1.0.0"
 
@@ -488,6 +490,10 @@ class Runner:
         self.final_text = ""
         self.final_phase = None
         self.token_usage = None
+        self.child_token_usage: dict[str, dict] = {}
+        self.identity = TurnIdentity(self.thread_id)
+        self._turn_start_pending = False
+        self._early_notifications: list[dict] = []
         self.declined = 0
         self.questions_asked = 0
         self.interrupt_requested = False
@@ -600,13 +606,33 @@ class Runner:
 
     # ---- 通知 ----
     def handle_notification(self, msg: dict):
+        if self._turn_start_pending:
+            self._early_notifications.append(msg)
+            return
+        self._apply_notification(msg)
+
+    def _apply_notification(self, msg: dict):
         method = msg.get("method")
         params = msg.get("params") or {}
+        scope = self.identity.scope(msg)
+        if scope == "root":
+            self.identity.register_collaboration(msg)
+        if method == "turn/started" and scope == "child":
+            self.identity.observe_child_turn(msg)
+        if scope == "child":
+            label = self.identity.child_label(msg)
+            if method == "thread/tokenUsage/updated":
+                self.child_token_usage[label] = params.get("tokenUsage") or {}
+            if self.server is not None:
+                self.server.log_event({"_fleet": "child_progress", "label": label,
+                                       "threadId": params.get("threadId"), "method": method})
+            return
+        if scope != "root":
+            return
         if method == "turn/completed":
             turn = params.get("turn") or {}
-            if self.turn_id is None or turn.get("id") == self.turn_id:
-                self.turn_status = turn.get("status")
-                self.turn_error = turn.get("error")
+            self.turn_status = turn.get("status")
+            self.turn_error = turn.get("error")
         elif method == "item/completed":
             item = params.get("item") or {}
             if item.get("type") == "agentMessage":
@@ -673,6 +699,7 @@ class Runner:
                                timeout=START_TIMEOUT)
         thread = resp.get("thread") or {}
         self.thread_id = thread.get("id") or self.thread_id
+        self.identity.bind_root(self.thread_id, None)
         # 线程命名：按本机 config.toml 的 codex.thread_name 模板拼好传进来；失败不阻塞
         name = req.get("thread_name")
         # ephemeral 线程（复审）不支持 metadata 更新（实测 -32600 "ephemeral thread does not
@@ -709,8 +736,16 @@ class Runner:
         # sandbox 模式 + 进程级 -c（writable_roots / network_access），与 codex exec 一致、实测可提交。
         if req.get("sandbox_policy") and req.get("force_turn_sandbox_policy"):
             turn_params["sandboxPolicy"] = req["sandbox_policy"]
-        turn = srv.request("turn/start", turn_params, timeout=START_TIMEOUT)
+        self._turn_start_pending = True
+        try:
+            turn = srv.request("turn/start", turn_params, timeout=START_TIMEOUT)
+        finally:
+            self._turn_start_pending = False
         self.turn_id = (turn.get("turn") or {}).get("id")
+        self.identity.bind_root(self.thread_id, self.turn_id)
+        early, self._early_notifications = self._early_notifications, []
+        for notification in early:
+            self._apply_notification(notification)
         self.on_turn_started()
 
         # 主循环：直到我们这一轮 turn/completed
@@ -832,6 +867,7 @@ class Runner:
             "turnId": self.turn_id,
             "error": self.turn_error,
             "tokenUsage": self.token_usage,
+            "childTokenUsage": self.child_token_usage,
             "declinedApprovals": self.declined,
             "questions": self.questions_asked,
             "durationMs": now_ms() - self.started,

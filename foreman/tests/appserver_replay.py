@@ -22,6 +22,9 @@ BRIDGE_PATH = ROOT / "scripts" / "codex_appserver.py"
 
 
 def load_bridge():
+    scripts = str(BRIDGE_PATH.parent)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("foreman_codex_appserver", BRIDGE_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -208,8 +211,121 @@ def orphan_diagnostics():
     print("request routing: unknown/late diagnostic PASS")
 
 
+def turn_event(method, thread, turn, **extra):
+    params = {"threadId": thread, **extra}
+    if method.startswith("turn/"):
+        params["turn"] = {"id": turn, "status": extra.pop("status", "inProgress")}
+    else:
+        params["turnId"] = turn
+    return {"method": method, "params": params}
+
+
+def run_turn(events, expect_error=False):
+    response = {"$requestId": True, "result": {"turn": {"id": "root-turn"}}}
+    step = {"method": "turn/start", "emit": [{"message": event} for event in events] + [{"message": response}]}
+    def client(server, bridge):
+        runner = bridge.Runner({"thread_id": "root-thread", "prompt": "fixture"})
+        runner.server = server
+        server.on_notification = runner.handle_notification
+        try:
+            rc = runner.turn()
+            if expect_error:
+                raise AssertionError("ProtocolError expected")
+            return runner, rc
+        except bridge.ProtocolError:
+            if not expect_error:
+                raise
+            return runner, None
+    return Replay([step]).run(client)[0]
+
+
+def root_final_then_child_final():
+    collab = turn_event("item/completed", "root-thread", "root-turn", item={
+        "type": "collabAgentToolCall", "receiverThreadIds": ["child-thread"]})
+    root_final = turn_event("item/completed", "root-thread", "root-turn",
+                            item={"type": "agentMessage", "phase": "final_answer", "text": "ROOT"})
+    child_final = turn_event("item/completed", "child-thread", "child-turn",
+                             item={"type": "agentMessage", "phase": "final_answer", "text": "CHILD"})
+    child_tokens = turn_event("thread/tokenUsage/updated", "child-thread", "child-turn",
+                              tokenUsage={"total": {"inputTokens": 3, "outputTokens": 2}})
+    completed = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    runner, rc = run_turn([collab, root_final, child_final, child_tokens, completed])
+    assert rc == 0 and runner.final_text == "ROOT"
+    assert runner.token_usage is None and runner.child_token_usage["subagent-1"]["total"]["inputTokens"] == 3
+    print("turn identity: root final survives child final PASS")
+
+
+def old_turn_is_ignored():
+    old = turn_event("item/completed", "root-thread", "old-turn",
+                     item={"type": "agentMessage", "phase": "final_answer", "text": "OLD"})
+    root = turn_event("item/completed", "root-thread", "root-turn",
+                      item={"type": "agentMessage", "phase": "final_answer", "text": "ROOT"})
+    completed = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    runner, rc = run_turn([old, root, completed])
+    assert rc == 0 and runner.final_text == "ROOT"
+    print("turn identity: stale turn ignored PASS")
+
+
+def child_completion_is_not_root_completion():
+    collab = turn_event("item/completed", "root-thread", "root-turn", item={
+        "type": "collabAgentToolCall", "receiverThreadIds": ["child-thread"]})
+    child_done = turn_event("turn/completed", "child-thread", "child-turn", status="completed")
+    root_done = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    runner, rc = run_turn([collab, child_done, root_done])
+    assert rc == 0 and runner.turn_status == "completed"
+    print("turn identity: child completion does not settle root PASS")
+
+
+def pre_response_notifications_replayed():
+    final = turn_event("item/completed", "root-thread", "root-turn",
+                       item={"type": "agentMessage", "phase": "final_answer", "text": "EARLY ROOT"})
+    completed = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    runner, rc = run_turn([final, completed])
+    assert rc == 0 and runner.final_text == "EARLY ROOT"
+    print("turn identity: pre-response notifications replayed PASS")
+
+
+def no_root_completion_is_not_inferred():
+    final = turn_event("item/completed", "root-thread", "root-turn",
+                       item={"type": "agentMessage", "phase": "final_answer", "text": "ROOT"})
+    runner, rc = run_turn([final], expect_error=True)
+    assert rc is None and runner.turn_status is None and runner.final_text == "ROOT"
+    print("turn identity: no inferred root completion PASS")
+
+
+def summary_uses_same_identity_rules():
+    spec = importlib.util.spec_from_file_location("foreman_summarize", ROOT / "scripts" / "summarize.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    events = [
+        {"_fleet": "thread", "threadId": "root-thread"},
+        turn_event("item/completed", "root-thread", "root-turn", item={
+            "type": "collabAgentToolCall", "receiverThreadIds": ["child-thread"]}),
+        turn_event("item/completed", "child-thread", "child-turn", item={
+            "type": "agentMessage", "phase": "final_answer", "text": "CHILD"}),
+        turn_event("item/completed", "root-thread", "old-turn", item={
+            "type": "agentMessage", "phase": "final_answer", "text": "OLD"}),
+        turn_event("item/completed", "root-thread", "root-turn", item={
+            "type": "agentMessage", "phase": "final_answer", "text": "ROOT"}),
+        turn_event("turn/completed", "child-thread", "child-turn", status="completed"),
+        turn_event("turn/completed", "root-thread", "root-turn", status="completed"),
+        {"_fleet": "turn_summary", "threadId": "root-thread", "turnId": "root-turn",
+         "status": "completed", "childTokenUsage": {"subagent-1": {"total": {"inputTokens": 3}}}},
+    ]
+    state = module.scan_appserver(events)
+    assert state["settled"] and state["final"] == "ROOT"
+    assert state["child_tokens"]["subagent-1"]["total"]["inputTokens"] == 3
+    legacy = module.scan_appserver([{"method": "turn/completed", "params": {"turn": {"status": "completed"}}}])
+    assert any("旧 app-server 日志" in note for note in legacy["notices"])
+    print("turn identity: summarize strict + legacy downgrade PASS")
+
+
 CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False),
-         outer_timeout, nested_error, eof_cleanup, orphan_diagnostics]
+         outer_timeout, nested_error, eof_cleanup, orphan_diagnostics,
+         root_final_then_child_final, old_turn_is_ignored, child_completion_is_not_root_completion,
+         pre_response_notifications_replayed, no_root_completion_is_not_inferred,
+         summary_uses_same_identity_rules]
 
 
 def selftest():
