@@ -1,4 +1,4 @@
-{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-bypass","role":"implement","model":"sonnet","effort":"medium","permission_mode":"bypassPermissions","started_at":"2026-09-12T00:00:00Z"}}
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-bypass","role":"implement","model":"sonnet","effort":"medium","permission_mode":"bypassPermissions","started_at":"2026-09-12T00:00:00Z","cwd":"/workspace/project","work_dir":"/workspace/project/worktree","writable_roots":["/workspace/project/shared"]}}
 {"type":"assistant","uuid":"bypass-final","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"bypass final"}]}}
 {"type":"result","subtype":"success","is_error":false,"session_id":"session-bypass","usage":{},"total_cost_usd":0,"permission_denials":[]}
 {"_foreman":{"type":"turn_summary","rc":0,"raw_rc":0,"subtype":"success","terminal_reason":"result","session_id":"session-bypass","usage":{},"total_cost_usd":0,"cost_basis":"estimate","ended_at":"2026-09-12T00:00:01Z"}}

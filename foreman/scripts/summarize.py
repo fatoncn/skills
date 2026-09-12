@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 
 from appserver_identity import TurnIdentity
 from check_state import check_result
@@ -139,7 +140,10 @@ def blank_state() -> dict:
         "tool_calls": 0,
         "web_searches": 0,
         "files": [],
+        "cwd": None,
         "work_dir": None,
+        "writable_roots": [],
+        "writable_extra": [],
         "notices": [],
         "final": "",
         "duration_ms": None,
@@ -165,6 +169,11 @@ def _extra_writable_roots(log_path):
 
 def _inside(real, root):
     return real == root or real.startswith(root + os.sep)
+
+
+def _writable_roots(state, log_path):
+    roots = list(state.get("writable_roots") or []) + _extra_writable_roots(log_path)
+    return [os.path.realpath(root) for root in roots if isinstance(root, str) and root]
 
 
 def _files_outside_work_dir(state):
@@ -484,7 +493,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
         print(f"!! 空日志: {log_path}")
         return 1
     state = scan(events, engine, role)
-    state["writable_extra"] = _extra_writable_roots(log_path)
+    state["writable_extra"] = _writable_roots(state, log_path)
     visible_files = _visible_changed_files(state)
     final_command_errors = [result for result in state["command_results"].values()
                             if result["status"] in ("failed", "declined") or result["exit"] not in (0, None)]
@@ -621,7 +630,7 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     if state["questions"]:
         print("\n--- 执行者的提问 ---")
         for q in state["questions"]:
-            print(f"  ? {stringify(q, 300)}")
+            print(f"  ? {stringify(q, 300) if eng == 'claude' else q}")
 
     if state["tool_errors"]:
         print("\n--- 其它工具失败明细（最多 10 条）---")
@@ -746,12 +755,24 @@ def _event_time(event):
     return value
 
 
+def _claude_started_at(events):
+    if not is_claude(events):
+        return None
+    raw = (events[0].get("_foreman") or {}).get("started_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def progress(log_path, state_path, label, status, progress_seconds, now=None, engine=None):
     """输出 wait 的零或多条单行进展，并把跨轮询状态写入临时文件。"""
     now = float(now if now is not None else time.time())
     events = load(log_path) if os.path.isfile(log_path) else []
     scanned = scan(events, engine)
-    scanned["writable_extra"] = _extra_writable_roots(log_path)
+    scanned["writable_extra"] = _writable_roots(scanned, log_path)
     rows = event_rows(events, engine)
     last = _one_line(rows[-1] if rows else "尚无事件")
     stem = log_path[:-len(".jsonl")] if log_path.endswith(".jsonl") else log_path
@@ -770,7 +791,8 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None, en
 
     active_status = status in ("RUNNING", "QUEUED", "WAITING", "CHECKING")
     event_times = [value for value in (_event_time(event) for event in events) if value is not None]
-    execution_started_at = min(event_times) if event_times else None
+    execution_started_at = (_claude_started_at(events) if scanned["engine"] == "claude"
+                            else (min(event_times) if event_times else None))
     active = {}
     known_active = (prior or {}).get("active_commands") or {}
     last_event_at = started

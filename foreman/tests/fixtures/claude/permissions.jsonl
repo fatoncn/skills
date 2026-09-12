@@ -1,4 +1,4 @@
-{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-permissions","role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-permissions","role":"implement","model":"sonnet","effort":"medium","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z","cwd":"/workspace/project","work_dir":"/workspace/project/worktree","writable_roots":["/workspace/project/shared"]}}
 {"_foreman":{"type":"permission","tool":"Read","decision":"allow","reason":"read only","input_digest":"digest-allow"}}
 {"_foreman":{"type":"permission","tool":"Bash","decision":"ask","reason":"needs classification","input_digest":"digest-ask"}}
 {"_foreman":{"type":"permission","tool":"Bash","decision":"deny","reason":"forbidden","input_digest":"digest-deny"}}

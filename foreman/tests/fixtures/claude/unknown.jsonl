@@ -1,4 +1,4 @@
-{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-unknown","role":"research","model":"sonnet","effort":"xhigh","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z"}}
+{"_foreman":{"engine":"claude","cli_version":"2.1.268","session_id":"session-unknown","role":"research","model":"sonnet","effort":"xhigh","permission_mode":"auto","started_at":"2026-09-12T00:00:00Z","cwd":"/workspace/project","work_dir":"/workspace/project/worktree","writable_roots":["/workspace/project/shared"]}}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":123}}
 {"type":"future_event","payload":{"safe":"value"}}
 {"type":"future_event","payload":{"safe":"again"}}

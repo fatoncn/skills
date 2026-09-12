@@ -6,7 +6,12 @@ import json
 
 
 KNOWN_TYPES = {"system", "assistant", "user", "result", "stream_event", "rate_limit_event"}
-FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+FILE_TOOL_PATHS = {
+    "Write": "file_path",
+    "Edit": "file_path",
+    "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+}
 
 
 def _stringify(value, limit=600):
@@ -38,13 +43,7 @@ def _content(message):
 
 def _message_id(event):
     message = event.get("message") or {}
-    return event.get("uuid") or message.get("id")
-
-
-def _stream_message_id(event):
-    inner = event.get("event") or {}
-    message = inner.get("message") or {}
-    return event.get("uuid") or inner.get("message_id") or message.get("id")
+    return message.get("id")
 
 
 def _turn_summary(event):
@@ -69,6 +68,9 @@ def scan_claude(events, state, probe_forbidden, role=None):
     state["model"] = marker.get("model")
     state["effort"] = marker.get("effort")
     state["permission_mode"] = marker.get("permission_mode")
+    state["cwd"] = marker.get("cwd")
+    state["work_dir"] = marker.get("work_dir")
+    state["writable_roots"] = marker.get("writable_roots") or []
     state["cost_basis"] = "estimate"
     state["claude_meta"] = {"marker": marker, "turn_summary": {}}
     role = role or marker.get("role")
@@ -78,7 +80,7 @@ def scan_claude(events, state, probe_forbidden, role=None):
     final_order = []
     unknown = {}
     permission_denials = []
-    current_stream_mid = None
+    current_stream_mid = {}
 
     for event in events[1:] if is_claude(events) else events:
         fm = event.get("_foreman")
@@ -113,7 +115,9 @@ def scan_claude(events, state, probe_forbidden, role=None):
                 state["errors"].append("system: " + _stringify(event.get("error") or event.get("message") or subtype, 800))
         elif kind == "assistant":
             message = event.get("message") or {}
-            mid = _message_id(event) or f"assistant-{len(final_order)}"
+            lane = parent or "root"
+            mid = _message_id(event) or f"assistant-{lane}-{len(final_order)}"
+            key = (lane, mid)
             texts = []
             for block in _content(message):
                 btype = block.get("type")
@@ -126,22 +130,26 @@ def scan_claude(events, state, probe_forbidden, role=None):
                     if name == "Bash":
                         command = args.get("command") if isinstance(args, dict) else args
                         probe_forbidden(state, str(command or ""), _stringify(args, 300), role)
-                    if name in FILE_TOOLS and isinstance(args, dict) and args.get("file_path"):
-                        state["files"].append((name, args["file_path"]))
+                    path_key = FILE_TOOL_PATHS.get(name)
+                    if path_key and isinstance(args, dict) and args.get(path_key):
+                        state["files"].append((name, args[path_key]))
             if not parent and texts:
-                assistant_text[mid] = "\n".join(texts).strip()
-                final_order.append(mid)
+                assistant_text[key] = "\n".join(texts).strip()
+                final_order.append(key)
             state["model"] = message.get("model") or state["model"]
         elif kind == "stream_event":
             inner = event.get("event") or {}
+            lane = parent or "root"
             if inner.get("type") == "message_start":
-                current_stream_mid = (inner.get("message") or {}).get("id") or _stream_message_id(event)
+                current_stream_mid[lane] = (inner.get("message") or {}).get("id")
                 continue
             delta = inner.get("delta") or {}
-            if not parent and inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
-                mid = _stream_message_id(event) or current_stream_mid or "stream"
-                stream_text[mid] = stream_text.get(mid, "") + str(delta.get("text") or "")
-                final_order.append(mid)
+            if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+                mid = current_stream_mid.get(lane) or f"stream-{lane}"
+                key = (lane, mid)
+                stream_text[key] = stream_text.get(key, "") + str(delta.get("text") or "")
+                if not parent:
+                    final_order.append(key)
         elif kind == "user":
             for block in _content(event.get("message") or {}):
                 if block.get("type") == "tool_result" and block.get("is_error"):

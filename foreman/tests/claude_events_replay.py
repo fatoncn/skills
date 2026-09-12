@@ -41,6 +41,9 @@ def golden_checks():
         path = GOLDEN / f"{engine}.jsonl"
         check(f"golden {engine} report",
               capture(summarize.report, str(path), None) == (GOLDEN / f"{engine}.report.txt").read_text())
+        if engine == "appserver":
+            report = capture(summarize.report, str(path), None)
+            check("golden appserver 长提问不二次截断", "…(+100)" in report and "…(+7)" not in report)
         rows = "".join(row + "\n" for row in summarize.event_rows(summarize.load(str(path))))
         check(f"golden {engine} event_rows", rows == (GOLDEN / f"{engine}.event_rows.txt").read_text())
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,7 +69,11 @@ def selftest():
           and state["turns"] == 1 and state["settled"] and state["status"] == "success")
     check("result usage 与估算成本", (state["in_tokens"], state["cached_tokens"], state["out_tokens"], state["tokens"])
           == (10, 5, 4, 19) and state["cost"] == 0.0123)
-    check("工具与文件归并", state["tool_calls"] == 2 and state["files"] == [("Write", "/workspace/result.txt")])
+    check("工具与文件归并", state["tool_calls"] == 2
+          and state["files"] == [("Write", "/workspace/project/worktree/result.txt")])
+    check("首行目录契约进入 state", state["cwd"] == "/workspace/project"
+          and state["work_dir"] == "/workspace/project/worktree"
+          and state["writable_roots"] == ["/workspace/project/shared"])
     check("成功 final 与 meta", state["final"] == "success final" and state["cost_basis"] == "estimate"
           and state["claude_meta"]["turn_summary"]["cost_basis"] == "estimate")
     rows = summarize.event_rows(success_events)
@@ -93,8 +100,8 @@ def selftest():
           and child["tool_calls"] == 1)
 
     stream = summarize.scan(load("stream_dedupe.jsonl"))
-    check("stream 与 assistant 按 UUID 去重", stream["final"] == "same final"
-          and stream["final"].count("same final") == 1)
+    check("真实多片段 stream 与完整 assistant 按 message id 去重", stream["final"] == "SECOND_FINAL"
+          and stream["final"].count("SECOND_FINAL") == 1 and stream["tokens"] == 26752)
 
     questions = summarize.scan(load("questions.jsonl"))["questions"]
     check("提问 asked/answered/timeout", questions == [
@@ -106,8 +113,23 @@ def selftest():
 
     interrupted = summarize.scan(load("rc143.jsonl"))
     interrupted_report = capture(summarize.report, str(CLAUDE / "rc143.jsonl"), None)
-    check("rc143 跨消息保留增量 partial 与 raw_rc", interrupted["final"] == "interrupted partial"
+    check("真实多片段中断只靠 stream 仍保留 final", interrupted["final"] == "SECOND_FINAL"
           and not interrupted["settled"] and "raw_rc=143" in interrupted_report)
+
+    notebook = summarize.scan(load("notebook_edit.jsonl"))
+    check("NotebookEdit 使用 notebook_path", notebook["files"]
+          == [("NotebookEdit", "/workspace/project/worktree/analysis.ipynb")])
+
+    outside_report = capture(summarize.report, str(CLAUDE / "outside_write.jsonl"), None)
+    check("Claude Write 到 work_dir 外触发目录探针", "工作目录之外的改动" in outside_report
+          and "/workspace/project/outside.txt" in outside_report)
+
+    missing_marker_fields = json.loads(json.dumps(success_events))
+    for key in ("cwd", "work_dir", "writable_roots"):
+        missing_marker_fields[0]["_foreman"].pop(key)
+    missing = summarize.scan(missing_marker_fields)
+    check("首行目录字段缺失保持 None/空列表", missing["cwd"] is None and missing["work_dir"] is None
+          and missing["writable_roots"] == [])
 
     bypass_report = capture(summarize.report, str(CLAUDE / "bypass.jsonl"), None)
     check("bypass !FULL 横幅", "!FULL ⚠ 本轮使用完全权限（无沙箱、无审批）" in bypass_report
@@ -137,13 +159,19 @@ def selftest():
     with tempfile.TemporaryDirectory() as tmp:
         log = pathlib.Path(tmp) / "run.jsonl"
         shutil.copyfile(CLAUDE / "success.jsonl", log)
-        log.with_suffix(".started").write_text("1000")
+        marker_started = summarize._claude_started_at(success_events)
+        assert marker_started is not None
+        log.with_suffix(".started").write_text(str(marker_started - 10))
         log.with_suffix(".timeout").write_text("3600")
         progress_state = pathlib.Path(tmp) / "progress.state"
-        assert summarize.progress(str(log), str(progress_state), "claude run", "RUNNING", 300, 1000) == []
-        output = summarize.progress(str(log), str(progress_state), "claude run", "DONE", 300, 1301)
-        check("claude progress 共用状态契约", len(output) == 1 and "tokens 19" in output[0]
-              and "最后：[turn_summary]" in output[0])
+        assert summarize.progress(str(log), str(progress_state), "claude run", "RUNNING", 300,
+                                  marker_started) == []
+        initial_state = json.loads(progress_state.read_text())
+        output = summarize.progress(str(log), str(progress_state), "claude run", "DONE", 300,
+                                    marker_started + 301)
+        check("Claude progress 用 started_at 计算预算", initial_state["execution_started_at"] == marker_started
+              and len(output) == 1 and "tokens 19" in output[0] and "距 run --timeout 54m59s" in output[0]
+              and "排队中" not in output[0] and "最后：[turn_summary]" in output[0])
 
     with tempfile.TemporaryDirectory() as tmp:
         log = pathlib.Path(tmp) / "unmarked.jsonl"
