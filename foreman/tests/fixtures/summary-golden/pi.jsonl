@@ -1,0 +1,4 @@
+{"type":"session","id":"session-pi-golden","timestamp":1000}
+{"type":"message_end","message":{"role":"assistant","model":"pi-test","content":[{"type":"text","text":"pi golden final"}],"usage":{"totalTokens":9,"cost":{"total":0.0123}}},"timestamp":1001}
+{"type":"turn_end","timestamp":1002}
+{"type":"agent_settled","timestamp":1003}

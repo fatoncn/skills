@@ -1,0 +1,8 @@
+=== appserver run 摘要 · appserver.jsonl ===
+thread=thread-appserver-golden  model=gpt-test  effort=medium  turns=1  tools=0  files=0  用时=3s
+tokens: root in=10 (cached 4)  root out=5  total=15   —— ChatGPT 订阅额度计费，无单次美元成本
+
+状态: 正常收尾，无工具错误，无越界探针命中，无审批请求，无提问
+
+--- appserver 的交付报告（最后一条消息）---
+app-server golden final

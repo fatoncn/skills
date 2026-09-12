@@ -1,0 +1,6 @@
+{"_fleet":"thread","threadId":"thread-appserver-golden","model":"gpt-test","reasoningEffort":"medium","cwd":"/workspace/project","workDir":"/workspace/project"}
+{"method":"turn/started","params":{"threadId":"thread-appserver-golden","turn":{"id":"turn-appserver-golden","status":"inProgress"}},"emittedAtMs":1000000}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-appserver-golden","text":"app-server golden final","phase":"final_answer"},"threadId":"thread-appserver-golden","turnId":"turn-appserver-golden"},"emittedAtMs":1001000}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-appserver-golden","turnId":"turn-appserver-golden","tokenUsage":{"total":{"totalTokens":15,"inputTokens":10,"cachedInputTokens":4,"outputTokens":5}}},"emittedAtMs":1002000}
+{"method":"turn/completed","params":{"threadId":"thread-appserver-golden","turn":{"id":"turn-appserver-golden","status":"completed"}},"emittedAtMs":1003000}
+{"_fleet":"turn_summary","rc":0,"status":"completed","threadId":"thread-appserver-golden","turnId":"turn-appserver-golden","tokenUsage":{"total":{"totalTokens":15,"inputTokens":10,"cachedInputTokens":4,"outputTokens":5}},"durationMs":3000}

@@ -1,0 +1,8 @@
+=== pi run 摘要 · pi.jsonl ===
+session=session-pi-golden  model=pi-test  turns=1  tools=0
+cost=$0.0123  tokens=9
+
+状态: 正常收尾，无工具错误，无越界探针命中，无审批请求，无提问
+
+--- pi 的交付报告（最后一条消息）---
+pi golden final
