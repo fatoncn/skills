@@ -1,1 +1,1 @@
-进展 appserver golden：用时 5m01s，距 run --timeout 排队中，未开始计执行预算，新增事件 0，最后：[turn/completed] completed，运行中命令：无，改动文件 0，tokens 15
+进展 appserver golden：用时 5m01s，距 run --timeout 54m59s，新增事件 0，最后：[turn/completed] completed，运行中命令：无，改动文件 0，tokens 533482

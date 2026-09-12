@@ -1,3 +1,7 @@
-[turn/started] {"threadId": "thread-appserver-golden", "turn": {"id": "turn-appserver-golden", "status": "inProgress"}}
-💬 app-server golden final
+[steer_requeued] {"text": "turn 结束后的引导：请输出探测词，然后结束", "at": 1789143211884, "fromRun": null, "run": 4, "title": "引导转排队"}
+[thread/status/changed] {"threadId": "thread-real-sanitized", "status": {"type": "active", "activeFlags": []}}
+[turn/started] {"threadId": "thread-real-sanitized", "turn": {"id": "turn-real-sanitized", "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": null, "start…(+60)
+[userMessage]
+💬 probe-output
+[thread/status/changed] {"threadId": "thread-real-sanitized", "status": {"type": "idle"}}
 [turn/completed] completed
