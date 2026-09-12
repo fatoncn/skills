@@ -398,13 +398,21 @@ def child_second_turn_is_tracked():
                          tokenUsage={"total": {"inputTokens": 7, "outputTokens": 4}}),
               turn_event("item/completed", "child-thread", "c2",
                          item={"type": "agentMessage", "text": "C2"}),
+              turn_event("turn/started", "child-thread", "c1"),
+              turn_event("turn/completed", "child-thread", "c1", status="completed"),
               turn_event("thread/tokenUsage/updated", "child-thread", "c1",
                          tokenUsage={"total": {"inputTokens": 99}}),
               turn_event("turn/completed", "root-thread", "root-turn", status="completed")]
-    runner, rc = run_turn(events)
+    message_scope = []
+    def observer(runner, message):
+        item = (message.get("params") or {}).get("item") or {}
+        if item.get("text") == "C2":
+            message_scope.append(runner.identity.scope(message))
+    runner, rc = run_turn(events, pre_response=False, observer=observer)
     assert rc == 0
     assert runner.child_token_usage["subagent-1"]["total"]["inputTokens"] == 7
     assert runner.identity.children["child-thread"]["turn"] == "c2"
+    assert message_scope == ["child"]
     print("turn identity: child second turn tracked PASS")
 
 

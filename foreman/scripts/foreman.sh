@@ -694,6 +694,7 @@ exec_call() {
   fi
   pid=$!
   printf '%s' "$pid" > "$f.pid"
+  [ -n "${DISPATCH_STEM:-}" ] && DISPATCHED=1
   watchdog "$pid" "$timeout" >/dev/null 2>&1 &
   wd=$!
   wait "$pid" || rc=$?
@@ -791,6 +792,7 @@ PY
   fi
   [ -n "$bpid" ] || bpid="$(cat "$hd/bridge.pid" 2>/dev/null || true)"
   printf '%s' "$bpid" > "$dir/run-$n.pid"
+  [ -n "${DISPATCH_STEM:-}" ] && DISPATCHED=1
   unlock_runs
   if [ -n "$active_n" ]; then
     echo "线程「${tname}」正在跑 run #${active_n}，这一轮 run #${n} 排队；要立刻纠偏：foreman steer ${issue} --from-queue ${n} --thread ${tname}"
@@ -836,6 +838,7 @@ try: os.setsid()
 except OSError: pass
 os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$dir" "$kind" "$n" </dev/null >/dev/null 2>&1 &
   printf '%s' "$!" > "$dir/$kind-$n.pid"
+  [ -n "${DISPATCH_STEM:-}" ] && DISPATCHED=1
   mark_dispatched "$dir/$kind-$n"
   disown >/dev/null 2>&1 || true
   echo "==> $kind #$n 已在后台启动（$dir/$kind-$n.jsonl 持续写入）"
@@ -1207,6 +1210,8 @@ EOF
     codex) hold_alive "$(hold_dir "$dir" "$tname")" || require_concurrency_slot ;;
     codex-exec) require_concurrency_slot ;;
   esac
+  DISPATCH_STEM="$dir/run-$n"; DISPATCHED=0
+  trap '[ "${DISPATCHED:-1}" -eq 1 ] || cleanup_failed_dispatch "${DISPATCH_STEM:-}"' EXIT
   start_auto_check "$dir" run "$n" "$wt"
   if [ "$engine" = "codex" ]; then
     hold_dispatch "$issue" "$dir" "$n" "$tname" "$detach" "$timeout"
@@ -1214,6 +1219,7 @@ EOF
     unlock_runs
     launch_call "$issue" "$dir" run "$n" "$detach"
   fi
+  DISPATCHED=1; DISPATCH_STEM=""; trap - EXIT
   if [ "$detach" -eq 0 ]; then
     wait_auto_check "$dir/run-$n"
     [ "$engine" = "codex-exec" ] && capture_exec_thread "$issue" "$tname" "$dir/run-$n.jsonl"
@@ -1622,7 +1628,7 @@ EOF
   fi
   [ ${#cmds[@]} -gt 0 ] || die "check: 没有验收命令（foreman.toml 的 verify.commands 为空且当前仓库 package.json 没有 type-check / lint），请显式给命令"
   local dir out failed=0
-  dir="$(issue_dir "$issue")"; out="$dir/check-$(date +%Y%m%dT%H%M%S)-$$.log"
+  dir="$(issue_dir "$issue")"; out="$dir/check-${FOREMAN_CHECK_LOG_STAMP:-$(date +%Y%m%dT%H%M%S)}-$$.log"
   run_check_commands "$wt" "$out" "${cmds[@]}" || failed=$?
   echo; echo "完整输出: $out"
   [ "$failed" -eq 0 ] && echo "RESULT: ALL PASS" || echo "RESULT: FAIL"
@@ -1646,7 +1652,7 @@ auto_check_wait() { # <dir> <kind> <n> <worktree>
   auto_check_cleanup() {
     local worker_rc=$? target="${AUTO_CHECK_F:-}"
     [ -n "$target" ] || return 0
-    if [ ! -f "$target.check.rc" ] && ! grep -qE '^(SKIPPED|UNCONFIGURED|FAILED):?' "$target.check.status" 2>/dev/null; then
+    if [ ! -f "$target.check.rc" ] && ! grep -qE '^(SKIPPED|UNCONFIGURED|FAILED)(:|$)' "$target.check.status" 2>/dev/null; then
       printf 'FAILED: check worker 异常退出 rc=%s' "$worker_rc" > "$target.check.status"
       printf '\ncheck worker 异常退出 rc=%s\n' "$worker_rc" >> "$target.check.log"
     fi
@@ -1657,6 +1663,7 @@ auto_check_wait() { # <dir> <kind> <n> <worktree>
   printf '%s' "$$" > "$f.check.pid"
   while :; do
     rc="$(cat "$f.rc" 2>/dev/null || true)"
+    rc="$(printf '%s' "$rc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     case "$rc" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
   done
   if [ "$rc" != 0 ]; then printf 'SKIPPED: 执行体 rc=%s' "$rc" > "$f.check.status"; rm -f "$f.check.pending"; return 0; fi
@@ -1673,9 +1680,22 @@ start_auto_check() { # <dir> <kind> <n> <worktree>
   python3 -c 'import os,sys
 try: os.setsid()
 except OSError: pass
-os.execvp(sys.argv[1],sys.argv[1:])' bash "$SCRIPT_PATH" __auto_check "$1" "$2" "$3" "$4" </dev/null >>"$f.check.log" 2>&1 &
+os.execvp(sys.argv[1],sys.argv[1:])' bash "$SCRIPT_PATH" __auto_check "$1" "$2" "$3" "$4" </dev/null >>"$f.check.log" 2>&1 9>&- &
   worker=$!; printf '%s' "$worker" > "$f.check.pid"
   disown >/dev/null 2>&1 || true
+}
+
+cleanup_failed_dispatch() { # <stem>
+  local f="$1" pid i
+  [ -n "$f" ] || return 0
+  pid="$(cat "$f.check.pid" 2>/dev/null || true)"
+  case "$pid" in ''|*[!0-9]*) ;; *)
+    kill -TERM "$pid" 2>/dev/null || true
+    for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep .05; done
+    kill -KILL "$pid" 2>/dev/null || true
+  ;; esac
+  rm -f "$f.check.pid" "$f.check.pending"
+  printf 'FAILED: 派发失败' > "$f.check.status"
 }
 
 wait_auto_check() { while [ "$(call_state "$1")" = CHECKING ]; do sleep 1; done; }
@@ -1684,20 +1704,28 @@ check_state() { # <stem>: TERMINAL / PENDING_RUN / CHECKING / WORKER_GONE
   [ -f "$f.check.pending" ] || { printf TERMINAL; return; }
   [ ! -f "$f.check.rc" ] || { printf TERMINAL; return; }
   status="$(cat "$f.check.status" 2>/dev/null || true)"
-  case "$status" in SKIPPED*|UNCONFIGURED*|FAILED*) printf TERMINAL; return ;; esac
+  status="$(printf '%s' "$status" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$status" in SKIPPED|SKIPPED:*|UNCONFIGURED|UNCONFIGURED:*|FAILED|FAILED:*) printf TERMINAL; return ;; esac
   rc="$(cat "$f.rc" 2>/dev/null || true)"
+  rc="$(printf '%s' "$rc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   case "$rc" in ''|*[!0-9]*) printf PENDING_RUN; return ;; esac
   [ "$rc" = 0 ] || { printf TERMINAL; return; }
   pid="$(cat "$f.check.pid" 2>/dev/null || true)"
+  pid="$(printf '%s' "$pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then printf CHECKING; else printf WORKER_GONE; fi
 }
 check_result() {
-  local f="$1" status phase; phase="$(check_state "$f")"
+  local f="$1" status phase check_rc; phase="$(check_state "$f")"
   [ "$phase" = CHECKING ] && { printf '中'; return; }
   [ "$phase" = WORKER_GONE ] && { printf 'FAIL（worker 消失）'; return; }
-  if [ -f "$f.check.rc" ]; then [ "$(cat "$f.check.rc")" = 0 ] && printf PASS || printf FAIL; return; fi
+  if [ -f "$f.check.rc" ]; then
+    check_rc="$(cat "$f.check.rc" 2>/dev/null || true)"
+    check_rc="$(printf '%s' "$check_rc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ "$check_rc" = 0 ] && printf PASS || printf FAIL; return
+  fi
   status="$(cat "$f.check.status" 2>/dev/null || true)"
-  case "$status" in UNCONFIGURED) printf '未配置' ;; SKIPPED*) printf '跳过' ;; FAILED*) printf FAIL ;; *) [ -f "$f.rc" ] && printf '跳过' || printf '—' ;; esac
+  status="$(printf '%s' "$status" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$status" in UNCONFIGURED|UNCONFIGURED:*) printf '未配置' ;; SKIPPED|SKIPPED:*) printf '跳过' ;; FAILED|FAILED:*) printf FAIL ;; *) [ -f "$f.rc" ] && printf '跳过' || printf '—' ;; esac
 }
 print_check_report() {
   local f="$1" result; result="$(check_result "$f")"
@@ -2352,6 +2380,8 @@ case "$sub" in
   __exec)    MAIN_REPO="$1"; shift; exec_call "$@" ;;
   __auto_check) auto_check_wait "$@" ;;
   __start_auto_check) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; start_auto_check "$@" ;;
+  __cleanup_failed_dispatch) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; cleanup_failed_dispatch "$@" ;;
+  __check_state) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; check_state "$@" ;;
   __call_state) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; call_state "$@" ;;
   __check_report) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; print_check_report "$@" ;;
   __check_result) [ "${FOREMAN_SELFTEST:-}" = 1 ] || die "内部自测命令"; check_result "$@" ;;

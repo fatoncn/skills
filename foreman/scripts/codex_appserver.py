@@ -37,6 +37,7 @@ _SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 from appserver_identity import TurnIdentity
+from check_state import check_state
 
 CLIENT_NAME = "foreman"
 CLIENT_VERSION = "1.0.0"
@@ -320,41 +321,12 @@ def write_json(path, value):
         tmp.unlink(missing_ok=True)
 
 
-def check_state(prefix):
-    """与 shell call_state/check_result 相同的自动 check 占用口径。"""
-    prefix = Path(prefix)
-    pending = Path(str(prefix) + ".check.pending")
-    if not pending.exists():
-        return "TERMINAL"
-    if Path(str(prefix) + ".check.rc").exists():
-        return "TERMINAL"
-    try:
-        status = Path(str(prefix) + ".check.status").read_text().strip()
-    except OSError:
-        status = ""
-    if re.match(r"^(SKIPPED|UNCONFIGURED|FAILED)(?::|$)", status):
-        return "TERMINAL"
-    rc_path = Path(str(prefix) + ".rc")
-    try:
-        rc = rc_path.read_text().strip()
-    except OSError:
-        return "PENDING_RUN"
-    if not re.fullmatch(r"[0-9]+", rc):
-        return "PENDING_RUN"
-    if rc != "0":
-        return "TERMINAL"
-    try:
-        pid = int(Path(str(prefix) + ".check.pid").read_text())
-        os.kill(pid, 0)
-    except (OSError, ValueError):
-        return "WORKER_GONE"
-    return "CHECKING"
-
-
-def wait_for_check(prefix):
+def wait_for_check(prefix, interrupted=lambda: False):
     """Holder 不领取下一轮，直到上一轮自动 check 已发布终态。"""
     prefix = Path(prefix)
     while True:
+        if interrupted():
+            return False
         state = check_state(prefix)
         if state == "WORKER_GONE":
             status = Path(str(prefix) + ".check.status")
@@ -362,9 +334,9 @@ def wait_for_check(prefix):
             tmp.write_text("FAILED: check worker 消失", encoding="utf-8")
             os.replace(tmp, status)
             Path(str(prefix) + ".check.pending").unlink(missing_ok=True)
-            return
+            return True
         if state != "CHECKING":
-            return
+            return True
         time.sleep(.05)
 
 
@@ -950,6 +922,28 @@ class Holder:
         self.stop = False
         self.current: Runner | None = None
 
+    def _released(self):
+        return self.stop or os.path.exists(os.path.join(self.dir, "release"))
+
+    def _wait_previous_check(self):
+        """重启后先等同线程尚未收尾的 check，再领取新请求。"""
+        issue_dir = Path(self.dir).parent
+        thread_name = Path(self.dir).name.removeprefix("hold-")
+        candidates = []
+        for marker in issue_dir.glob("run-*.thread"):
+            try:
+                if marker.read_text(encoding="utf-8").strip() != thread_name:
+                    continue
+                n = int(marker.name.split("-")[1].split(".")[0])
+                candidates.append((n, marker.with_suffix("")))
+            except (OSError, ValueError):
+                continue
+        for _, prefix in sorted(candidates, reverse=True):
+            if check_state(prefix) in ("CHECKING", "WORKER_GONE"):
+                if not wait_for_check(prefix, self._released):
+                    return False
+        return True
+
     def _queued(self) -> list[str]:
         try:
             names = sorted((n for n in os.listdir(self.queue_dir) if re.fullmatch(r"run-\d+\.request\.json", n)),
@@ -1082,6 +1076,10 @@ class Holder:
             srv.log_event({"_fleet": "hold_started", "threadId": boot.thread_id, "pid": os.getpid()})
             idle_seconds = int(cfg.get("idle_seconds") or 0)
             last_activity = time.time()
+            if not self._wait_previous_check():
+                srv.log_event({"_fleet": "hold_released", "threadId": boot.thread_id})
+                srv.close()
+                return rc
             while True:
                 self.consume_steers(srv)
                 queued = self._queued()
@@ -1128,7 +1126,8 @@ class Holder:
                     srv.set_log(hold_log)
                     srv.log_event({"_fleet": "hold_turn_done", "run": os.path.basename(req.get("out_jsonl") or ""), "rc": trc})
                 if req.get("out_rc"):
-                    wait_for_check(Path(req["out_rc"]).with_suffix(""))
+                    if not wait_for_check(Path(req["out_rc"]).with_suffix(""), self._released):
+                        break
                 last_activity = time.time()
                 if srv.proc.poll() is not None:
                     self._fail_queued(3, "codex_appserver: app-server 已退出，排队的轮次作废")

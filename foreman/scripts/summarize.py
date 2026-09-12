@@ -22,6 +22,7 @@ import sys
 import time
 
 from appserver_identity import TurnIdentity
+from check_state import check_result
 
 # 越界命令探针：执行器侧靠角色文件（契约）约束，这里做事后检测，双保险。命中只是「需要编排者判断」，项目规则允许的由编排者放行。
 FORBIDDEN = [
@@ -907,20 +908,7 @@ def listing(issues_home: str) -> int:
         check = "—"
         for run in runs:
             stem = os.path.join(issue_dir, run[:-len(".jsonl")])
-            try:
-                check_rc = open(stem + ".check.rc", encoding="utf-8").read().strip()
-                check = "PASS" if check_rc == "0" else "FAIL"
-            except OSError:
-                try:
-                    check_status = open(stem + ".check.status", encoding="utf-8").read().strip()
-                    check = "未配置" if check_status == "UNCONFIGURED" else "跳过"
-                except OSError:
-                    main_rc = None
-                    try:
-                        main_rc = open(stem + ".rc", encoding="utf-8").read().strip()
-                    except OSError:
-                        pass
-                    check = "中" if main_rc == "0" and os.path.isfile(stem + ".check.pending") else "—"
+            check = check_result(stem)
             if os.path.isfile(stem + ".cancelled"):
                 engines.append("-")
                 last = "CANCELLED: " + open(stem + ".cancelled", encoding="utf-8", errors="replace").read().strip()[:40]

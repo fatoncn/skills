@@ -5,7 +5,7 @@
 - issue #22：新增隔离 CODEX_HOME / 插件环境的可编排 app-server stdio 回放夹具，固定协议基线并纳入 selftest。
 - issue #20：app-server 响应按请求 id 与 deadline 分发到独立槽，嵌套等待、超时、EOF、重复和迟到响应均有界收尾。
 - issue #21：实时桥与摘要共用根 thread/turn 身份判定，启动前通知缓冲回放，协作子线程跨轮跟踪，token 按根/子分列并计合计。
-- issue #18：写码轮 rc=0 后自动 detached 跑 check；CHECKING 阻止同 PR 与 Holder 下一轮并发，worker 异常可收尾，支持单轮 `--no-check`。
+- issue #18：写码轮 rc=0 后自动 detached 跑 check；worker 不继承运行锁，派发失败可清理，Holder 跨重启等待且 release 可打断，状态判定由桥、shell 与 list 统一，支持单轮 `--no-check`。
 
 ## 1.3.1 — 2026-09-12
 

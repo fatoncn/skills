@@ -794,19 +794,52 @@ grep -q 'UNCONFIGURED' "$auto/run-7.check.status" && ok "无 verify / package sc
 
 printf "printf checked > '%s'\n" "$auto/empty.checked" > "$auto/run-8.check.commands"; : > "$auto/run-8.check.pending"; : > "$auto/run-8.rc"
 FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 8 "$T/proj/app"
-sleep .2
+for _ in $(seq 1 100); do [ -f "$auto/run-8.check.pid" ] && break; sleep .02; done
 if [ ! -f "$auto/run-8.check.rc" ] && [ ! -f "$auto/run-8.check.status" ]; then ok "空 rc 不会提前跳过 check"; else bad "空 rc 被当成终态"; fi
 printf 0 > "$auto/run-8.rc"
 for _ in $(seq 1 100); do [ -f "$auto/run-8.check.rc" ] && break; sleep .05; done
 [ "$(cat "$auto/run-8.check.rc" 2>/dev/null)" = 0 ] && [ -f "$auto/empty.checked" ] && ok "rc 写完整后 detached check 执行" || bad "完整 rc 未触发 check"
 
 printf 'sleep 30\n' > "$auto/run-9.check.commands"; : > "$auto/run-9.check.pending"; printf 0 > "$auto/run-9.rc"
-FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 9 "$T/proj/app"; sleep .2
-kill -KILL "$(cat "$auto/run-9.check.pid")" 2>/dev/null || true; sleep .2
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 9 "$T/proj/app"
+for _ in $(seq 1 100); do [ -f "$auto/run-9.check.started" ] && break; sleep .02; done
+run9_pid="$(cat "$auto/run-9.check.pid")"; kill -KILL "-$run9_pid" 2>/dev/null || kill -KILL "$run9_pid" 2>/dev/null || true
+for _ in $(seq 1 100); do kill -0 "$run9_pid" 2>/dev/null || break; sleep .02; done
 if [ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$auto/run-9")" = DONE ] && [ "$(FOREMAN_SELFTEST=1 "$F" __check_result "$auto/run-9")" = 'FAIL（worker 消失）' ]; then ok "worker 消失不永久 CHECKING"; else bad "worker 消失状态"; fi
 
+printf 'sleep 30\n' > "$auto/run-13.check.commands"; : > "$auto/run-13.check.pending"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 13 "$T/proj/app"
+for _ in $(seq 1 100); do [ -f "$auto/run-13.check.pid" ] && break; sleep .02; done
+run13_pid="$(cat "$auto/run-13.check.pid")"; FOREMAN_SELFTEST=1 "$F" __cleanup_failed_dispatch "$auto/run-13"
+if ! kill -0 "$run13_pid" 2>/dev/null && [ ! -f "$auto/run-13.check.pending" ] && grep -q '^FAILED: 派发失败$' "$auto/run-13.check.status"; then ok "派发失败清理 worker 与 pending"; else bad "派发失败清理残留"; fi
+
+python3 -B - "$F" "$SKILL_DIR/scripts/check_state.py" "$auto/parity" <<'PY2'
+import importlib.util,os,pathlib,subprocess,sys
+shell,module_path,base=sys.argv[1:]; spec=importlib.util.spec_from_file_location("check_state",module_path); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cases=[({},"TERMINAL"),({"pending":""},"PENDING_RUN"),({"pending":"","rc":""},"PENDING_RUN"),
+       ({"pending":"","rc":" 0 ","pid":str(os.getpid())},"CHECKING"),
+       ({"pending":"","rc":"0","pid":"99999999"},"WORKER_GONE"),
+       ({"pending":"","rc":"0","pid":str(os.getpid()),"status":"FAILED unexpected"},"CHECKING"),
+       ({"pending":"","status":"FAILED: boom"},"TERMINAL"),({"pending":"","rc":" 4 "},"TERMINAL")]
+base=pathlib.Path(base); base.mkdir()
+for i,(files,want) in enumerate(cases):
+    stem=base/f"case-{i}"
+    for suffix,value in files.items(): pathlib.Path(str(stem)+(".check.pending" if suffix=="pending" else f".check.{suffix}" if suffix in ("pid","status") else f".{suffix}")).write_text(value)
+    py=m.check_state(stem)
+    sh=subprocess.check_output([shell,"__check_state",str(stem)],env={**os.environ,"FOREMAN_SELFTEST":"1"},text=True)
+    assert py==sh==want,(i,py,sh,want)
+PY2
+[ "$?" -eq 0 ] && ok "shell/Python check_state 表驱动 parity" || bad "check_state parity"
+
 printf "sleep 1; date +%%s > '%s'\n" "$auto/check-ended" > "$auto/run-10.check.commands"; : > "$auto/run-10.check.pending"
-FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 10 "$T/proj/app"
+( exec 9>"$auto/.runs.lock"; python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9
+  FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 10 "$T/proj/app" )
+if python3 - "$auto/.runs.lock" <<'PY2'
+import fcntl,sys
+with open(sys.argv[1], "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+PY2
+then ok "detached check 不继承 runs lock"; else bad "check worker 泄漏 fd 9"; fi
 mkdir -p "$auto/hold-check/queue"; printf '{"thread_id":"root","idle_seconds":5}' > "$auto/hold-check/hold.json"
 python3 -B - "$SKILL_DIR/scripts/codex_appserver.py" "$auto" <<'PY2'
 import importlib.util,json,pathlib,sys,time
@@ -833,7 +866,10 @@ class Runner:
         self.turn_id=None; self.turn_status=None; self.interrupt_requested=False
     def boot(self): self.server=Server(); return self.server
     def turn(self):
-        if pathlib.Path(self.cfg["out_jsonl"]).stem == "run-12":
+        stem=pathlib.Path(self.cfg["out_jsonl"]).stem
+        if stem == "run-10":
+            (root/"first-started").write_text(str(time.monotonic()))
+        if stem == "run-12":
             assert (root/"check-ended").exists(), "second turn started before check ended"
             (root/"next-started").write_text(str(int(time.time())))
         return 0
@@ -842,16 +878,84 @@ class Runner:
     def handle_notification(self, msg): pass
     def _classify_failure(self, exc): return 3
 b.Runner=Runner
-assert b.Holder(str(hold)).serve() == 0
+started=time.monotonic(); assert b.Holder(str(hold)).serve() == 0
+assert float((root/"first-started").read_text()) - started < 2
 PY2
 [ -f "$auto/run-10.check.rc" ] && [ "$(cat "$auto/check-ended")" -le "$(cat "$auto/next-started")" ] && ok "Holder 双队列等 check 终态才领取下一轮" || bad "Holder/check 双队列互斥"
+
+printf "sleep 1; : > '%s'\n" "$auto/release-check-ended" > "$auto/run-15.check.commands"; : > "$auto/run-15.check.pending"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 15 "$T/proj/app"
+mkdir -p "$auto/hold-release-check/queue"; printf '{"thread_id":"root","idle_seconds":5}' > "$auto/hold-release-check/hold.json"
+python3 -B - "$SKILL_DIR/scripts/codex_appserver.py" "$auto" <<'PY2' &
+import importlib.util,json,pathlib,sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+root=pathlib.Path(sys.argv[2]); hold=root/"hold-release-check"; n=15
+(hold/"queue"/f"run-{n}.request.json").write_text(json.dumps({"out_rc":str(root/f"run-{n}.rc"),"out_jsonl":str(root/f"run-{n}.jsonl"),"out_stderr":str(root/f"run-{n}.stderr"),"timeout":5}))
+class Proc:
+    def poll(self): return None
+class Server:
+    proc=Proc()
+    def set_log(self,path): pass
+    def next_message(self,timeout): return {}
+    def dispatch(self,msg): pass
+    def close(self): pass
+    def log_event(self,event): pass
+class Runner:
+    def __init__(self,cfg): self.cfg=cfg; self.thread_id="root"; self.boot_info={}; self.server=None; self.turn_id=None; self.turn_status=None; self.interrupt_requested=False
+    def boot(self): self.server=Server(); return self.server
+    def turn(self): return 0
+    def finish(self,rc): pass
+    def handle_server_request(self,msg): pass
+    def handle_notification(self,msg): pass
+    def _classify_failure(self,exc): return 3
+b.Runner=Runner; assert b.Holder(str(hold)).serve()==0
+PY2
+release_holder_pid=$!
+for _ in $(seq 1 100); do [ -f "$auto/run-15.check.started" ] && break; sleep .02; done
+: > "$auto/hold-release-check/release"
+for _ in $(seq 1 100); do [ -f "$auto/hold-release-check/hold.rc" ] && break; sleep .02; done
+release_fast=0; [ -f "$auto/hold-release-check/hold.rc" ] && release_fast=1
+wait "$release_holder_pid" 2>/dev/null || true
+for _ in $(seq 1 150); do [ -f "$auto/run-15.check.rc" ] && break; sleep .02; done
+if [ "$release_fast" -eq 1 ] && [ "$(cat "$auto/run-15.check.rc" 2>/dev/null)" = 0 ] && [ -f "$auto/release-check-ended" ]; then ok "release 打断 Holder 等待且 detached check 收尾"; else bad "Holder release/check 独立收尾"; fi
+
+printf "sleep 1; : > '%s'\n" "$auto/prior-check-ended" > "$auto/run-16.check.commands"; : > "$auto/run-16.check.pending"; printf 0 > "$auto/run-16.rc"; printf restart > "$auto/run-16.thread"; printf restart > "$auto/run-17.thread"
+FOREMAN_SELFTEST=1 "$F" __start_auto_check "$auto" run 16 "$T/proj/app"
+mkdir -p "$auto/hold-restart/queue"; printf '{"thread_id":"root","idle_seconds":5}' > "$auto/hold-restart/hold.json"
+python3 -B - "$SKILL_DIR/scripts/codex_appserver.py" "$auto" <<'PY2'
+import importlib.util,json,pathlib,sys
+spec=importlib.util.spec_from_file_location("bridge",sys.argv[1]); b=importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+root=pathlib.Path(sys.argv[2]); hold=root/"hold-restart"; n=17
+(hold/"queue"/f"run-{n}.request.json").write_text(json.dumps({"out_rc":str(root/f"run-{n}.rc"),"out_jsonl":str(root/f"run-{n}.jsonl"),"out_stderr":str(root/f"run-{n}.stderr"),"timeout":5}))
+class Proc:
+    def poll(self): return None
+class Server:
+    proc=Proc()
+    def set_log(self,path): pass
+    def next_message(self,timeout): return {}
+    def dispatch(self,msg): pass
+    def close(self): pass
+    def log_event(self,event):
+        if event.get("_fleet")=="hold_turn_done": (hold/"release").touch()
+class Runner:
+    def __init__(self,cfg): self.cfg=cfg; self.thread_id="root"; self.boot_info={}; self.server=None; self.turn_id=None; self.turn_status=None; self.interrupt_requested=False
+    def boot(self): self.server=Server(); return self.server
+    def turn(self): assert (root/"prior-check-ended").exists(); (root/"restart-claimed").touch(); return 0
+    def finish(self,rc): pass
+    def handle_server_request(self,msg): pass
+    def handle_notification(self,msg): pass
+    def _classify_failure(self,exc): return 3
+b.Runner=Runner; assert b.Holder(str(hold)).serve()==0
+PY2
+[ -f "$auto/restart-claimed" ] && ok "Holder 重启等上一轮 check 后再领取" || bad "Holder 重启越过 check"
 
 printf 'false\n' > "$auto/run-11.check.commands"; : > "$auto/run-11.check.pending"; printf 0 > "$auto/run-11.rc"; "$F" __auto_check "$auto" run 11 "$T/proj/app"
 printf 'true\n' > "$auto/run-11.check.commands"; : > "$auto/run-11.check.pending"; rm -f "$auto/run-11.check.rc" "$auto/run-11.check.status"; "$F" __auto_check "$auto" run 11 "$T/proj/app"
 [ ! -f "$auto/run-11.check.failed-command" ] && ok "成功重跑清理旧 failed-command" || bad "failed-command 残留"
 
 printf 'here' > "$steer_dir/run-94.pr"; printf 'implement' > "$steer_dir/run-94.thread"; printf 0 > "$steer_dir/run-94.rc"; : > "$steer_dir/run-94.check.pending"; printf '%s' "$$" > "$steer_dir/run-94.check.pid"
-expect_grep "同线程 CHECKING 时 shell 派发守卫拒绝" "CHECKING" "$F" run 1 --thread implement --prompt "$T/brief.md" --title blocked-by-check
+before94="$(find "$steer_dir" -maxdepth 1 -name 'run-*' | sort)"; run94_out="$("$F" run 1 --thread implement --prompt "$T/brief.md" --title blocked-by-check 2>&1)"; run94_rc=$?; after94="$(find "$steer_dir" -maxdepth 1 -name 'run-*' | sort)"
+if [ "$run94_rc" -ne 0 ] && printf '%s' "$run94_out" | grep -q CHECKING && [ "$before94" = "$after94" ]; then ok "同线程 CHECKING 守卫拒绝且不落新轮"; else bad "CHECKING 守卫或残留" "$run94_out"; fi
 rm -f "$steer_dir"/run-94.*
 
 printf '%s\n' '{"_fleet":"thread","threadId":"root"}' '{"method":"turn/completed","params":{"threadId":"root","turn":{"id":"turn","status":"completed"}}}' '{"_fleet":"turn_summary","threadId":"root","turnId":"turn","status":"completed"}' > "$steer_dir/run-93.jsonl"
@@ -860,7 +964,15 @@ report_check_out="$("$F" report 1 93 2>&1)"
 if printf '%s\n' "$report_check_out" | grep -q '需要人工/编排者判断' && printf '%s\n' "$report_check_out" | grep -q '失败命令: false'; then ok "report 完整 check FAIL 横幅"; else bad "report check FAIL 横幅" "$report_check_out"; fi
 rm -f "$steer_dir"/run-93.*
 
-manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; "$F" check 1 true >/dev/null; "$F" check 1 true >/dev/null
+printf '%s\n' '{"_fleet":"thread","threadId":"root"}' '{"_fleet":"turn_summary","threadId":"root","turnId":"turn","status":"completed"}' > "$steer_dir/run-95.jsonl"
+: > "$steer_dir/run-95.check.pending"; printf 0 > "$steer_dir/run-95.rc"; printf 'FAILED: fixture' > "$steer_dir/run-95.check.status"
+list_failed="$($F list 2>&1)"; rm -f "$steer_dir/run-95.check.status"; printf '%s' "$$" > "$steer_dir/run-95.check.pid"
+list_checking="$($F list 2>&1)"; printf 999999 > "$steer_dir/run-95.check.pid"; list_gone="$($F list 2>&1)"
+list_failed_value="$(printf '%s\n' "$list_failed" | grep '^1[[:space:]]' | head -1)"; list_checking_value="$(printf '%s\n' "$list_checking" | grep '^1[[:space:]]' | head -1)"; list_gone_value="$(printf '%s\n' "$list_gone" | grep '^1[[:space:]]' | head -1)"
+if printf '%s' "$list_failed_value" | grep -q '  FAIL  ' && printf '%s' "$list_checking_value" | grep -q '  中  ' && printf '%s' "$list_gone_value" | grep -q 'FAIL（worker 消失）'; then ok "list 复用统一 check 判定"; else bad "list check 六态口径" "$list_failed_value / $list_checking_value / $list_gone_value"; fi
+rm -f "$steer_dir"/run-95.*
+
+manual_before="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"; FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null; FOREMAN_CHECK_LOG_STAMP=fixed "$F" check 1 true >/dev/null
 manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 [ "$manual_after" -eq $((manual_before+2)) ] && ok "手动 check 同秒日志名唯一" || bad "手动 check 日志覆盖"
 echo
