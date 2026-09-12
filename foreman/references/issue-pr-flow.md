@@ -225,7 +225,7 @@ Refs #<issue>   （Closes 在 PR 不进默认分支时不自动生效，合入�
 ```markdown
 # 收尾任务书：PR #<n>（<一句话>）
 
-> 目标：处理 review findings → 同步 base → 描述同步 → `pr ready`。**不 merge**。<日期时间，先 `date`>写。
+> 目标：处理当前 review findings → 同步 base → 描述同步 → `pr ready` → push 后交报告。**不 merge，不在本轮等 CI / 下一轮 review**。<日期时间，先 `date`>写。
 
 ## PR 事实
 - PR 链接、head sha、draft/ready、base、worktree 路径（你仍是这条分支唯一的执行者）
@@ -234,15 +234,15 @@ Refs #<issue>   （Closes 在 PR 不进默认分支时不自动生效，合入�
 - 主会话已判过、**不用再问**的取舍清单
 
 ## 工作循环
-等 CI → 读 review → 逐条判断 → 修（攒齐一次 push）→ 回复并 resolve → 再等 CI。不必每轮请示；只有需求边界或业务口径要变时停下来问。
+读当前 review → 逐条判断 → 修（攒齐一次 push）→ 回复并 resolve → 交报告结束。不必每轮请示；只有需求边界或业务口径要变时停下来问。push 后的 CI 与下一轮 review 由编排者在宿主后台用 `wait` + `gh` 轮询；红了或有新 finding 再另派一轮。
 1. 两处都要读：inline review thread，以及被路由进 PR summary 评论、没有 thread 也没 resolve 按钮的条目。每次 push 都会触发新一轮 review。
 2. 不默认采纳：逐条结合任务书口径、整体架构、真实执行路径和测试证据判断；只有问题真实成立、且改动的整体收益明确大于风险时才改。明确无效、过期、超出本 PR 范围的可以不改，但要说明依据。
 3. 轮次：一轮 = 一次 push 触发并跑出结论的 review；同步基线的 merge push 不算。低风险只修确认成立的 high / medium；中高风险第 2 轮只修第 1 轮修复本身引入的新 high / medium。low / nit / 风格 / 超范围重构建议一律回复判断并 resolve，不为它们再 push。到上限仍有未决项：列表（位置 / 严重度 / 判断 / 建议处置）停下来交编排者，不自动进下一轮。
 4. 修与不修都闭环：改了的说明改动与验证并注明 commit；不改的说明依据。inline 条目回在 thread 里并 resolve；summary 条目回在 PR 评论里。每处理完一批发一条表格评论（位置 / 结论 / 依据）。
 5. 同步基线：base 有新合入时 `git merge origin/<base>`（不 rebase），解完冲突重跑相关验证再 push。语义冲突（另一条 PR 改了名、删了词条、改了签名）当真实问题修，不占轮次。
 6. PR 描述同步：描述必须与最终改动一致；「复测入口」「实测」等节核对内容还是不是真的。
-7. 报「可合」之前重数：以当前 head 触发的那一轮为准，用 API 重新数 unresolved thread、重读最新 summary。CI 绿不等于 review 已读；review job 绿不等于 0 findings。
-8. 没有 CI run 不等于在排队：PR 一个 run 都没有时先查是否与 base 冲突（不少仓库的 feature 分支只走 pull_request 触发，冲突就不跑），解完冲突再等。
+7. 本轮只核 push 前当前 head 的 unresolved thread 与最新 summary；push 后不重数、不等待。编排者以新 head 触发的结果重新核对；CI 绿不等于 review 已读，review job 绿不等于 0 findings。
+8. 没有 CI run 不等于在排队：编排者发现 PR 一个 run 都没有时先查是否与 base 冲突（不少仓库的 feature 分支只走 pull_request 触发，冲突就不跑），需要处理再派下一轮。
 以上是 skill 的最佳实践口径；项目规则另有说法以项目规则为准。
 
 ## 本 PR 特有
@@ -252,7 +252,7 @@ Refs #<issue>   （Closes 在 PR 不进默认分支时不自动生效，合入�
 gh 入口用 <路径>；只 push 本分支、禁 force；不动别的 worktree；凭证不回显；提交按仓库约定、作者用 worktree 配置身份、只 `git add <具体文件>`。
 
 ## 回报
-按收尾阶段契约的输出格式：head sha、判定表、未决项表、ready 状态、拿不准的点。
+按收尾阶段契约的输出格式：head sha、已推 commit、判定表、本轮线程处置、未决项表、ready 状态、拿不准的点；注明未等待 CI / 下一轮 review。
 ```
 
 ---

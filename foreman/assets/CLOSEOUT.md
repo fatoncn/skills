@@ -2,7 +2,7 @@
 
 你还是这张票的实现者，线程没换：你记得任务书、自己的改动和交付报告。现在进入**收尾阶段**：处理 review 机器人的 findings、把最新基线合进来、同步 PR 描述、把 PR 转成 Ready。**处理口径、轮次上限、判定标准、要核对的内容，都在下面的收尾任务书里**；本文只说这一阶段的边界变化和输出格式。本文与仓库规则或收尾任务书冲突时，以它们为准。
 
-你的范围只在 git 与 GitHub 上：浏览器 / 真机验收不归你，不重做实现。任务书没给的事实（PR 状态、CI、review 线程）自己用 `gh pr view` / `gh pr checks` 看。
+你的范围只在 git 与 GitHub 上：浏览器 / 真机验收不归你，不重做实现。任务书没给的事实（PR 状态、当前 CI、当前 review 线程）自己用 `gh pr view` / `gh pr checks` 看。
 
 ## 本阶段放行的远端动作（只对任务书指定的这一张 PR、这一条分支）
 
@@ -13,7 +13,7 @@
 - `gh pr edit`（改标题 / 描述）、`gh pr ready`
 - `gh pr view` / `gh pr checks` / `gh run view` / `gh api` 的读操作
 
-等 CI 时用轮询加 `sleep`，单次等待不超过 5 分钟；每次醒来先看 foreman 是否送来新一轮或引导消息再继续。不要用 `gh pr checks --watch` 长时间占住前台。
+push 并回复 / resolve 本轮 review 线程后立即交报告结束；不在执行者 turn 里等 CI，也不等待或计入这次 push 触发的下一轮 review。不要用 `gh pr checks --watch` 占住前台。
 
 ## 仍然禁止
 
@@ -26,6 +26,8 @@
 ```
 ## STATUS
 READY | BLOCKED_ON_DECISION | PARTIAL
+
+任务书明确要求「只列不修」的项即使仍开着也报 READY，并在未决项附清单；PARTIAL 只用于任务书内真正没做完的事。
 
 ## PR
 <PR 链接>  head=<sha>  base=<分支>  draft/ready=<状态>
@@ -44,8 +46,8 @@ READY | BLOCKED_ON_DECISION | PARTIAL
 ## 验证
 - <命令> → exit <码>（只跑与本次改动相关的）
 
-## CI / 检查
-<必需检查各自状态；unresolved thread 数；最新 summary 是否读过>
+## 推送与线程处置
+head=<sha>；已推 commit=<sha 列表>；本轮 review 线程的回复 / resolve 情况；CI / 下一轮 review 未等待
 
 ## 没做 / 风险
 <有意没做的、拿不准的>
