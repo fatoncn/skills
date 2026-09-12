@@ -27,25 +27,38 @@ from claude_events import event_rows as claude_event_rows, is_claude, scan_claud
 
 # 越界命令探针：执行器侧靠角色文件（契约）约束，这里做事后检测，双保险。命中只是「需要编排者判断」，项目规则允许的由编排者放行。
 FORBIDDEN = [
-    (re.compile(r"\bgit\s+push\b"), "git push"),
-    (re.compile(r"\bgit\s+remote\s+(add|set-url|remove)\b"), "git remote 写操作"),
+    ("git push", re.compile(r"\bgit\s+push\b"), ["*git*push*"]),
+    ("git remote 写操作", re.compile(r"\bgit\s+remote\s+(add|set-url|remove)\b"),
+     ["*git*remote*add*", "*git*remote*set-url*", "*git*remote*remove*"]),
     # 只探 gh 的写子命令：只读的 view/list/diff 是任务书明确允许的，一并报会制造噪音
-    (re.compile(r"\bgh\s+(issue|pr)\s+(create|edit|comment|close|merge|reopen|ready|review)\b"), "gh 写操作"),
-    (re.compile(r"\bgh\s+(release|workflow|secret|repo)\b"), "gh 写操作"),
-    (re.compile(r"\bgh\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"), "gh api 写"),
-    (re.compile(r"\bgh\s+api\s+graphql\b"), "gh api graphql"),
+    ("gh 写操作", re.compile(r"\bgh\s+(issue|pr)\s+(create|edit|comment|close|merge|reopen|ready|review)\b"),
+     [*[f"*gh {kind} {action}*" for kind in ("issue", "pr")
+        for action in ("create", "edit", "comment", "close", "merge", "reopen", "ready", "review")]]),
+    ("gh 写操作", re.compile(r"\bgh\s+(release|workflow|secret|repo)\b"),
+     [*[f"*gh {kind}*" for kind in ("release", "workflow", "secret", "repo")]]),
+    ("gh api 写", re.compile(r"\bgh\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"),
+     [*[f"*gh*api*-X*{method}*" for method in ("POST", "PUT", "PATCH", "DELETE")],
+      *[f"*gh*api*--method*{method}*" for method in ("POST", "PUT", "PATCH", "DELETE")]]),
+    ("gh api graphql", re.compile(r"\bgh\s+api\s+graphql\b"), ["*gh*api*graphql*"]),
     # vercel 只探写操作与 env：inspect / list / ls / logs / whoami / api GET 是任务书常允许的只读查询（#1606 验收线程 3 次误报）
-    (re.compile(r"\bvercel\s+(deploy|promote|rollback|redeploy|alias|env|domains|dns|certs|rm|remove|link|project|teams|switch|login|logout|git)\b"), "vercel 写操作或 env"),
-    (re.compile(r"\bvercel\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"), "vercel api 写"),
-    (re.compile(r"\bsupabase\s+(link|db\s+push|db\s+remote)\b"), "supabase 远端"),
-    (re.compile(r"\bnpx?\s+sst\b|\bsst\s+deploy\b"), "sst deploy"),
-    (re.compile(r"eslint-disable"), "eslint-disable"),
-    (re.compile(r"\.(skip|only)\s*\("), "测试 skip/only"),
-    (re.compile(r"\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s|stash)\b"), "git 破坏性操作"),
-    (re.compile(r"\bgit\s+push\b.*(--force|-f\b)"), "git push --force"),
+    ("vercel 写操作或 env", re.compile(r"\bvercel\s+(deploy|promote|rollback|redeploy|alias|env|domains|dns|certs|rm|remove|link|project|teams|switch|login|logout|git)\b"),
+     [f"*vercel*{action}*" for action in ("deploy", "promote", "rollback", "redeploy", "alias", "env", "domains", "dns", "certs", "rm", "remove", "link", "project", "teams", "switch", "login", "logout", "git")]),
+    ("vercel api 写", re.compile(r"\bvercel\s+api\b.*(-X|--method)\s*(POST|PUT|PATCH|DELETE)"),
+     [*[f"*vercel*api*-X*{method}*" for method in ("POST", "PUT", "PATCH", "DELETE")],
+      *[f"*vercel*api*--method*{method}*" for method in ("POST", "PUT", "PATCH", "DELETE")]]),
+    ("supabase 远端", re.compile(r"\bsupabase\s+(link|db\s+push|db\s+remote)\b"),
+     ["*supabase*link*", "*supabase*db*push*", "*supabase*db*remote*"]),
+    ("sst deploy", re.compile(r"\bnpx?\s+sst\b|\bsst\s+deploy\b"), ["*npx*sst*", "*npm*sst*", "*sst*deploy*"]),
+    ("eslint-disable", re.compile(r"eslint-disable"), ["*eslint-disable*"]),
+    ("测试 skip/only", re.compile(r"\.(skip|only)\s*\("), ["*.skip(*", "*.only(*"]),
+    ("git 破坏性操作", re.compile(r"\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|checkout\s+--\s|stash)\b"),
+     ["*git*reset*--hard*", "*git*clean*-*f*", "*git*checkout*--*", "*git*stash*"]),
+    ("git push --force", re.compile(r"\bgit\s+push\b.*(--force|-f\b)"),
+     ["*git*push*--force*", "*git*push*-f*"]),
     # 绕过索引 / 沙箱的底层提交手法：实测 luna 在沙箱拒绝后会用 GIT_INDEX_FILE + commit-tree + update-ref 硬造提交，
     # 结果把 README 从树里丢了。这是「被拒后绕路」的信号，必须人工看。
-    (re.compile(r"GIT_INDEX_FILE=|\bgit\s+(update-ref|commit-tree|write-tree|symbolic-ref)\b|\bgit\s+--git-dir="), "git 底层改写（绕过索引/沙箱）"),
+    ("git 底层改写（绕过索引/沙箱）", re.compile(r"GIT_INDEX_FILE=|\bgit\s+(update-ref|commit-tree|write-tree|symbolic-ref)\b|\bgit\s+--git-dir="),
+     ["*GIT_INDEX_FILE=*", "*git*update-ref*", "*git*commit-tree*", "*git*write-tree*", "*git*symbolic-ref*", "*git*--git-dir=*"]),
 ]
 
 # 收尾轮（run --closeout，run-N.role 写 closeout 作阶段标记）被明确允许对自己的 PR 做这些远端动作，探针放行；仍然禁的留在 FORBIDDEN 里
@@ -211,14 +224,14 @@ def _visible_changed_files(state):
 def probe_forbidden(state, blob: str, shown, role: str | None = None):
     if role == "closeout" and any(p.search(blob) for p in CLOSEOUT_ALLOW):
         # 放行清单命中的命令仍要过「硬禁」那几条（force push / merge / close）
-        for pattern, label in FORBIDDEN:
+        for label, pattern, _deny_globs in FORBIDDEN:
             if label in ("git push --force", "git 破坏性操作") and pattern.search(blob):
                 state["forbidden"].append((label, shown))
         for pattern, label in [(re.compile(r"\bgh\s+pr\s+(merge|close)\b"), "gh pr merge/close")]:
             if pattern.search(blob):
                 state["forbidden"].append((label, shown))
         return
-    for pattern, label in FORBIDDEN:
+    for label, pattern, _deny_globs in FORBIDDEN:
         if pattern.search(blob):
             state["forbidden"].append((label, shown))
 

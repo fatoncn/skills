@@ -1014,21 +1014,32 @@ build_thread_name() {   # $1 issue $2 显式标题 $3 任务书路径 $4 阶段�
 
 claude_apply_steers() {  # <票目录> <线程> <prompt>
   local dir="$1" tname="$2" prompt="$3" inbox="$1/hold-$2/steer" pending=()
+  CLAUDE_STEER_INBOX=""; CLAUDE_STEER_PENDING=()
   [ -d "$inbox" ] || return 0
   while IFS= read -r path; do [ -n "$path" ] && pending[${#pending[@]}]="$path"; done <<EOF
 $(find "$inbox" -maxdepth 1 -name 'claude-*.json' -type f -print 2>/dev/null | sort)
 EOF
   [ ${#pending[@]} -gt 0 ] || return 0
-  python3 - "$prompt" "$inbox" "${pending[@]}" <<'PY'
-import json, os, pathlib, sys
-prompt, inbox, *paths = sys.argv[1:]
+  python3 - "$prompt" "${pending[@]}" <<'PY'
+import json, pathlib, sys
+prompt, *paths = sys.argv[1:]
 messages = [json.loads(pathlib.Path(path).read_text(encoding="utf-8"))["text"] for path in paths]
 target = pathlib.Path(prompt)
 target.write_text("## 编排者追加说明\n\n" + "\n\n".join(messages) + "\n\n---\n\n" + target.read_text(encoding="utf-8"), encoding="utf-8")
+PY
+  CLAUDE_STEER_INBOX="$inbox"; CLAUDE_STEER_PENDING=("${pending[@]}")
+}
+
+claude_mark_steers_sent() {
+  [ ${#CLAUDE_STEER_PENDING[@]} -gt 0 ] || return 0
+  python3 - "$CLAUDE_STEER_INBOX" "${CLAUDE_STEER_PENDING[@]}" <<'PY'
+import os, pathlib, sys
+inbox, *paths = sys.argv[1:]
 sent = pathlib.Path(inbox) / "sent"; sent.mkdir(parents=True, exist_ok=True)
 for path in paths:
     os.replace(path, sent / pathlib.Path(path).name)
 PY
+  CLAUDE_STEER_INBOX=""; CLAUDE_STEER_PENDING=()
 }
 
 cmd_run() {
@@ -1122,6 +1133,10 @@ cmd_run() {
     case "$model" in sonnet|fable|opus|best|haiku|claude-*) ;; *) die "run: Claude --model 只接受 sonnet / fable / opus / best / haiku 或 claude- 开头的完整模型 id（收到 '$model'）" ;; esac
     case "$effort" in low|medium|high|xhigh|max) ;; *) die "run: Claude --effort 只接受 low / medium / high / xhigh / max（收到 '$effort'）" ;; esac
     require_claude_slot
+    [ -n "$max_turns" ] || max_turns="$(cfg claude.max_turns 80)"
+    [ -n "$max_budget_usd" ] || max_budget_usd="$(cfg claude.max_budget_usd 5)"
+    case "$max_turns" in ''|*[!0-9]*|0) die "run: --max-turns 必须是正整数" ;; esac
+    python3 -c 'import sys; assert float(sys.argv[1]) > 0' "$max_budget_usd" 2>/dev/null || die "run: --max-budget-usd 必须是正数"
   else
     [ -n "$model" ] || model="$(role_cfg "$role" model)"
     [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
@@ -1138,8 +1153,8 @@ cmd_run() {
     cp "$prompt_file" "$dir/run-$n.prompt.md"
   fi
   prompt_file="$dir/run-$n.prompt.md"
-  [ "$engine" != "claude" ] || claude_apply_steers "$dir" "$tname" "$prompt_file"
   POSITION_WRITABLE="$writable"; prepend_position "$prompt_file"; POSITION_WRITABLE=""
+  [ "$engine" != "claude" ] || claude_apply_steers "$dir" "$tname" "$prompt_file"
   # run-N.role 给 summarize 选探针放行表：收尾轮写 closeout（阶段标记，放行对自己 PR 的 push / gh 写），其它写角色名
   if [ "$closeout" -eq 1 ]; then printf 'closeout' > "$dir/run-$n.role"; else printf '%s' "$role" > "$dir/run-$n.role"; fi
   if [ "$full_access" -eq 1 ]; then printf '%s' "$full_access_reason" > "$dir/run-$n.full-access"; else rm -f "$dir/run-$n.full-access"; fi
@@ -1216,10 +1231,6 @@ EOF
       thread="$(thread_get "$issue" "$tname" ref)"
       if [ -n "$thread" ]; then thread_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$thread")"; else thread_json=null; fi
       [ -n "$qtimeout" ] || qtimeout="$(cfg claude.question_timeout 1800)"
-      [ -n "$max_turns" ] || max_turns="$(cfg claude.max_turns 80)"
-      [ -n "$max_budget_usd" ] || max_budget_usd="$(cfg claude.max_budget_usd 5)"
-      case "$max_turns" in ''|*[!0-9]*|0) die "run: --max-turns 必须是正整数" ;; esac
-      python3 -c 'import sys; assert float(sys.argv[1]) > 0' "$max_budget_usd" 2>/dev/null || die "run: --max-budget-usd 必须是正数"
       thread_name="$(build_thread_name "$issue" "$title" "$orig_prompt" "$( [ "$closeout" -eq 1 ] && echo 收尾 || { [ "$n" -gt 1 ] && echo "返工 第${n}轮" || echo 实现; } )")"
       roots_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' $writable)"
       if [ -n "$thread" ]; then echo "==> claude run #$n  issue=$issue  线程=$tname role=$role$([ "$closeout" -eq 1 ] && echo '(收尾)')  续 ${thread:0:8}…  model=$model effort=$effort"
@@ -1237,6 +1248,7 @@ EOF
       printf '%s' "$PR_NAME" > "$dir/run-$n.pr"
       echo "    cwd=$PROJECT_ROOT  PR=${PR_NAME:-无}  工作目录=${wt:-无}  timeout=${timeout}s"
       stage_call "$dir" run "$n" "$wt" "$timeout" "" claude -- python3 "$PY_CLAUDE" run "$dir/run-$n.request.json"
+      claude_mark_steers_sent
       ;;
     *) die "run: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;;
   esac
@@ -2312,8 +2324,8 @@ cmd_cleanup() {
 
 # ---------- doctor ----------
 
-doctor_claude() {
-  local wt="${1:-$MAIN_REPO}"
+doctor_claude() (
+  local wt="${1:-${MAIN_REPO:-${PROJECT_ROOT:-$PWD}}}"
   echo; echo "--- claude ---"
   if command -v claude >/dev/null; then
     echo "claude:  $(command -v claude) → $(claude --version 2>&1)"
@@ -2332,6 +2344,8 @@ except Exception: print("         登录状态无法解析（未打印原始输�
   [ -z "$missing" ] && echo "  [OK]  [roles.*.claude] 五个参考角色齐全" || echo "  [!!]  缺 [roles.<名>.claude]: $missing"
   echo "  并发池: $(active_claude_runs) / 上限 $(claude_concurrency_limit)"
   local tmp meta rc=0; tmp="$(mktemp -d "${TMPDIR:-/tmp}/foreman-doctor-claude.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 143' INT TERM
   meta="$(python3 "$PY_CLAUDE" doctor-config --output-dir "$tmp" --work-dir "${wt:-$PROJECT_ROOT}" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && python3 - "$tmp/settings.json" "$tmp/mcp.json" <<'PY'
 import json, sys
@@ -2347,8 +2361,7 @@ PY
   else
     echo "  [!!]  Claude settings / MCP 静态校验失败: $(printf '%s' "$meta" | tail -1)"
   fi
-  rm -rf "$tmp"
-}
+)
 
 cmd_doctor() {
   local wt="${1:-}" codex_ready=1
@@ -2397,7 +2410,7 @@ cmd_doctor() {
   echo; echo "--- app-server 握手（不起模型，零 token）---"
   python3 "$PY_APPSERVER" probe --home "$CODEX_HOME_DIR" --codex "$CODEX_BIN" --request-user-input "$(cfg codex.request_user_input true)" || echo "!! app-server 握手失败：codex 执行器暂时不可用，把上面的原始报错告诉用户；不要自行排代理 / 换节点"
 
-  [ -n "$wt" ] || return 0
+  if [ -z "$wt" ]; then doctor_claude; return 0; fi
   echo; echo "--- 沙箱边界自检（codex sandbox，不起模型，零 token）---"
   local gitdir probe="$wt/.fleet-doctor-probe"
   gitdir="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)"

@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -81,12 +82,25 @@ def selftest():
           and any("tool_use Write" in row for row in rows) and any("tool_result ok" in row for row in rows)
           and any(row.startswith("[result]") for row in rows))
 
-    real = summarize.scan(load("real-run.jsonl"))
+    real_events = load("real-run.jsonl")
+    real = summarize.scan(real_events)
     check("真实 CLI 流字段齐全且可解析", real["id"] == "session-real"
           and real["model"] == "claude-sonnet-5" and real["effort"] == "low" and real["settled"]
           and real["turns"] == 1 and real["tool_calls"] == 3 and real["tokens"] > 0
           and real["files"] == [("Edit", "/workspace/project/README.md")]
           and "## STATUS\nDONE" in real["final"] and not real["tool_errors"])
+    def string_values(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from string_values(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from string_values(item)
+    local_paths = [value for value in string_values(real_events)
+                   if re.match(r"^/(?:tmp|var|private|Users)/", value)]
+    check("真实 fixture 无本机临时绝对路径", not local_paths)
 
     deny = summarize.scan(load("deny_rc0.jsonl"))
     deny_report = capture(summarize.report, str(CLAUDE / "deny_rc0.jsonl"), None)

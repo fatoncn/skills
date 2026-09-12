@@ -349,8 +349,25 @@ def selftest() -> int:
         assert any(e.get("type") == "future_event" for e in unknown)
         run_case(root, "question_timeout", 0, qtimeout=1)
         run_case(root, "mcp_missing", 4)
-        _, invalid = run_case(root, "invalid_decision", 0)
-        assert any(e.get("_foreman", {}).get("decision") == "deny" for e in invalid)
+        for index, mode in enumerate(("json", "nobehavior"), 1):
+            invalid_req = request(root, f"invalid_decision_{mode}")
+            invalid_stem = str(invalid_req)[:-len(".request.json")]
+            invalid_env = dict(os.environ, FOREMAN_SELFTEST="1", FOREMAN_CLAUDE_REPLAY_BAD_DECISION=mode)
+            invalid_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run", invalid_stem],
+                                            env=invalid_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            assert invalid_proc.stdin and invalid_proc.stdout
+            rid = 700 + index
+            invalid_proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                "params": {"name": "approve", "arguments": {"tool_name": "Bash",
+                    "input": {"command": "echo safe"}}}}) + "\n")
+            invalid_proc.stdin.flush()
+            invalid_reply = json.loads(invalid_proc.stdout.readline())
+            invalid_proc.terminate(); invalid_proc.wait(timeout=2)
+            invalid_decision = json.loads(invalid_reply["result"]["content"][0]["text"])
+            invalid_events = events(pathlib.Path(invalid_stem + ".jsonl"))
+            assert invalid_reply["id"] == rid and invalid_decision["behavior"] == "deny"
+            assert any("权限审查器异常" in e.get("_foreman", {}).get("reason", "") for e in invalid_events)
+        print("claude replay: invalid_decision PASS")
         malformed_req = request(root, "permission_error_id")
         permission_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run",
                                             str(malformed_req)[:-len(".request.json")]],
@@ -366,26 +383,21 @@ def selftest() -> int:
         run_case(root, "forbidden", 0)
         closeout_req, _ = run_case(root, "closeout", 0, closeout=True)
         closeout_deny = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
-        assert "Bash(*gh api graphql*)" not in closeout_deny
-        assert "Bash(*gh api * --method POST*)" not in closeout_deny and "Bash(*gh api * --method PATCH*)" not in closeout_deny
-        assert "Bash(*gh api * --method PUT*)" in closeout_deny and "Bash(*gh api * --method DELETE*)" in closeout_deny
-        assert "Bash(*gh pr create*)" in closeout_deny and "Bash(*gh pr merge*)" in closeout_deny
-        assert "Bash(*gh pr edit*)" not in closeout_deny and "Bash(*gh pr ready*)" not in closeout_deny
         normal_req, _ = run_case(root, "non_closeout_graphql", 0)
         normal_deny = json.loads(pathlib.Path(str(normal_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
-        assert "Bash(*gh api graphql*)" in normal_deny
         import importlib.util
         spec = importlib.util.spec_from_file_location("claude_bridge", BRIDGE)
         bridge = importlib.util.module_from_spec(spec)
         assert spec.loader
         spec.loader.exec_module(bridge)
         forbidden_samples = [
-            "git push origin HEAD", "git remote add x y", "gh issue comment 1 -b x", "gh release create v1",
-            "gh api repos/x -X POST", "gh api graphql -f query=x", "vercel redeploy app",
+            "git  push origin HEAD", "git remote add x y", "gh issue comment 1 -b x", "gh release create v1",
+            "gh api -X PUT repos/x", "gh api repos/x -XPUT", "gh api graphql -f query=x", "vercel redeploy app",
             "vercel api x --method PUT", "supabase db push", "npx sst deploy", "echo eslint-disable",
             "pytest.foo.skip(", "git reset --hard HEAD", "git push origin HEAD --force", "git symbolic-ref HEAD x",
         ]
-        for pattern, _label in bridge.FORBIDDEN:
+        for _label, pattern, deny_globs in bridge.FORBIDDEN:
+            assert deny_globs
             assert any(pattern.search(command) for command in forbidden_samples), pattern.pattern
         for command in forbidden_samples:
             assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
@@ -394,6 +406,12 @@ def selftest() -> int:
         for command in ("git push origin HEAD", "gh pr comment 1 -b ok", "gh api graphql -f query=x",
                         "gh api repos/x/pulls/1/comments -X POST"):
             assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+        for command in ("gh api -X PUT repos/x", "gh api repos/x -XPUT", "git push -f origin HEAD"):
+            assert any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+        for command in ("git push origin HEAD & git  reset --hard",
+                        "git push origin HEAD $(git  reset --hard)",
+                        "git push origin `git rev-parse HEAD`"):
+            assert not bridge.closeout_command_allowed(command), command
         print("claude replay: deny_rules_shared_source PASS")
         run_case(root, "success_stderr_warning", 0)
         full_req, _ = run_case(root, "success_full", 0, full=True)
@@ -481,6 +499,27 @@ def selftest() -> int:
         assert pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".rc").read_text().strip() == "143"
         assert not pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".mcp.json").exists()
         print("claude replay: signal_ignore_hard_deadline PASS")
+
+        startup_req = request(root, "startup_signal")
+        startup_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
+                           CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1")
+        startup_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(startup_req)], env=startup_env)
+        startup_log = pathlib.Path(str(startup_req)[:-len(".request.json")] + ".jsonl")
+        for _ in range(100):
+            if startup_log.exists():
+                break
+            time.sleep(0.01)
+        startup_proc.terminate()
+        assert startup_proc.wait(timeout=5) == 143
+        startup_stem = str(startup_req)[:-len(".request.json")]
+        startup_data = events(startup_log)
+        startup_meta = json.loads((root / "meta.json").read_text())
+        assert startup_data[-1]["_foreman"]["rc"] == 143
+        assert pathlib.Path(startup_stem + ".rc").read_text().strip() == "143"
+        assert not pathlib.Path(startup_stem + ".mcp.json").exists()
+        assert "ref" not in startup_meta.get("threads", {}).get("startup_signal", {})
+        assert not pathlib.Path(startup_stem + ".argv").exists()
+        print("claude replay: startup_signal PASS")
 
         # 纯函数级配置守卫也放进同一回放入口，避免依赖真实 CLI。
         settings = json.loads(pathlib.Path(str(full_req)[:-len(".request.json")] + ".settings.json").read_text())

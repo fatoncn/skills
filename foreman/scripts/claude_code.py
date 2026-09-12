@@ -69,7 +69,7 @@ def append_event(path: pathlib.Path, event: dict) -> None:
 
 
 def append_raw(path: pathlib.Path, raw: bytes) -> None:
-    """Append one Claude stdout record without JSON re-serialization."""
+    """不重新序列化 JSON，原样追加一条 Claude stdout 记录。"""
     with path.open("ab") as fh:
         fh.write(raw)
 
@@ -102,9 +102,9 @@ def command_for(tool: str, tool_input: dict) -> str:
 
 
 def command_segments(command: str) -> list[str]:
-    """Split shell control operators and discard redirection targets for policy checks."""
+    """按 shell 控制操作符分段，并在权限检查前丢弃重定向目标。"""
     segments = []
-    for raw in re.split(r"&&|\|\||[;|\n]", command):
+    for raw in re.split(r"\|&|&&|\|\||[;&|\n]", command):
         segment = re.sub(r"(?:^|\s)\d*(?:>>?|<<?)\s*(?:'[^']*'|\"[^\"]*\"|\S+)", " ", raw).strip()
         if segment:
             segments.append(segment)
@@ -127,13 +127,15 @@ def closeout_segment_allowed(segment: str) -> bool:
 
 def forbidden_reason(command: str, closeout: bool) -> str | None:
     for segment in command_segments(command):
-        for pattern, label in FORBIDDEN:
+        for label, pattern, _deny_globs in FORBIDDEN:
             if pattern.search(segment) and not (closeout and closeout_segment_allowed(segment)):
                 return label
     return None
 
 
 def closeout_command_allowed(command: str) -> bool:
+    if re.search(r"\$\(|`|[<>]\(|[\r\n]", command):
+        return False
     segments = command_segments(command)
     return bool(segments) and all(closeout_segment_allowed(segment) for segment in segments)
 
@@ -142,6 +144,12 @@ def permission_reply(stem: pathlib.Path, tool: str, tool_input: dict) -> dict:
     req = load_request(stem)
     log = pathlib.Path(req["jsonl_path"])
     digest = input_digest(tool_input)
+    bad_decision = os.environ.get("FOREMAN_CLAUDE_REPLAY_BAD_DECISION") \
+        if os.environ.get("FOREMAN_SELFTEST") == "1" else None
+    if bad_decision == "json":
+        return "{invalid-json"
+    if bad_decision == "nobehavior":
+        return {"message": "missing behavior"}
     if req.get("review_readonly") == "tools_only":
         reason = "Claude 复审权限 MCP 一律拒绝升级；只使用 Read / Glob / Grep"
         foreman_event(log, {"type": "permission", "tool": tool, "decision": "deny", "reason": reason,
@@ -289,7 +297,9 @@ def preflight_permission(stem: pathlib.Path) -> tuple[bool, str]:
 
 
 def user_mcp_servers() -> dict:
-    path = pathlib.Path.home() / ".claude.json"
+    override = os.environ.get("FOREMAN_CLAUDE_USER_CONFIG") \
+        if os.environ.get("FOREMAN_SELFTEST") == "1" else None
+    path = pathlib.Path(override) if override else pathlib.Path.home() / ".claude.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         servers = data.get("mcpServers") or {}
@@ -312,7 +322,22 @@ def write_doctor_config(output_dir: pathlib.Path, work_dir: str) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     roots = unique_paths([work_dir, common_gitdir(work_dir)])
     write_json(output_dir / "settings.json", build_settings(roots))
-    servers = user_mcp_servers()
+    servers = {}
+    for name, raw in user_mcp_servers().items():
+        if not isinstance(raw, dict):
+            continue
+        server = {}
+        for key in ("type", "command"):
+            if key in raw:
+                server[key] = raw[key]
+        for key in ("env", "headers", "url"):
+            if key in raw:
+                value = raw[key]
+                if isinstance(value, dict):
+                    server[key] = {str(item): "<redacted>" for item in value}
+                else:
+                    server[key] = "<redacted>"
+        servers[str(name)] = server
     servers["foreman"] = {"type": "stdio", "command": sys.executable,
                           "args": [str(SCRIPT), "permission-server", "--run", str(output_dir / "doctor")]}
     write_private_json(output_dir / "mcp.json", {"mcpServers": servers})
@@ -322,47 +347,19 @@ def write_doctor_config(output_dir: pathlib.Path, work_dir: str) -> int:
 
 
 def deny_rules(closeout: bool) -> list[str]:
-    """Translate the shared FORBIDDEN table into Claude's pure-glob Bash rules.
+    """把共享 FORBIDDEN 表转成 Claude 的纯 glob Bash 规则。
 
-    Claude 2.1.268 only treats a trailing ``:*`` as a prefix matcher; stars in
-    that form are literals.  Every rule that needs an interior wildcard is
-    therefore emitted in the pure ``*...*`` glob form.
+    Claude 2.1.268 只把结尾 ``:*`` 当前缀匹配，其中的星号是字面量；
+    因此需要中间通配符的规则统一输出为纯 ``*...*`` glob。
     """
-    by_label = {
-        "git push": ["*git push*"],
-        "git remote 写操作": ["*git remote add*", "*git remote set-url*", "*git remote remove*"],
-        "gh 写操作": [
-            *[f"*gh {kind} {action}*" for kind in ("issue", "pr")
-              for action in ("create", "edit", "comment", "close", "merge", "reopen", "ready", "review")],
-            *[f"*gh {kind}*" for kind in ("release", "workflow", "secret", "repo")],
-        ],
-        "gh api 写": [f"*gh api * {flag} {method}*" for flag in ("-X", "--method")
-                      for method in ("POST", "PUT", "PATCH", "DELETE")],
-        "gh api graphql": ["*gh api graphql*"],
-        "vercel 写操作或 env": [f"*vercel {action}*" for action in
-            ("deploy", "promote", "rollback", "redeploy", "alias", "env", "domains", "dns", "certs",
-             "rm", "remove", "link", "project", "teams", "switch", "login", "logout", "git")],
-        "vercel api 写": [f"*vercel api * {flag} {method}*" for flag in ("-X", "--method")
-                          for method in ("POST", "PUT", "PATCH", "DELETE")],
-        "supabase 远端": ["*supabase link*", "*supabase db push*", "*supabase db remote*"],
-        "sst deploy": ["*npx sst*", "*npm sst*", "*sst deploy*"],
-        "eslint-disable": ["*eslint-disable*"],
-        "测试 skip/only": ["*.skip(*", "*.only(*"],
-        "git 破坏性操作": ["*git reset --hard*", "*git clean -*f*", "*git checkout -- *", "*git stash*"],
-        "git push --force": ["*git push *--force*", "*git push * -f*"],
-        "git 底层改写（绕过索引/沙箱）": ["*GIT_INDEX_FILE=*", "*git update-ref*", "*git commit-tree*",
-            "*git write-tree*", "*git symbolic-ref*", "*git --git-dir=*"],
-    }
     rules = []
-    for _pattern, label in FORBIDDEN:
-        if label not in by_label:
-            raise ValueError(f"FORBIDDEN 缺少 Claude deny 映射: {label}")
-        rules.extend(by_label[label])
+    for _label, _pattern, deny_globs in FORBIDDEN:
+        rules.extend(deny_globs)
     if closeout:
         allowed_exact = {
-            "*git push*", "*gh pr edit*", "*gh pr comment*", "*gh pr ready*", "*gh pr review*",
-            "*gh api graphql*",
-            *[f"*gh api * {flag} {method}*" for flag in ("-X", "--method") for method in ("POST", "PATCH")],
+            "*git*push*", "*gh pr edit*", "*gh pr comment*", "*gh pr ready*", "*gh pr review*",
+            "*gh*api*graphql*",
+            *[f"*gh*api*{flag}*{method}*" for flag in ("-X", "--method") for method in ("POST", "PATCH")],
         }
         rules = [rule for rule in rules if rule not in allowed_exact]
     return list(dict.fromkeys(f"Bash({rule})" for rule in rules))
@@ -373,8 +370,8 @@ def common_gitdir(work_dir: str) -> str:
         return ""
     try:
         return subprocess.run(["git", "-C", work_dir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                              capture_output=True, text=True, check=True).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
+                              capture_output=True, text=True, check=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return ""
 
 
@@ -457,10 +454,16 @@ def run_bridge(request_path: pathlib.Path) -> int:
     def on_term(_sig, _frame):
         request_stop(True)
 
-    # Install before creating any per-run file so startup-stage TERM follows the same cleanup path.
+    # 在创建任何轮次文件前安装，让启动期 TERM 也走同一清理路径。
     old_term = signal.signal(signal.SIGTERM, on_term)
     try:
         jsonl.write_text("", encoding="utf-8")
+        if os.environ.get("FOREMAN_SELFTEST") == "1":
+            delay = float(os.environ.get("FOREMAN_CLAUDE_STARTUP_DELAY", "0"))
+            if delay > 0:
+                time.sleep(delay)
+        if interrupted:
+            raise InterruptedError("启动期收到终止信号")
         raw_full = req.get("user_explicitly_approved_full_access")
         reason = str(req.get("full_access_reason") or "")
         invalid_full = not isinstance(raw_full, bool) or (raw_full is True and not reason.strip())
@@ -468,6 +471,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
         permission_mode = "bypassPermissions" if full else "auto"
         work_dir = str(req.get("work_dir") or "")
         roots = unique_paths([work_dir, *(req.get("writable_roots") or []), common_gitdir(work_dir)])
+        if interrupted:
+            raise InterruptedError("启动期收到终止信号")
         started = now_iso()
         claude = resolve_claude()
         try:
@@ -475,6 +480,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
         except Exception:
             version = "unknown"
         version = version or "unknown"
+        if interrupted:
+            raise InterruptedError("启动期收到终止信号")
         review_readonly = req.get("review_readonly") if req.get("review_readonly") == "tools_only" else None
         foreman_event(jsonl, {"engine": "claude", "cli_version": version, "session_id": req.get("session_id"),
                                "role": req.get("role"), "model": req.get("model"), "effort": req.get("effort"),
@@ -518,6 +525,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
             if not ok:
                 final_rc, subtype, terminal_reason = 4, "engine_down", why
                 raise RuntimeError(terminal_reason)
+        if interrupted:
+            raise InterruptedError("启动期收到终止信号")
 
         argv = [claude, "-p", "--output-format", "stream-json", "--verbose", "--input-format", "text",
                 "--model", model, "--effort", effort, "--permission-mode", permission_mode,
@@ -629,6 +638,8 @@ def run_bridge(request_path: pathlib.Path) -> int:
         signal.signal(signal.SIGTERM, old_term)
         if stderr_fh is not None:
             stderr_fh.close()
+        if interrupted:
+            final_rc, subtype, terminal_reason = 143, "interrupted", "收到超时或终止信号"
         final_text = (result_event or {}).get("result")
         if isinstance(final_text, str) and req.get("last_path"):
             pathlib.Path(req["last_path"]).write_text(final_text, encoding="utf-8")

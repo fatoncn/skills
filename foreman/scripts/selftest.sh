@@ -1023,7 +1023,7 @@ manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 
 echo "== claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
+for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
   if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
     ok "Claude 回放：${claude_case}"
   else
@@ -1105,10 +1105,21 @@ PY2
 expect_grep "Claude 复审拒绝 --full-access" "未知参数" "$F" review 1 --engine claude --full-access x
 expect_grep "Claude steer 只排下一轮" "claude 引擎：steer 已排队，下一轮 run 生效（当前轮不中断）" "$F" steer 1 --thread claude-haiku "只使用追加说明"
 expect_grep "status 标出 Claude 待生效 steer" "claude.*NEXT" "$F" status 1
+expect_grep "Claude 非法派发不消费 steer" "--max-turns 必须是正整数" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-invalid --max-turns 0 --no-check
+expect_grep "Claude 非法派发后仍显示 NEXT" "claude.*NEXT" "$F" status 1
 expect_rc "Claude 下一轮消费 steer" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-next --timeout 30 --no-check
 claude_steer_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
 if grep -q '^## 编排者追加说明$' "${claude_steer_req%.request.json}.prompt.md" && grep -q '只使用追加说明' "${claude_steer_req%.request.json}.prompt.md"; then ok "Claude steer 在下轮 prompt 顶部生效"; else bad "Claude steer 未进入下轮 prompt"; fi
-expect_grep "doctor 包含 claude 零 token 节" "--- claude ---" "$F" doctor "$T/proj/app"
+cat > "$T/doctor-claude-user.json" <<'EOF'
+{"mcpServers":{"secret-server":{"type":"http","command":"sentinel-command","url":"https://sentinel-token.example","headers":{"Authorization":"sentinel-token"},"env":{"API_TOKEN":"sentinel-token"}}}}
+EOF
+FOREMAN_SELFTEST=1 FOREMAN_CLAUDE_USER_CONFIG="$T/doctor-claude-user.json" python3 "$SKILL_DIR/scripts/claude_code.py" doctor-config --output-dir "$T/doctor-config" --work-dir "$T/proj/app" >/dev/null
+if ! grep -q 'sentinel-token' "$T/doctor-config/mcp.json" && grep -q '<redacted>' "$T/doctor-config/mcp.json"; then ok "doctor MCP 配置不落真实凭证"; else bad "doctor MCP 配置泄漏哨兵凭证"; fi
+rm -rf "$T/doctor-config"
+mkdir -p "$T/non-git"
+doctor_out="$(cd "$T/non-git" && TMPDIR="$T" FOREMAN_SELFTEST=1 FOREMAN_CLAUDE_USER_CONFIG="$T/doctor-claude-user.json" "$F" doctor 2>&1)" || true
+if printf '%s\n' "$doctor_out" | grep -q -- '--- claude ---'; then ok "doctor 非 git 目录仍输出 claude 节"; else bad "doctor 非 git 目录缺 claude 节"; fi
+if ! find "$T" -maxdepth 1 -type d -name 'foreman-doctor-claude.*' | grep -q .; then ok "doctor Claude 临时配置已清理"; else bad "doctor Claude 临时配置残留"; fi
 
 # 快照夹具在基线生成，保存完整归一化 JSON；失败直接打印逐字段 unified diff。
 snapshot_mode=(--compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json")
@@ -1119,6 +1130,9 @@ else bad "Codex 分发快照漂移（下方为逐字段 diff）"; printf '%s\n' 
 snapshot_mutation_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --codex-snapshot --d1 "$steer_dir" --d2 "$d2" --tmp-root "$T" --skill-dir "$SKILL_DIR" --compare "$SKILL_DIR/tests/fixtures/codex-snapshot/dispatch.json" --mutate-codex-argv 2>&1)"; snapshot_mutation_rc=$?
 if [ "$snapshot_mutation_rc" -eq 1 ] && printf '%s\n' "$snapshot_mutation_out" | grep -q -- '--deliberate-snapshot-mutation'; then ok "Codex 分发快照能检出 argv 参数漂移"
 else bad "Codex 分发快照未检出故意参数漂移" "$snapshot_mutation_out"; fi
+expect_rc "Claude steer 只消费一次" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-once --timeout 30 --no-check
+claude_steer_next="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
+if ! grep -q '^## 编排者追加说明$' "${claude_steer_next%.request.json}.prompt.md"; then ok "Claude steer 下下轮不重复"; else bad "Claude steer 被重复消费"; fi
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"
