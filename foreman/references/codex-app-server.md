@@ -34,7 +34,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
   执行体已改为默认不传（`force_turn_sandbox_policy` 才传），summarize 加了「git 底层改写」探针抓绕路。
 - 实测的连带现象：luna/low 被拒后会用 `GIT_INDEX_FILE=/tmp/x git add` + `commit-tree` + `update-ref` 硬造提交，
   结果树里少了 README（临时索引是空的）。`foreman check` 的 `git status --porcelain` 为空这一条抓住了它。
-- `workspace-write` 默认无 shell 网络（DNS 直接失败）；`sandbox_workspace_write.network_access=true` 才有 shell 出网。HTTP(S) 代理会被继承，开了之后连本机代理是通的；设了代理时 `curl` 连 `127.0.0.1` 失败通常也是未开放网络，不应先归因于代理故障。
+- Codex 原生的 `workspace-write` 默认无 shell 网络（DNS 直接失败）；foreman 默认把 `codex.sandbox_network=true` 传成 `sandbox_workspace_write.network_access=true`，因此执行线程默认可出网，项目也可显式关闭。HTTP(S) 代理会被继承；设了代理但未开放网络时，`curl` 连 `127.0.0.1` 失败不应先归因于代理故障。
 - `read-only`（复审）**完全没有 shell 网络**，但有服务端 `web_search`（不走沙箱）。`sandbox_read_only.*` 这个键不存在。
 - macOS 自带 git 是 xcrun 壳；`read-only` 下写不了 `/tmp/xcrun_db-*` 缓存，会向 stderr 打 `Operation not permitted`，但 git 命令本身仍可能成功，应按 stdout 和退出码判断。
 - shell 工具依赖 Codex 二进制同目录的 `codex-code-mode-host`。软链路径旁没有这个兄弟程序时会 fail closed；foreman 因此把二进制解析成真实路径。
@@ -83,7 +83,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 | `approval_policy`, `approvals_reviewer`, `approvals` | `on-request`（默认）/`never`；`auto_review`（默认）/`user`/`guardian_subagent`；兜底 `decline`/`accept` |
 | `user_explicitly_approved_full_access`, `full_access_reason` | 完全权限口子：仅 `foreman run --full-access "<原话>"` 生成；没有标记的 `danger-full-access` 被拒 |
 | `model`, `effort` | 模型；推理档（turn 级） |
-| `developer_instructions` | 角色提示词 + 项目执行者规则 + 批次背景（foreman 组装成 `run-N.dev.md` 后读入） |
+| `developer_instructions` | 角色提示词 + 批次背景 + 额外 context（foreman 组装成 `run-N.dev.md` 后读入） |
 | `prompt` | 本轮 user 输入（任务书 / 返工 prompt） |
 | `thread_id` | 空 = 新线程；非空 = `thread/resume` |
 | `ephemeral` | 复审用 true：不落盘 |

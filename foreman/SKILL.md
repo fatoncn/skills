@@ -60,6 +60,8 @@ $FOREMAN setup                               # 生成角色表 + 拷五份角色
 $FOREMAN setup --confirm                     # 用户确认后打标记；没确认之前 run / review 一律拒绝
 ```
 
+建议先安装 ripgrep（`brew install ripgrep`）：执行者搜索更快、更省轮次，`foreman doctor` 会在未安装时提示，但不阻塞使用。
+
 codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 foreman 线程，但执行者继承桌面端 config.toml 里的 MCP、插件、notify 和全局 AGENTS.md，**foreman 占着的线程桌面端打不开（这是有意的：线程由常驻执行体持锁，直到 `release` / `cleanup`）；反过来桌面端先打开了某条线程时 foreman 续不上，`status` 显示 `THREAD_BUSY`，关掉它再续**。把差别念给用户选。切换后旧线程仍按创建时的 home 续；复审线程是 ephemeral，两种模式都不留。
 
 角色 = 执行器 + 模型 + 推理档 + 角色文件：档位放 `~/.foreman/config.toml`，角色文件放 `~/.foreman/roles/<名>.md`（`setup` 从 `assets/roles/` 拷五份样例，可改可加，或 `[roles.<名>].prompt` 指到别处）。implement / review / mechanical 三个参考角色必需，research / accept 建议保留；缺角色或缺文件拒绝派活；再多的自定，`run --role <名>` 取用。按**档位描述**选模型，不绑死模型名（模型会迭代，`doctor` 打印当前可用模型与推理档）：

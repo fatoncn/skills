@@ -899,9 +899,6 @@ if __name__ == "__main__":
                 role = value
     if len(argv) >= 2 and argv[0] == "--list":
         sys.exit(listing(argv[1]))
-    if len(argv) >= 2 and argv[0] == "--thread":
-        print(scan(load(argv[1]), engine)["id"] or "")
-        sys.exit(0)
     if len(argv) >= 2 and argv[0] == "--final":
         print(scan(load(argv[1]), engine)["final"])
         sys.exit(0)
@@ -916,7 +913,6 @@ if __name__ == "__main__":
         print(
             "用法: summarize.py [--engine appserver|pi] [--role closeout] <run.jsonl> [run.stderr] [run.last.md]\n"
             "      summarize.py --list <issues-dir>\n"
-            "      summarize.py --thread <run.jsonl>   # 取 thread_id\n"
             "      summarize.py --final <run.jsonl>    # 只吐交付报告\n"
             "      summarize.py --tail <run.jsonl> [N] # 最近 N 个 item 级事件\n"
             "      summarize.py --progress <run.jsonl> <state.json> <label> <status> <seconds> [now]",

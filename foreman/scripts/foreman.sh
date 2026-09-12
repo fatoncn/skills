@@ -18,7 +18,6 @@ GLOBAL_TOML="$FOREMAN_ROOT/config.toml"
 ROLES_DIR="$FOREMAN_ROOT/roles"   # 每个角色一份角色文件（契约），foreman setup 从 assets/roles/ 拷参考角色样例
 REQUIRED_ROLES="implement review mechanical"   # 三个参考角色全必需；再多的自定义可选。收尾不是角色：实现者续线程，见 assets/CLOSEOUT.md
 HOLD_TERM_GRACE=25  # 必须 >= codex_appserver.py INTERRUPT_GRACE(20) + 5，给执行体写 rc/last 的收尾窗口
-RETIRED_CODEX_ENGINE="codex""-exec"
 
 die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 
@@ -846,7 +845,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$
 
 # ---------- 组装 codex 请求 ----------
 
-# 开发者指令 = 角色提示词 + 项目执行者规则（可选）+ 批次背景（meta.context）+ 额外 --context 文件
+# 开发者指令 = 角色提示词 + 批次背景（meta.context）+ 额外 --context 文件
 # 本轮位置：每轮生成、放在 prompt 顶部（不放开发者指令：常驻线程的开发者指令在载入时定死，而位置每轮可能换 PR）
 POSITION_WRITABLE=""   # run --writable 放开的目录，写进位置块；review 没有
 position_block() {   # 只写事实（规矩在角色文件里说一遍，这里不重复）
@@ -1044,7 +1043,7 @@ cmd_run() {
   require_role "$role"
   local rf_role; rf_role="$role"
   [ -n "$engine" ] || engine="$(role_cfg "$role" engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
-  [ "$engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
+  case "$engine" in codex|pi|claude) ;; *) die "run: --engine 只能是 codex / pi（收到 '$engine'）" ;; esac
   [ -n "$model" ] || model="$(role_cfg "$role" model)"
   [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
 
@@ -1195,7 +1194,7 @@ cmd_review() {
   local review_role_file
   review_role_file="$(role_prompt_file review)"
   [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
-  [ "$engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
+  case "$engine" in codex|pi) ;; *) die "review: --engine 只能是 codex / pi（收到 '$engine'）" ;; esac
   [ -n "$model" ] || model="$(role_cfg review model)"
   [ -n "$effort" ] || effort="$(role_cfg review effort)"
   # 硬规矩（用户 09-11）：复审永远是新线程（ephemeral、thread_id 为空），绝不沿用实现或收尾的会话
@@ -1436,8 +1435,6 @@ PY
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
-  local round_engine; round_engine="$(cat "$dir/$kind-$n.engine" 2>/dev/null || echo codex)"
-  [ "$round_engine" != "$RETIRED_CODEX_ENGINE" ] || die "${RETIRED_CODEX_ENGINE} 已在 1.4.0 退役，请 --thread <新名> 用 codex 另起"
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; print_check_report "$dir/$kind-$n"; return 0; fi
   [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 143 ] && timed_out=1
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
@@ -2145,6 +2142,7 @@ cmd_doctor() {
   command -v python3 >/dev/null && echo "python3: $(python3 --version 2>&1)" || echo "!! 缺 python3"
   python3 -c 'import tomllib' 2>/dev/null || echo "!! python3 需要 3.11+（tomllib）"
   command -v gh >/dev/null && echo "gh:      $(gh --version | head -1)" || echo "!! 缺 gh"
+  command -v rg >/dev/null && echo "rg:      $(command -v rg) → $(rg --version | head -1)" || echo "rg:      未装（建议 brew install ripgrep：执行者常先敲 rg，缺它会多耗一轮）"
   if [ -n "$CODEX_BIN" ]; then
     echo "codex:   $CODEX_BIN → $("$CODEX_BIN" --version 2>&1)"
     "$CODEX_BIN" login status 2>&1 | sed 's/^/         /'
