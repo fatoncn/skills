@@ -1,6 +1,6 @@
 ---
 name: foreman
-description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，派 codex 或 claude 在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；pi 为可选引擎。用户说「派给 codex / claude」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「收尾这张 PR」时使用。不定需求口径、不落 DDL、不替人点合并。
+description: 编排层统筹、执行层干活：把排查、实现、复审、收尾切成票，派 codex 或 claude 在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR；pi 为可选引擎；附带「派 codex / spawn 子 agent / 外部会话转发」三条通道的优先级（foreman → spawn → 外部会话，用户指定的优先）与各自擅长什么。用户说「派给 codex / claude」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「外包出去」「收尾这张 PR」「处理 review 反馈」「报可合」时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
   version: "1.5.0"
 ---
@@ -67,15 +67,15 @@ codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 forem
 
 角色 = 执行器 + 模型 + 推理档 + 角色文件：档位放 `~/.foreman/config.toml`，角色文件放 `~/.foreman/roles/<名>.md`（`setup` 从 `assets/roles/` 拷五份样例，可改可加，或 `[roles.<名>].prompt` 指到别处）。implement / review / mechanical 三个参考角色必需，research / accept 建议保留；缺角色或缺文件拒绝派活；再多的自定，`run --role <名>` 取用。按**档位描述**选模型，不绑死模型名（模型会迭代，`doctor` 打印当前可用模型与推理档）：
 
-| 角色 | 干什么 | Codex 档位（2026-09-11） | Claude 档位 |
-|---|---|---|---|
-| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | gpt-5.6-sol / medium | sonnet / medium |
-| `review` | 对抗性复审：只看 diff，永远新线程、只读 | gpt-6-astra / high | fable / high |
-| `mechanical` | 轻活：按既定契约接线，不做设计取舍 | gpt-5.6-terra / medium | sonnet / low |
-| `research` | 只读调研：排查、核事实、复现 | gpt-6-astra / high | sonnet / xhigh |
-| `accept` | 验收：真跑产品流程，发现问题只报不修 | gpt-5.6-sol / high | sonnet / high |
+| 角色 | 干什么 | 档位描述 | Codex 对应（2026-09-11） | Claude 对应 |
+|---|---|---|---|---|
+| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + medium | gpt-5.6-sol / medium | sonnet / medium |
+| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | 旗舰 + high | gpt-6-astra / high | fable / high |
+| `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | 次旗舰 + low～medium，便宜但精准 | gpt-5.6-terra / medium | sonnet / low |
+| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 旗舰 + high 及以上 | gpt-6-astra / high | sonnet / xhigh |
+| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 旗舰或次旗舰 + high（比实现者高一档，假「通过」最贵；多是浏览器脏活） | gpt-5.6-sol / high | sonnet / high |
 
-**角色文件只写契约**：位置、沙箱事实、分工边界（探针会查什么）、提问方式、输出格式。怎么干活不写在里面，每轮由你写进任务书（模板有可选「工作纪律」段）、复审关注点用 `review --prompt`、收尾规则写在收尾任务书里；角色文件与项目规则或任务书冲突时以后者为准。**收尾不是角色**：由实现者带着原口径续同一线程做（`run --closeout`）。并发上限：本机 `engines.concurrency` 是默认（5），项目 `foreman.toml` 同名键可覆盖；计数是本机所有项目合计在跑的 codex 线程（run 与 review 都算），因为执行者和用户自己的 Codex 抢同一份订阅额度。
+**角色文件只写契约**：位置、沙箱事实、分工边界（探针会查什么）、提问方式、输出格式。怎么干活不写在里面，每轮由你写进任务书（模板有可选「工作纪律」段）、复审关注点用 `review --prompt`、收尾规则写在收尾任务书里；角色文件与项目规则或任务书冲突时以后者为准。**收尾不是角色**：由实现者带着原口径续同一线程做（`run --closeout`）。并发上限：本机 `engines.concurrency` 是默认（5），项目 `foreman.toml` 同名键可覆盖；计数是本机所有项目合计在跑的 codex 线程（run 与 review 都算），因为执行者和用户自己的 Codex 抢同一份订阅额度。claude 走独立池，上限 `[engines.claude] concurrency`（默认 3）。
 
 **每个项目一次**（在项目内任一仓库里跑）：
 
