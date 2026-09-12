@@ -37,6 +37,8 @@ json.dump(m,open(p,"w"),indent=2,ensure_ascii=False)
 PY2
 }
 
+expect_rc "app-server 可编排 stdio 回放夹具自检" 0 python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest
+
 grep -P '' /dev/null >/dev/null 2>&1; grep_p_rc=$?
 if [ "$grep_p_rc" -ne 2 ]; then
   bare_unicode_hits="$(grep -nP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' "$F" "$SKILL_DIR/scripts/selftest.sh" 2>/dev/null || true)"
