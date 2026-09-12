@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "normalization": [
+    "临时根替换为 <TMP>",
+    "skill 根替换为 <SKILL>",
+    "随机仓库 slug 替换为 <REPO_SLUG>",
+    "run/review 轮次替换为 <ROUND>"
+  ],
+  "cases": {
+    "new": "ecea9ffec7fd0748f4592f0dcdb2fa930826b868b4f31bff915685d5ef29921b",
+    "resume": "bbfe1b72ac2d95820306838e8d12a7f6ad84fd66e5cfbd713610c35be244572f",
+    "writable": "29e9990b01ee689fe78accb4fd8865e5b364a4902481884b1b2625cfe76471f7",
+    "full_access": "d4c7f95e3f2df690d7a6d6ad061d9af5fc2a12730da17b0e59556f234d3d6b3b",
+    "mechanical": "a28359a5817664a4c37d43e24bafdf6160bcecf8beb1b1aca1dc4fec8a75c2fb",
+    "review": "ef1a5cbcf632d11e58d3a42456a5f5e0bf17cd5a0321bd653e876e7f6132c1b6"
+  },
+  "argv": [
+    "python3",
+    "<SKILL>/scripts/codex_appserver.py",
+    "run",
+    "<TMP>/home/projects/proj/issues/<REPO_SLUG>/<ISSUE>/<ROUND>.request.json"
+  ],
+  "hold_start_argv": [
+    "python3",
+    "<SKILL>/scripts/codex_appserver.py",
+    "serve",
+    "<ISSUE_DIR>/hold-<THREAD>"
+  ]
+}
