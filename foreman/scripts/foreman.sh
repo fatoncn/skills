@@ -1532,6 +1532,7 @@ PY
   fi
   local role=""; [ -f "$dir/$kind-$n.role" ] && role="$(cat "$dir/$kind-$n.role")"
   python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md"
+  timeout_state_report "$dir" "$kind" "$n"
 }
 cmd_report() {
   local issue="${1:-}" n="" prname=""; [ -n "$issue" ] || die "用法: foreman report <票 id> [N|reviewN] [--pr <名>]"; shift || true
@@ -1629,6 +1630,49 @@ call_state() {
   if [ -f "$f.argv" ]; then printf 'DEAD'; return 0; fi
   if [ -f "$f.jsonl" ]; then printf 'PAST'; return 0; fi
   printf 'NONE'
+}
+timeout_state_report() { # <票目录> <kind> <n>；只在硬超时 rc=143 后合成现场
+  local dir="$1" kind="$2" n="$3" f="$1/$2-$3" pr wt base out
+  [ "$(cat "$f.rc" 2>/dev/null || true)" = 143 ] || return 0
+  pr="$(round_pr "$dir" "$kind-$n")"
+  wt="$(python3 - "$dir/meta.json" "$pr" <<'PY2'
+import json,sys
+m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
+print(p.get("worktree") or "")
+PY2
+)"
+  base="$(python3 - "$dir/meta.json" "$pr" <<'PY2'
+import json,sys
+m=json.load(open(sys.argv[1])); p=(m.get("prs") or {}).get(sys.argv[2],m)
+print(p.get("base") or "")
+PY2
+)"
+  echo; echo "--- 超时时的状态 ---"
+  echo "已落 commit 列表："
+  if [ -n "$wt" ] && [ -d "$wt" ] && [ -n "$base" ]; then
+    out="$(git -C "$wt" log --oneline "origin/$base..HEAD" 2>&1 || true)"; [ -n "$out" ] && printf '%s\n' "$out" || echo "（无）"
+  else echo "（工作树或基线不可用）"; fi
+  echo "工作树改动文件："
+  if [ -n "$wt" ] && [ -d "$wt" ]; then out="$(git -C "$wt" status --short 2>&1 || true)"; [ -n "$out" ] && printf '%s\n' "$out" || echo "（无）"
+  else echo "（工作树不可用）"; fi
+  echo "最后 10 条事件："
+  python3 "$PY_SUMMARIZE" --tail "$f.jsonl" 10
+  echo "被打断时正在跑的命令："
+  python3 - "$f.jsonl" <<'PY2'
+import json,sys
+active={}
+for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
+    try: event=json.loads(line)
+    except ValueError: continue
+    method=event.get("method"); item=(event.get("params") or {}).get("item") or {}; ident=item.get("id")
+    if method=="item/started" and item.get("type")=="commandExecution" and ident:
+        active[ident]=item.get("command") or "（命令文本缺失）"
+    elif method=="item/completed" and ident:
+        active.pop(ident,None)
+if active:
+    for command in active.values(): print(command)
+else: print("（事件流中没有未完成的 commandExecution）")
+PY2
 }
 latest_n() {
   python3 - "$1" "$2" <<'PY2'

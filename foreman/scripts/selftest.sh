@@ -126,6 +126,14 @@ if [ -n "$req" ]; then
 fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
 expect_grep "status 说明用时从派发起算且交接不归零" "QUEUED→RUNNING 不归零" "$F" status
+expect_grep "超时现场报告测试登记" "PR「here」" "$F" here 47
+timeout47_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/47/meta.json' -print -quit)")"
+printf '%s\n' '{"_fleet":"thread","threadId":"timeout-test"}' '{"method":"item/started","params":{"item":{"id":"cmd-1","type":"commandExecution","command":"long-running-command"}}}' '{"method":"item/completed","params":{"item":{"id":"msg-1","type":"agentMessage","text":"partial progress"}}}' '{"_fleet":"turn_summary","rc":143,"status":"interrupted","hasFinalText":false}' > "$timeout47_dir/run-1.jsonl"
+: > "$timeout47_dir/run-1.stderr"; : > "$timeout47_dir/run-1.last.md"; printf 143 > "$timeout47_dir/run-1.rc"
+printf 'codex' > "$timeout47_dir/run-1.engine"; printf 'implement' > "$timeout47_dir/run-1.role"; printf 'here' > "$timeout47_dir/run-1.pr"; : > "$timeout47_dir/run-1.argv"
+timeout47_out="$("$F" report 47 2>&1)"
+if printf '%s\n' "$timeout47_out" | grep -q '^--- 超时时的状态 ---$' && printf '%s\n' "$timeout47_out" | grep -q '^已落 commit 列表：$' && printf '%s\n' "$timeout47_out" | grep -q '^工作树改动文件：$' && printf '%s\n' "$timeout47_out" | grep -q '^最后 10 条事件：$' && printf '%s\n' "$timeout47_out" | grep -q '^long-running-command$'; then ok "rc=143 后 report 自动合成超时现场"; else bad "report 超时现场" "$timeout47_out"; fi
+expect_grep "超时现场报告测试清理" "已删登记" "$F" cleanup 47 --force
 expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
 expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-mech --role mechanical --prompt "$T/brief.md" --title "机械实现" --timeout 30
 expect_rc "closeout 默认续最后一条 run 的线程" 4 "$F" run 1 --closeout --prompt "$T/brief.md" --title "收尾" --timeout 30
