@@ -71,6 +71,8 @@ DEFAULT_CANNED_ANSWER = (
 START_TIMEOUT = 180       # initialize / thread.start / turn.start 的响应上限（秒）
 INTERRUPT_GRACE = 20      # 收到 SIGTERM 后等 turn/interrupt；shell HOLD_TERM_GRACE 必须至少比这里多 5 秒
 QUESTION_POLL = 2         # 等编排者回答时的轮询间隔（秒）
+CLASSIFY_STDERR_GRACE = 1.0   # 失败分类前等 stderr 落盘的判定窗口（子进程可能异步/延迟写入）
+CLASSIFY_STDERR_POLL = 0.05   # 判定窗口内重读 stderr 尾部的轮询间隔
 
 
 def now_ms() -> int:
@@ -105,7 +107,17 @@ _UNAVAILABLE_HINT = {
 }
 
 class ProtocolError(RuntimeError):
-    pass
+    """协议阶段的失败。
+
+    engine_exit=True 专指握手阶段（initialize / thread.start / turn.start 等 request）压根没和
+    app-server 说上话：等响应时 stdout 读到 EOF，或写 stdin 拿到 EPIPE。这类错误文本只说明
+    「它没了」、不说明为什么，判不判「执行器不可用」只看子进程 stderr 尾部。turn 进行中退出、
+    hold 轮间的 hold_server_exited 不打这个标记，按各自既有语义走。
+    """
+
+    def __init__(self, message, engine_exit: bool = False):
+        super().__init__(message)
+        self.engine_exit = engine_exit
 
 
 REQUEST_INPUT_FEATURE = "default_mode_request_user_input"
@@ -205,8 +217,18 @@ class AppServer:
     def _write(self, obj: dict):
         assert self.proc.stdin is not None
         self.log_event({"_fleet": "out", **obj})
-        self.proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
+        line = json.dumps(obj, ensure_ascii=False) + "\n"   # 序列化失败是本方 bug，不能伪装成管道断开
+        try:
+            self.proc.stdin.write(line)
+            self.proc.stdin.flush()
+        except OSError as exc:
+            # 起不来的 codex 常常在我们写第一条 initialize 之前就退了，这一写拿到 EPIPE。EPIPE 不能
+            # 当未捕获异常抛出去：那样执行体直接 traceback 退出，前台 run 落不下 rc、hold 也不会把
+            # 排队轮次判失败，外面只能按「没跑起来」算 rc 3。统一转成 engine_exit 协议错误，和 stdout
+            # 读到 EOF 走同一条不可用分类。
+            raise ProtocolError(
+                f"app-server 在收到 {obj.get('method') or '响应'} 之前就退出了（stdin 管道断开: {exc}）",
+                engine_exit=True) from exc
 
     def notify(self, method: str, params: dict | None = None):
         self._write({"jsonrpc": "2.0", "method": method, "params": params or {}})
@@ -234,7 +256,7 @@ class AppServer:
                     raise ProtocolError(f"{method} 在 {timeout}s 内没有响应")
                 msg = self.next_message(timeout=remaining)
                 if msg is None:
-                    raise ProtocolError(f"app-server 在等待 {method} 响应时退出（stdout 关闭）")
+                    raise ProtocolError(f"app-server 在等待 {method} 响应时退出（stdout 关闭）", engine_exit=True)
                 self.dispatch(msg)
             response = slot["response"]
             if "error" in response:
@@ -837,23 +859,50 @@ class Runner:
             srv.log_event({"_fleet": "thread_busy", "hint": hint, "error": error})
             sys.stderr.write(f"codex_appserver: THREAD_BUSY {hint}\n")
             return rc
-        detail = error
-        if "stdout 关闭" in error:
-            detail = ""
-            try:
-                srv._stderr.flush()
-                with open(srv.stderr_path, "rb") as fh:
-                    fh.seek(0, os.SEEK_END)
-                    size = fh.tell()
-                    fh.seek(max(0, size - 8192))
-                    detail = fh.read(8192).decode("utf-8", errors="replace")
-            except OSError:
-                pass
-        kind = classify_unavailable(detail)
+        # 握手阶段就没和 app-server 说上话（等响应时 stdout 读到 EOF、或写 stdin 拿到 EPIPE）：这种错误文本只
+        # 说明「它没了」，不说明为什么，所以一律只看子进程 stderr 尾部来判不可用。其它协议错误（响应
+        # 超时、JSON-RPC 业务报错）不牵扯进程生死，按错误文本自身分类，免得 stderr 里无关的噪声
+        # （如登录探测日志）把它误判成不可用。
+        if getattr(exc, "engine_exit", False) or "stdout 关闭" in error:
+            kind = self._classify_from_stderr(srv)
+        else:
+            kind = classify_unavailable(error)
         if kind:
             rc = 4
             self.mark_unavailable(srv, kind, error)
         return rc
+
+    @classmethod
+    def _classify_from_stderr(cls, srv) -> str | None:
+        """按子进程 stderr 尾部判不可用：先等它真的退出，再在判定窗口里轮询重读。
+
+        子进程的 stderr 不一定在我们发现管道断开的那一刻就落完（尤其 codex 是包装脚本、真正报错的是
+        它拉起的孙进程），读一次就下结论会把「connection refused」读漏、误判成 rc 3。
+        """
+        proc = getattr(srv, "proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.wait(timeout=CLASSIFY_STDERR_GRACE)
+            except subprocess.TimeoutExpired:
+                pass
+        deadline = time.time() + CLASSIFY_STDERR_GRACE
+        while True:
+            kind = classify_unavailable(cls._read_stderr_tail(srv))
+            if kind or time.time() >= deadline:
+                return kind
+            time.sleep(CLASSIFY_STDERR_POLL)
+
+    @staticmethod
+    def _read_stderr_tail(srv, limit: int = 8192) -> str:
+        try:
+            srv._stderr.flush()
+            with open(srv.stderr_path, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - limit))
+                return fh.read(limit).decode("utf-8", errors="replace")
+        except OSError:
+            return ""
 
     def run(self) -> int:
         def on_term(signum, _frame):

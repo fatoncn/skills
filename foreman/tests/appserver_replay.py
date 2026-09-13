@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import sys
 import tempfile
@@ -243,6 +245,116 @@ def failure_classification_uses_only_eof_tail():
                         b"connection refused\n") == 4
         assert classify("app-server 在等待 initialize 响应时退出（stdout 关闭）", history) == 3
     print("request routing: EOF-only stderr classification PASS")
+
+
+def immediate_exit_slow_stderr_still_classifies_unavailable():
+    """假 codex 立即退出，「connection refused」由一个后台孙进程晚 0.25s 才写进 stderr。
+
+    孙进程的 stdout 重定向到 /dev/null，不占着桥的 stdout 管道写端：父进程一退出桥就读到 EOF、
+    马上进分类，此刻 stderr 还是空的。只读一次就下结论（旧行为）必然读空、误判成 rc 3；只有按判定
+    窗口轮询重读才等得到那行。延迟 0.25s 对 1s 的 CLASSIFY_STDERR_GRACE 留 4 倍余量，机器再忙
+    也不至于让用例自己变成 flake。
+    """
+    bridge = load_bridge()
+    with tempfile.TemporaryDirectory(prefix="foreman-appserver-slow-stderr-") as tmp:
+        root = Path(tmp)
+        codex = write_fake_codex(root, "(sleep 0.25; echo 'connection refused' >&2) >/dev/null &\nexit 1\n")
+        with preserved_signal_handlers():
+            rc = bridge.Runner(dead_codex_request(root, codex)).run()
+        assert rc == 4, rc
+    print("request routing: immediate exit + backgrounded slow stderr still classifies ENGINE_DOWN PASS")
+
+
+def write_fake_codex(root: Path, body: str) -> Path:
+    codex = root / "codex"
+    codex.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
+    (root / "codex-home").mkdir(exist_ok=True)
+    return codex
+
+
+def dead_codex_request(root: Path, codex: Path, prefix: str = "run-1") -> dict:
+    return {
+        "codex_bin": str(codex), "home": str(root / "codex-home"), "cwd": str(root),
+        "config_overrides": [], "out_jsonl": str(root / f"{prefix}.jsonl"),
+        "out_stderr": str(root / f"{prefix}.stderr"), "out_last": str(root / f"{prefix}.last.md"),
+        "out_rc": str(root / f"{prefix}.rc"), "prompt": "fixture", "timeout": 30,
+    }
+
+
+@contextlib.contextmanager
+def preserved_signal_handlers():
+    """Runner.run() / Holder.serve() 会给当前进程装 SIGTERM / SIGINT 处理器，用完还回去。
+
+    测试进程是共用的：不还，后面的用例（乃至 Ctrl-C）就落在上一条用例的执行体回调上。
+    """
+    saved = [(sig, signal.getsignal(sig)) for sig in (signal.SIGTERM, signal.SIGINT)]
+    try:
+        yield
+    finally:
+        for sig, handler in saved:
+            signal.signal(sig, handler)
+
+
+@contextlib.contextmanager
+def codex_dead_before_first_write(bridge):
+    """强制复现「父进程写第一条 initialize 时子进程已经退了」那一刻（stdin 拿到 EPIPE）。
+
+    宿主上这是个偶发竞态：起不来的 codex 退得比我们写得快时才踩到。夹具里等子进程真正退出再放行，
+    把它变成必现——桥必须把 EPIPE 转成协议错误走不可用分类，不能让它作为未捕获异常把执行体打挂
+    （那样前台 run 落不下 rc、hold 也不给排队轮次判失败，外面只能按 rc 3 收场）。
+    """
+    original = bridge.AppServer.__init__
+
+    def patched(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.proc.wait()
+
+    bridge.AppServer.__init__ = patched
+    try:
+        yield
+    finally:
+        bridge.AppServer.__init__ = original
+
+
+def immediate_exit_before_first_write_is_engine_down():
+    bridge = load_bridge()
+    with tempfile.TemporaryDirectory(prefix="foreman-appserver-epipe-") as tmp:
+        root = Path(tmp)
+        codex = write_fake_codex(root, "echo 'fake codex: connection refused' >&2\nexit 1\n")
+        req = dead_codex_request(root, codex)
+        with codex_dead_before_first_write(bridge), preserved_signal_handlers():
+            rc = bridge.Runner(req).run()
+        assert rc == 4, rc
+        events = [json.loads(line) for line in Path(req["out_jsonl"]).read_text(encoding="utf-8").splitlines()]
+        kinds = [e.get("kind") for e in events if e.get("_fleet") == "engine_unavailable"]
+        assert kinds == ["server"], kinds
+        summary = [e for e in events if e.get("_fleet") == "turn_summary"]
+        assert len(summary) == 1, summary
+    print("request routing: engine exits before first write -> ENGINE_DOWN PASS")
+
+
+def holder_boot_failure_marks_queued_runs_engine_down():
+    bridge = load_bridge()
+    with tempfile.TemporaryDirectory(prefix="foreman-appserver-hold-") as tmp:
+        root = Path(tmp)
+        codex = write_fake_codex(root, "echo 'fake codex: connection refused' >&2\nexit 1\n")
+        hold = root / "hold-implement"
+        (hold / "queue").mkdir(parents=True)
+        req = dead_codex_request(root, codex)
+        (hold / "hold.json").write_text(json.dumps(
+            {k: req[k] for k in ("codex_bin", "home", "cwd", "config_overrides")} | {"idle_seconds": 60}),
+            encoding="utf-8")
+        (hold / "queue" / "run-1.request.json").write_text(json.dumps(req), encoding="utf-8")
+        with codex_dead_before_first_write(bridge), preserved_signal_handlers():
+            rc = bridge.Holder(str(hold)).serve()
+        assert rc == 4, rc
+        # 排队的那一轮也要拿到 4：hold 崩了不落 rc 的话，shell 侧只能按「没跑起来」补 3。
+        assert json.loads(Path(req["out_rc"]).read_text(encoding="utf-8")) == 4
+        events = [json.loads(line) for line in Path(req["out_jsonl"]).read_text(encoding="utf-8").splitlines()]
+        assert [e.get("kind") for e in events if e.get("_fleet") == "engine_unavailable"] == ["server"], events
+        assert [e.get("rc") for e in events if e.get("_fleet") == "turn_summary"] == [4], events
+    print("request routing: holder boot failure marks queued runs ENGINE_DOWN PASS")
 
 
 def expired_nested_response():
@@ -478,6 +590,9 @@ def summary_uses_same_identity_rules():
 
 CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False),
          outer_timeout, nested_error, eof_cleanup, orphan_diagnostics, failure_classification_uses_only_eof_tail,
+         immediate_exit_slow_stderr_still_classifies_unavailable,
+         immediate_exit_before_first_write_is_engine_down,
+         holder_boot_failure_marks_queued_runs_engine_down,
          expired_nested_response,
          duplicate_pending_and_suppression, real_question_steer_chain,
          root_final_then_child_final, old_turn_is_ignored, child_completion_is_not_root_completion,
@@ -485,10 +600,21 @@ CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False)
          summary_uses_same_identity_rules]
 
 
-def selftest():
-    for case in CASES:
-        case()
+def selftest() -> int:
+    """每条用例独立失败：一条炸了不该把后面全部拖成 FAIL（同 claude 回放，issue #27）。"""
+    failed = []
+    for index, case in enumerate(CASES, 1):
+        name = f"#{index} {getattr(case, '__name__', 'case')}"
+        try:
+            case()
+        except Exception as exc:
+            failed.append(name)
+            print(f"app-server replay: {name} FAIL: {type(exc).__name__}: {exc}")
+    if failed:
+        print(f"app-server replay: {len(failed)} case(s) FAIL —— {', '.join(failed)}")
+        return 1
     print(f"app-server replay: {len(CASES)} case(s) PASS")
+    return 0
 
 
 if __name__ == "__main__":
@@ -499,6 +625,6 @@ if __name__ == "__main__":
     if args.fake_server:
         raise SystemExit(fake_server())
     if args.selftest:
-        selftest()
+        raise SystemExit(selftest())
     else:
         parser.error("use --selftest")
