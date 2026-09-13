@@ -1,5 +1,10 @@
 # foreman 版本记录
 
+## 1.5.3 — 2026-09-13
+
+- 修 #25：codex 桥写第一条 initialize 时子进程已经退出的话，stdin 拿到的 EPIPE 会作为未捕获异常把执行体打挂——前台 run 落不下 rc、常驻执行体也不给排队轮次判失败，shell 侧只能按「没跑起来」补 rc 3；改成把写失败转成带 `engine_exit` 标记的协议错误，和 stdout 读到 EOF 走同一条「只看子进程 stderr 尾部」的不可用分类（先等进程真正退出，再在 1s 判定窗口里轮询重读，免得读得比子进程写得早），起不来的 codex 在前台 run、常驻执行体、review、research / accept 各条派发路径上都稳定判 rc 4。新增三条回放用例：`immediate_exit_before_first_write_is_engine_down` 钉住前台 run 的 EPIPE 路径、`holder_boot_failure_marks_queued_runs_engine_down` 钉住常驻执行体把 boot 失败落成排队轮次的 rc 4、`immediate_exit_slow_stderr_still_classifies_unavailable` 钉住 stderr 迟到时仍按判定窗口轮询重读（孙进程的 stdout 重定向到 /dev/null，桥读到 EOF 时 stderr 还是空的，只读一次必然误判 rc 3）。
+- 修 #27：claude 桥在坏 JSON 触发 protocol_error 之后，把子进程 stdout 显式排空到 EOF 再落 `.jsonl`（带硬超时 `STDOUT_DRAIN_TIMEOUT`，防子进程真挂住不退出）；同时把 `claude_replay.py --selftest` 的每个用例都套进独立的 `case()` 上下文，单个用例断言失败只标那一条 FAIL，不再让整个进程崩溃、拖累其余二十多条「Claude 回放」用例一起显示 FAIL。也修了假 claude 夹具里 `bad_json` 场景的信号竞态（先装 SIGTERM 忽略再吐坏行）。
+
 ## 1.5.2 — 2026-09-13
 
 - 通道收为两条：删掉「外部会话转发」通道的章节、表格行与散见说法，只留外派 foreman 与宿主 spawn 子 agent；用户点名「外包」不再是一条通道。来源：cookie 09-13「只留 spawn 和外派两种，不然口径容易混淆」。

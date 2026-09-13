@@ -54,7 +54,9 @@ PY2
 replay_out="$(python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest 2>&1)"; replay_rc=$?
 if [ "$replay_rc" -eq 0 ] && printf '%s\n' "$replay_out" | grep -q 'fixture baseline:'; then ok "app-server 可编排 stdio 回放夹具自检"; else bad "app-server 回放夹具" "$replay_out"; fi
 for replay_case in outer-first inner-first 'timeout cleanup' 'nested error' 'EOF cleanup' 'unknown/late diagnostic' \
-  'EOF-only stderr classification' 'expired nested response' 'pending duplicate + diagnostic suppression' \
+  'EOF-only stderr classification' 'immediate exit + backgrounded slow stderr still classifies ENGINE_DOWN' \
+  'engine exits before first write -> ENGINE_DOWN' 'holder boot failure marks queued runs ENGINE_DOWN' \
+  'expired nested response' 'pending duplicate + diagnostic suppression' \
   'request_user_input -> consume_steers -> turn/steer'; do
   if printf '%s\n' "$replay_out" | grep -q "request routing: ${replay_case} PASS"; then ok "请求 id 分发：${replay_case}"; else bad "请求 id 分发：${replay_case}"; fi
 done
@@ -1023,13 +1025,19 @@ manual_after="$(find "$steer_dir" -name 'check-*.log' | wc -l | tr -d ' ')"
 
 echo "== claude 引擎 =="
 claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2>&1)"; claude_replay_rc=$?
-for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal startup_pre_popen_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql command_segments_quoted_redirection deny_rules_no_false_positive deny_rules_shared_source success_stderr_warning resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
-  if [ "$claude_replay_rc" -eq 0 ] && printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS"; then
+# 每条用例只看自己的 PASS / FAIL 行：claude_replay.py 里每个用例都在独立的 case() 里失败互不牵连
+# （issue #27），这里不能再拿整体 claude_replay_rc 当前置条件，否则任何一条用例失败就会把其余
+# 二十多条一起标红。必须同时要求「有自己的 PASS 行」且「没有自己的 FAIL 行」，只看 PASS 会被
+# 「先 PASS 后 FAIL」的输出骗过去。
+for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal startup_pre_popen_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql command_segments_quoted_redirection deny_rules_no_false_positive deny_rules_shared_source success_stderr_warning success_full_bypass_argv resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
+  if printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS" \
+     && ! printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} FAIL"; then
     ok "Claude 回放：${claude_case}"
   else
-    bad "Claude 回放：${claude_case}" "$(printf '%s\n' "$claude_replay_out" | tail -3 | tr '\n' ' ')"
+    bad "Claude 回放：${claude_case}" "$(printf '%s\n' "$claude_replay_out" | grep "claude replay: ${claude_case} FAIL" | head -1 | cut -c1-160)"
   fi
 done
+expect_rc "Claude 回放整体退出码 0" 0 test "$claude_replay_rc" -eq 0
 
 echo "== claude 摘要器 =="
 python3 -B "$SKILL_DIR/tests/claude_events_replay.py" --selftest && ok "claude 事件夹具与旧引擎黄金输出" || bad "claude 事件夹具与旧引擎黄金输出"

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 
 HERE = pathlib.Path(__file__).resolve()
 BRIDGE = HERE.parents[1] / "scripts" / "claude_code.py"
@@ -86,9 +87,11 @@ def fake_claude(argv: list[str]) -> int:
     if scenario == "eof":
         return 0
     if scenario == "bad_json":
+        # 先装好忽略 SIGTERM 再吐坏行：桥一读到坏 JSON 就会发 SIGTERM，若装信号在吐坏行之后，
+        # 两者谁先谁后是竞态——曾经偶发让这个假子进程在装上忽略前被默认处理杀掉，after_bad 就不会落盘。
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         print(' { "type" : "assistant", "opaque" : true } ', flush=True)
         print("{bad json", flush=True)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         print(' { "type" : "after_bad", "keep" : 1 } ', flush=True)
         return 0
     if scenario == "unknown":
@@ -213,7 +216,8 @@ def run_case(root: pathlib.Path, scenario: str, want: int, **kwargs) -> tuple[pa
     assert isinstance(claude_meta["mcp_servers"], list) and "mcp_config" not in claude_meta
     if not kwargs.get("full"):
         assert "foreman" in claude_meta["mcp_servers"]
-    print(f"claude replay: {scenario} PASS")
+    # 这里不打 PASS：一条用例往往 run_case 之后还有附加断言，两处都能打 PASS 的话，附加断言炸了
+    # 输出里会同时出现 PASS 和 FAIL，selftest.sh 只要看到 PASS 就判绿。PASS / FAIL 只由 case() 出。
     return req, data
 
 
@@ -329,64 +333,123 @@ def snapshot_command(argv: list[str]) -> int:
 
 
 def selftest() -> int:
+    failed: list[str] = []
+
+    @contextmanager
+    def case(name: str):
+        """每个用例独立失败：一条用例的断言炸了不该拖累其余用例的展示（issue #27）。"""
+        try:
+            yield
+        except Exception as exc:
+            failed.append(name)
+            print(f"claude replay: {name} FAIL: {exc}")
+        else:
+            print(f"claude replay: {name} PASS")
+
     with tempfile.TemporaryDirectory(prefix="foreman-claude-replay.") as td:
         root = pathlib.Path(td)
-        normalized_date = normalize_snapshot("feat/26-09-13/b ticket-26-09-13", root, HERE.parents[1])
-        assert normalized_date == "feat/<DATE>/b ticket-26-09-13"
-        print("claude replay: snapshot_date_normalization PASS")
-        run_case(root, "success", 0)
-        print("claude replay: mcp_private_cleanup PASS")
-        print("claude replay: first_line_paths PASS")
-        _, deny = run_case(root, "deny", 0)
-        assert any(e.get("_foreman", {}).get("decision") == "deny" for e in deny)
-        run_case(root, "eof", 3)
-        run_case(root, "no_session", 3)
-        bad_req, bad_data = run_case(root, "bad_json", 3)
-        bad_raw = pathlib.Path(str(bad_req)[:-len(".request.json")] + ".jsonl").read_text()
-        assert ' { "type" : "assistant", "opaque" : true } \n' in bad_raw
-        assert ' { "type" : "after_bad", "keep" : 1 } \n' in bad_raw
-        assert any(e.get("_foreman", {}).get("type") == "protocol_error" for e in bad_data)
-        print("claude replay: bad_json_raw_drain PASS")
-        _, unknown = run_case(root, "unknown", 0)
-        assert any(e.get("type") == "future_event" for e in unknown)
-        run_case(root, "question_timeout", 0, qtimeout=1)
-        run_case(root, "mcp_missing", 4)
-        for index, mode in enumerate(("json", "nobehavior"), 1):
-            invalid_req = request(root, f"invalid_decision_{mode}")
-            invalid_stem = str(invalid_req)[:-len(".request.json")]
-            invalid_env = dict(os.environ, FOREMAN_SELFTEST="1", FOREMAN_CLAUDE_REPLAY_BAD_DECISION=mode)
-            invalid_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run", invalid_stem],
-                                            env=invalid_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-            assert invalid_proc.stdin and invalid_proc.stdout
-            rid = 700 + index
-            invalid_proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": "tools/call",
-                "params": {"name": "approve", "arguments": {"tool_name": "Bash",
-                    "input": {"command": "echo safe"}}}}) + "\n")
-            invalid_proc.stdin.flush()
-            invalid_reply = json.loads(invalid_proc.stdout.readline())
-            invalid_proc.terminate(); invalid_proc.wait(timeout=2)
-            invalid_decision = json.loads(invalid_reply["result"]["content"][0]["text"])
-            invalid_events = events(pathlib.Path(invalid_stem + ".jsonl"))
-            assert invalid_reply["id"] == rid and invalid_decision["behavior"] == "deny"
-            assert any("权限审查器异常" in e.get("_foreman", {}).get("reason", "") for e in invalid_events)
-        print("claude replay: invalid_decision PASS")
-        malformed_req = request(root, "permission_error_id")
-        permission_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run",
-                                            str(malformed_req)[:-len(".request.json")]],
-                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        assert permission_proc.stdin and permission_proc.stdout
-        permission_proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 77, "method": "tools/call", "params": 1}) + "\n")
-        permission_proc.stdin.flush()
-        malformed_reply = json.loads(permission_proc.stdout.readline())
-        permission_proc.terminate()
-        permission_proc.wait(timeout=2)
-        assert malformed_reply["id"] == 77 and "error" in malformed_reply
-        print("claude replay: invalid_decision_deny PASS")
-        run_case(root, "forbidden", 0)
-        closeout_req, _ = run_case(root, "closeout", 0, closeout=True)
-        closeout_deny = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
-        normal_req, _ = run_case(root, "non_closeout_graphql", 0)
-        normal_deny = json.loads(pathlib.Path(str(normal_req)[:-len(".request.json")] + ".settings.json").read_text())["permissions"]["deny"]
+
+        with case("snapshot_date_normalization"):
+            normalized_date = normalize_snapshot("feat/26-09-13/b ticket-26-09-13", root, HERE.parents[1])
+            assert normalized_date == "feat/<DATE>/b ticket-26-09-13"
+
+        success_stem = success_data = None
+        with case("success"):
+            success_req, success_data = run_case(root, "success", 0)
+            success_stem = str(success_req)[:-len(".request.json")]
+
+        with case("mcp_private_cleanup"):
+            # 私有 MCP 配置是临时文件：跑完必须删干净，登记只留在 .claude.json 的名单里。
+            assert success_stem is not None, "success 用例没跑成，这条无从校验"
+            assert not pathlib.Path(success_stem + ".mcp.json").exists()
+            claude_meta = json.loads(pathlib.Path(success_stem + ".claude.json").read_text())
+            # 名单里是本机继承来的用户级 server + foreman，不能写死成只有 foreman。
+            assert "mcp_config" not in claude_meta, claude_meta
+            assert isinstance(claude_meta["mcp_servers"], list), claude_meta
+            assert "foreman" in claude_meta["mcp_servers"], claude_meta
+
+        with case("first_line_paths"):
+            # jsonl 首行的位置块要如实记下这轮跑在哪：cwd / work_dir / 可写根都对得上请求。
+            assert success_data is not None, "success 用例没跑成，这条无从校验"
+            marker = success_data[0]["_foreman"]
+            assert marker["engine"] == "claude", marker
+            assert marker["cwd"] == str(root) and marker["work_dir"] == str(root), marker
+            settings = json.loads(pathlib.Path(success_stem + ".settings.json").read_text())
+            assert marker["writable_roots"] == settings["sandbox"]["allowWrite"], marker
+
+        with case("deny"):
+            _, deny = run_case(root, "deny", 0)
+            assert any(e.get("_foreman", {}).get("decision") == "deny" for e in deny)
+
+        with case("eof"):
+            run_case(root, "eof", 3)
+
+        with case("no_session"):
+            run_case(root, "no_session", 3)
+
+        bad_req = bad_data = None
+        with case("bad_json"):
+            bad_req, bad_data = run_case(root, "bad_json", 3)
+
+        with case("bad_json_raw_drain"):
+            bad_raw = pathlib.Path(str(bad_req)[:-len(".request.json")] + ".jsonl").read_text()
+            assert ' { "type" : "assistant", "opaque" : true } \n' in bad_raw
+            assert ' { "type" : "after_bad", "keep" : 1 } \n' in bad_raw
+            assert any(e.get("_foreman", {}).get("type") == "protocol_error" for e in bad_data)
+
+        with case("unknown"):
+            _, unknown = run_case(root, "unknown", 0)
+            assert any(e.get("type") == "future_event" for e in unknown)
+
+        with case("question_timeout"):
+            run_case(root, "question_timeout", 0, qtimeout=1)
+
+        with case("mcp_missing"):
+            run_case(root, "mcp_missing", 4)
+
+        with case("invalid_decision"):
+            for index, mode in enumerate(("json", "nobehavior"), 1):
+                invalid_req = request(root, f"invalid_decision_{mode}")
+                invalid_stem = str(invalid_req)[:-len(".request.json")]
+                invalid_env = dict(os.environ, FOREMAN_SELFTEST="1", FOREMAN_CLAUDE_REPLAY_BAD_DECISION=mode)
+                invalid_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run", invalid_stem],
+                                                env=invalid_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                assert invalid_proc.stdin and invalid_proc.stdout
+                rid = 700 + index
+                invalid_proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                    "params": {"name": "approve", "arguments": {"tool_name": "Bash",
+                        "input": {"command": "echo safe"}}}}) + "\n")
+                invalid_proc.stdin.flush()
+                invalid_reply = json.loads(invalid_proc.stdout.readline())
+                invalid_proc.terminate(); invalid_proc.wait(timeout=2)
+                invalid_decision = json.loads(invalid_reply["result"]["content"][0]["text"])
+                invalid_events = events(pathlib.Path(invalid_stem + ".jsonl"))
+                assert invalid_reply["id"] == rid and invalid_decision["behavior"] == "deny"
+                assert any("权限审查器异常" in e.get("_foreman", {}).get("reason", "") for e in invalid_events)
+
+        with case("invalid_decision_deny"):
+            malformed_req = request(root, "permission_error_id")
+            permission_proc = subprocess.Popen([sys.executable, str(BRIDGE), "permission-server", "--run",
+                                                str(malformed_req)[:-len(".request.json")]],
+                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            assert permission_proc.stdin and permission_proc.stdout
+            permission_proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 77, "method": "tools/call", "params": 1}) + "\n")
+            permission_proc.stdin.flush()
+            malformed_reply = json.loads(permission_proc.stdout.readline())
+            permission_proc.terminate()
+            permission_proc.wait(timeout=2)
+            assert malformed_reply["id"] == 77 and "error" in malformed_reply
+
+        with case("forbidden"):
+            run_case(root, "forbidden", 0)
+
+        closeout_req = normal_req = None
+        with case("closeout"):
+            closeout_req, _ = run_case(root, "closeout", 0, closeout=True)
+
+        with case("non_closeout_graphql"):
+            normal_req, _ = run_case(root, "non_closeout_graphql", 0)
+
         import importlib.util
         spec = importlib.util.spec_from_file_location("claude_bridge", BRIDGE)
         bridge = importlib.util.module_from_spec(spec)
@@ -398,186 +461,205 @@ def selftest() -> int:
             "vercel api x --method PUT", "supabase db push", "npx sst deploy", "echo eslint-disable",
             "pytest.foo.skip(", "git reset --hard HEAD", "git push origin HEAD --force", "git symbolic-ref HEAD x",
         ]
-        for _label, pattern, deny_globs in bridge.FORBIDDEN:
-            assert deny_globs
-            assert any(pattern.search(command) for command in forbidden_samples), pattern.pattern
-        for command in forbidden_samples:
-            assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
-        closeout_settings = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())
-        closeout_rules = closeout_settings["permissions"]["deny"]
-        normal_must_deny = (
-            "gh api -X PUT repos/x", "gh api repos/x -XPUT", "git  push origin HEAD",
-            "gh api graphql -f query=x", "git checkout -- src/a.ts", "vercel env pull",
-        )
-        never_deny = (
-            "grep -n highlight business/api/graphql.ts",
-            "git checkout -b x && pnpm install --frozen-lockfile",
-            "vercel inspect dep | grep environment", 'rg -n "graphql" src',
-        )
-        for command in normal_must_deny:
-            assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
-        for command in never_deny:
-            assert not any(claude_rule_matches(rule, command) for rule in normal_deny), command
-            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        for command in ("git push origin HEAD", "gh pr comment 1 -b ok", "gh api graphql -f query=x",
-                        "gh api repos/x/pulls/1/comments -X POST"):
-            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        for command in ("gh api -X PUT repos/x", "gh api repos/x -XPUT",
-                        "git push -f origin HEAD", "git push origin HEAD --force"):
-            assert any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        closeout_allowed = (
-            "git push origin HEAD 2>&1",
-            "git push origin HEAD >/dev/null 2>&1 && gh pr ready 1",
-            'gh pr comment 1 --body "R&D"', "gh pr comment 1 --body 'a; b'",
-        )
-        for command in closeout_allowed:
-            assert bridge.closeout_command_allowed(command), command
-            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        for command in ("git push origin feat/x-fix", "git push origin HEAD 2>&1"):
-            assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
-        for command in ("git push origin HEAD & git  reset --hard",
-                        "git push origin HEAD $(git  reset --hard)",
-                        "git push origin `git rev-parse HEAD`"):
-            assert not bridge.closeout_command_allowed(command), command
-        print("claude replay: command_segments_quoted_redirection PASS")
-        print("claude replay: deny_rules_no_false_positive PASS")
-        print("claude replay: deny_rules_shared_source PASS")
-        run_case(root, "success_stderr_warning", 0)
-        full_req, _ = run_case(root, "success_full", 0, full=True)
-        argv = pathlib.Path(str(full_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
-        assert b"bypassPermissions" in argv and b"--permission-prompt-tool" not in argv
-        review_req, review_data = run_case(root, "success_review", 0, review=True)
-        review_stem = pathlib.Path(str(review_req)[:-len(".request.json")])
-        review_argv = review_stem.with_suffix(".argv").read_bytes().split(b"\0")
-        review_settings = json.loads(review_stem.with_suffix(".settings.json").read_text())
-        review_meta = json.loads(review_stem.with_suffix(".claude.json").read_text())
-        assert b"--no-session-persistence" in review_argv and b"--tools" in review_argv and b"Read,Glob,Grep" in review_argv
-        assert all(rule in review_settings["permissions"]["deny"] for rule in
-                   ("Bash(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)"))
-        assert review_meta["mcp_servers"] == ["foreman"]
-        assert review_data[0]["_foreman"]["review_readonly"] == "tools_only"
-        assert review_stem.with_suffix(".last.md").read_text() == "## STATUS\nDONE"
-        assert "success_review" not in json.loads((root / "meta.json").read_text()).get("threads", {})
-        review_mcp = review_stem.with_suffix(".review-test-mcp.json")
-        review_mcp.write_text(json.dumps({"mcpServers": {"foreman": {"command": sys.executable,
-            "args": [str(BRIDGE), "permission-server", "--run", str(review_stem)]}}}))
-        review_rpc = Rpc(review_mcp)
-        try:
-            review_rpc.call("initialize", {})
-            review_decision = review_rpc.approve("AskUserQuestion", {"questions": [{"question": "写吗？"}]})
-        finally:
-            review_rpc.close()
-        assert review_decision["behavior"] == "deny"
-        print("claude replay: review_tools_only PASS")
-        resume_req, _ = run_case(root, "success_resume", 0, session="resume-secret")
-        argv = pathlib.Path(str(resume_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
-        assert b"--resume" in argv and b"resume-secret" in argv
-        mismatch_req = request(root, "resume_mismatch", session="resume-secret")
-        meta_path = root / "meta.json"
-        before_meta = json.loads(meta_path.read_text())
-        before_meta.setdefault("threads", {}).setdefault("resume_mismatch", {})["ref"] = "resume-secret"
-        meta_path.write_text(json.dumps(before_meta))
-        env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="resume_mismatch")
-        mismatch = subprocess.run([sys.executable, str(BRIDGE), "run", str(mismatch_req)], env=env, timeout=20)
-        assert mismatch.returncode == 3
-        assert json.loads(meta_path.read_text())["threads"]["resume_mismatch"]["ref"] == "resume-secret"
-        print("claude replay: resume_mismatch_no_ledger_write PASS")
+        closeout_rules = None
 
-        for index, (marker, full_reason) in enumerate((("false", "用户原话"), (True, "   "), (None, "用户原话")), 1):
-            invalid_req = request(root, f"full_invalid_{index}", full=marker, full_reason=full_reason)
-            if marker is None:
-                invalid_value = json.loads(invalid_req.read_text())
-                del invalid_value["user_explicitly_approved_full_access"]
-                invalid_req.write_text(json.dumps(invalid_value, ensure_ascii=False))
-            invalid_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="success")
-            invalid_proc = subprocess.run([sys.executable, str(BRIDGE), "run", str(invalid_req)], env=invalid_env, timeout=20)
-            assert invalid_proc.returncode == 3
-            invalid_events = events(pathlib.Path(str(invalid_req)[:-len(".request.json")] + ".jsonl"))
-            assert invalid_events[0]["_foreman"]["permission_mode"] == "auto"
-            assert invalid_events[-1]["_foreman"]["rc"] == 3
-        print("claude replay: full_access_strict_boolean PASS")
+        with case("deny_rules_shared_source"):
+            for _label, pattern, deny_globs in bridge.FORBIDDEN:
+                assert deny_globs
+                assert any(pattern.search(command) for command in forbidden_samples), pattern.pattern
 
-        req = request(root, "signal")
-        env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="signal")
-        proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(req)], env=env)
-        log = pathlib.Path(str(req)[:-len(".request.json")] + ".jsonl")
-        for _ in range(100):
-            if log.exists() and '"type":"system"' in log.read_text(errors="ignore"):
-                break
-            time.sleep(0.02)
-        proc.terminate()
-        assert proc.wait(timeout=10) == 143
-        data = events(log)
-        assert data[-1]["_foreman"]["rc"] == 143 and json.loads((root / "meta.json").read_text())["threads"]["signal"]["ref"]
-        print("claude replay: signal PASS")
+        with case("deny_rules_no_false_positive"):
+            assert normal_req is not None, "non_closeout_graphql 用例没跑成，这条无从校验"
+            normal_deny = json.loads(
+                pathlib.Path(str(normal_req)[:-len(".request.json")] + ".settings.json").read_text()
+            )["permissions"]["deny"]
+            for command in forbidden_samples:
+                assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
+            closeout_settings = json.loads(pathlib.Path(str(closeout_req)[:-len(".request.json")] + ".settings.json").read_text())
+            closeout_rules = closeout_settings["permissions"]["deny"]
+            normal_must_deny = (
+                "gh api -X PUT repos/x", "gh api repos/x -XPUT", "git  push origin HEAD",
+                "gh api graphql -f query=x", "git checkout -- src/a.ts", "vercel env pull",
+            )
+            never_deny = (
+                "grep -n highlight business/api/graphql.ts",
+                "git checkout -b x && pnpm install --frozen-lockfile",
+                "vercel inspect dep | grep environment", 'rg -n "graphql" src',
+            )
+            for command in normal_must_deny:
+                assert any(claude_rule_matches(rule, command) for rule in normal_deny), command
+            for command in never_deny:
+                assert not any(claude_rule_matches(rule, command) for rule in normal_deny), command
+                assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+            for command in ("git push origin HEAD", "gh pr comment 1 -b ok", "gh api graphql -f query=x",
+                            "gh api repos/x/pulls/1/comments -X POST"):
+                assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+            for command in ("gh api -X PUT repos/x", "gh api repos/x -XPUT",
+                            "git push -f origin HEAD", "git push origin HEAD --force"):
+                assert any(claude_rule_matches(rule, command) for rule in closeout_rules), command
 
-        ignore_req = request(root, "signal_ignore")
-        ignore_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
-                          CLAUDE_REPLAY_SCENARIO="signal_ignore", FOREMAN_CLAUDE_INTERRUPT_GRACE="0.5")
-        ignore_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(ignore_req)], env=ignore_env)
-        ignore_log = pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".jsonl")
-        for _ in range(100):
-            if ignore_log.exists() and b'"type": "system"' in ignore_log.read_bytes():
-                break
-            time.sleep(0.02)
-        started = time.monotonic()
-        ignore_proc.terminate()
-        assert ignore_proc.wait(timeout=5) == 143 and time.monotonic() - started < 5
-        ignore_data = events(ignore_log)
-        assert ignore_data[-1]["_foreman"]["rc"] == 143
-        assert pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".rc").read_text().strip() == "143"
-        assert not pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".mcp.json").exists()
-        print("claude replay: signal_ignore_hard_deadline PASS")
+        with case("command_segments_quoted_redirection"):
+            closeout_allowed = (
+                "git push origin HEAD 2>&1",
+                "git push origin HEAD >/dev/null 2>&1 && gh pr ready 1",
+                'gh pr comment 1 --body "R&D"', "gh pr comment 1 --body 'a; b'",
+            )
+            for command in closeout_allowed:
+                assert bridge.closeout_command_allowed(command), command
+                assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+            for command in ("git push origin feat/x-fix", "git push origin HEAD 2>&1"):
+                assert not any(claude_rule_matches(rule, command) for rule in closeout_rules), command
+            for command in ("git push origin HEAD & git  reset --hard",
+                            "git push origin HEAD $(git  reset --hard)",
+                            "git push origin `git rev-parse HEAD`"):
+                assert not bridge.closeout_command_allowed(command), command
 
-        startup_req = request(root, "startup_signal")
-        startup_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
-                           CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1")
-        startup_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(startup_req)], env=startup_env)
-        startup_log = pathlib.Path(str(startup_req)[:-len(".request.json")] + ".jsonl")
-        for _ in range(100):
-            if startup_log.exists():
-                break
-            time.sleep(0.01)
-        startup_proc.terminate()
-        assert startup_proc.wait(timeout=5) == 143
-        startup_stem = str(startup_req)[:-len(".request.json")]
-        startup_data = events(startup_log)
-        startup_meta = json.loads((root / "meta.json").read_text())
-        assert startup_data[-1]["_foreman"]["rc"] == 143
-        assert pathlib.Path(startup_stem + ".rc").read_text().strip() == "143"
-        assert not pathlib.Path(startup_stem + ".mcp.json").exists()
-        assert "ref" not in startup_meta.get("threads", {}).get("startup_signal", {})
-        assert not pathlib.Path(startup_stem + ".argv").exists()
-        print("claude replay: startup_signal PASS")
+        with case("success_stderr_warning"):
+            run_case(root, "success_stderr_warning", 0)
 
-        pre_popen_req = request(root, "startup_pre_popen")
-        pre_popen_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
-                             CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1",
-                             FOREMAN_CLAUDE_STARTUP_DELAY_STAGE="pre_popen")
-        pre_popen_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(pre_popen_req)],
-                                          env=pre_popen_env)
-        pre_popen_stem = str(pre_popen_req)[:-len(".request.json")]
-        pre_popen_argv = pathlib.Path(pre_popen_stem + ".argv")
-        for _ in range(200):
-            if pre_popen_argv.exists():
-                break
-            time.sleep(0.01)
-        assert pre_popen_argv.exists()
-        pre_popen_proc.terminate()
-        assert pre_popen_proc.wait(timeout=5) == 143
-        pre_popen_data = events(pathlib.Path(pre_popen_stem + ".jsonl"))
-        pre_popen_meta = json.loads((root / "meta.json").read_text())
-        assert pre_popen_data[-1]["_foreman"]["rc"] == 143
-        assert pathlib.Path(pre_popen_stem + ".rc").read_text().strip() == "143"
-        assert not pathlib.Path(pre_popen_stem + ".fake-started").exists()
-        assert not pathlib.Path(pre_popen_stem + ".mcp.json").exists()
-        assert "ref" not in pre_popen_meta.get("threads", {}).get("startup_pre_popen", {})
-        print("claude replay: startup_pre_popen_signal PASS")
+        full_req = None
+        with case("success_full_bypass_argv"):
+            full_req, _ = run_case(root, "success_full", 0, full=True)
+            argv = pathlib.Path(str(full_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
+            assert b"bypassPermissions" in argv and b"--permission-prompt-tool" not in argv
 
-        # 纯函数级配置守卫也放进同一回放入口，避免依赖真实 CLI。
-        settings = json.loads(pathlib.Path(str(full_req)[:-len(".request.json")] + ".settings.json").read_text())
-        assert settings["sandbox"]["enabled"] is False
-        print("claude replay: full_access PASS")
+        with case("review_tools_only"):
+            review_req, review_data = run_case(root, "success_review", 0, review=True)
+            review_stem = pathlib.Path(str(review_req)[:-len(".request.json")])
+            review_argv = review_stem.with_suffix(".argv").read_bytes().split(b"\0")
+            review_settings = json.loads(review_stem.with_suffix(".settings.json").read_text())
+            review_meta = json.loads(review_stem.with_suffix(".claude.json").read_text())
+            assert b"--no-session-persistence" in review_argv and b"--tools" in review_argv and b"Read,Glob,Grep" in review_argv
+            assert all(rule in review_settings["permissions"]["deny"] for rule in
+                       ("Bash(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)"))
+            assert review_meta["mcp_servers"] == ["foreman"]
+            assert review_data[0]["_foreman"]["review_readonly"] == "tools_only"
+            assert review_stem.with_suffix(".last.md").read_text() == "## STATUS\nDONE"
+            assert "success_review" not in json.loads((root / "meta.json").read_text()).get("threads", {})
+            review_mcp = review_stem.with_suffix(".review-test-mcp.json")
+            review_mcp.write_text(json.dumps({"mcpServers": {"foreman": {"command": sys.executable,
+                "args": [str(BRIDGE), "permission-server", "--run", str(review_stem)]}}}))
+            review_rpc = Rpc(review_mcp)
+            try:
+                review_rpc.call("initialize", {})
+                review_decision = review_rpc.approve("AskUserQuestion", {"questions": [{"question": "写吗？"}]})
+            finally:
+                review_rpc.close()
+            assert review_decision["behavior"] == "deny"
+
+        with case("resume_mismatch_no_ledger_write"):
+            resume_req, _ = run_case(root, "success_resume", 0, session="resume-secret")
+            argv = pathlib.Path(str(resume_req)[:-len(".request.json")] + ".argv").read_bytes().split(b"\0")
+            assert b"--resume" in argv and b"resume-secret" in argv
+            mismatch_req = request(root, "resume_mismatch", session="resume-secret")
+            meta_path = root / "meta.json"
+            before_meta = json.loads(meta_path.read_text())
+            before_meta.setdefault("threads", {}).setdefault("resume_mismatch", {})["ref"] = "resume-secret"
+            meta_path.write_text(json.dumps(before_meta))
+            env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="resume_mismatch")
+            mismatch = subprocess.run([sys.executable, str(BRIDGE), "run", str(mismatch_req)], env=env, timeout=20)
+            assert mismatch.returncode == 3
+            assert json.loads(meta_path.read_text())["threads"]["resume_mismatch"]["ref"] == "resume-secret"
+
+        with case("full_access_strict_boolean"):
+            for index, (marker, full_reason) in enumerate((("false", "用户原话"), (True, "   "), (None, "用户原话")), 1):
+                invalid_req = request(root, f"full_invalid_{index}", full=marker, full_reason=full_reason)
+                if marker is None:
+                    invalid_value = json.loads(invalid_req.read_text())
+                    del invalid_value["user_explicitly_approved_full_access"]
+                    invalid_req.write_text(json.dumps(invalid_value, ensure_ascii=False))
+                invalid_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="success")
+                invalid_proc = subprocess.run([sys.executable, str(BRIDGE), "run", str(invalid_req)], env=invalid_env, timeout=20)
+                assert invalid_proc.returncode == 3
+                invalid_events = events(pathlib.Path(str(invalid_req)[:-len(".request.json")] + ".jsonl"))
+                assert invalid_events[0]["_foreman"]["permission_mode"] == "auto"
+                assert invalid_events[-1]["_foreman"]["rc"] == 3
+
+        with case("signal"):
+            req = request(root, "signal")
+            env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE), CLAUDE_REPLAY_SCENARIO="signal")
+            proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(req)], env=env)
+            log = pathlib.Path(str(req)[:-len(".request.json")] + ".jsonl")
+            for _ in range(100):
+                if log.exists() and '"type":"system"' in log.read_text(errors="ignore"):
+                    break
+                time.sleep(0.02)
+            proc.terminate()
+            assert proc.wait(timeout=10) == 143
+            data = events(log)
+            assert data[-1]["_foreman"]["rc"] == 143 and json.loads((root / "meta.json").read_text())["threads"]["signal"]["ref"]
+
+        with case("signal_ignore_hard_deadline"):
+            ignore_req = request(root, "signal_ignore")
+            ignore_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
+                              CLAUDE_REPLAY_SCENARIO="signal_ignore", FOREMAN_CLAUDE_INTERRUPT_GRACE="0.5")
+            ignore_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(ignore_req)], env=ignore_env)
+            ignore_log = pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".jsonl")
+            for _ in range(100):
+                if ignore_log.exists() and b'"type": "system"' in ignore_log.read_bytes():
+                    break
+                time.sleep(0.02)
+            started = time.monotonic()
+            ignore_proc.terminate()
+            assert ignore_proc.wait(timeout=5) == 143 and time.monotonic() - started < 5
+            ignore_data = events(ignore_log)
+            assert ignore_data[-1]["_foreman"]["rc"] == 143
+            assert pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".rc").read_text().strip() == "143"
+            assert not pathlib.Path(str(ignore_req)[:-len(".request.json")] + ".mcp.json").exists()
+
+        with case("startup_signal"):
+            startup_req = request(root, "startup_signal")
+            startup_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
+                               CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1")
+            startup_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(startup_req)], env=startup_env)
+            startup_log = pathlib.Path(str(startup_req)[:-len(".request.json")] + ".jsonl")
+            for _ in range(100):
+                if startup_log.exists():
+                    break
+                time.sleep(0.01)
+            startup_proc.terminate()
+            assert startup_proc.wait(timeout=5) == 143
+            startup_stem = str(startup_req)[:-len(".request.json")]
+            startup_data = events(startup_log)
+            startup_meta = json.loads((root / "meta.json").read_text())
+            assert startup_data[-1]["_foreman"]["rc"] == 143
+            assert pathlib.Path(startup_stem + ".rc").read_text().strip() == "143"
+            assert not pathlib.Path(startup_stem + ".mcp.json").exists()
+            assert "ref" not in startup_meta.get("threads", {}).get("startup_signal", {})
+            assert not pathlib.Path(startup_stem + ".argv").exists()
+
+        with case("startup_pre_popen_signal"):
+            pre_popen_req = request(root, "startup_pre_popen")
+            pre_popen_env = dict(os.environ, FOREMAN_SELFTEST="1", CLAUDE_BIN=str(HERE),
+                                 CLAUDE_REPLAY_SCENARIO="success", FOREMAN_CLAUDE_STARTUP_DELAY="1",
+                                 FOREMAN_CLAUDE_STARTUP_DELAY_STAGE="pre_popen")
+            pre_popen_proc = subprocess.Popen([sys.executable, str(BRIDGE), "run", str(pre_popen_req)],
+                                              env=pre_popen_env)
+            pre_popen_stem = str(pre_popen_req)[:-len(".request.json")]
+            pre_popen_argv = pathlib.Path(pre_popen_stem + ".argv")
+            for _ in range(200):
+                if pre_popen_argv.exists():
+                    break
+                time.sleep(0.01)
+            assert pre_popen_argv.exists()
+            pre_popen_proc.terminate()
+            assert pre_popen_proc.wait(timeout=5) == 143
+            pre_popen_data = events(pathlib.Path(pre_popen_stem + ".jsonl"))
+            pre_popen_meta = json.loads((root / "meta.json").read_text())
+            assert pre_popen_data[-1]["_foreman"]["rc"] == 143
+            assert pathlib.Path(pre_popen_stem + ".rc").read_text().strip() == "143"
+            assert not pathlib.Path(pre_popen_stem + ".fake-started").exists()
+            assert not pathlib.Path(pre_popen_stem + ".mcp.json").exists()
+            assert "ref" not in pre_popen_meta.get("threads", {}).get("startup_pre_popen", {})
+
+        with case("full_access"):
+            # 纯函数级配置守卫也放进同一回放入口，避免依赖真实 CLI。
+            settings = json.loads(pathlib.Path(str(full_req)[:-len(".request.json")] + ".settings.json").read_text())
+            assert settings["sandbox"]["enabled"] is False
+
+    if failed:
+        print(f"claude replay: {len(failed)} case(s) FAILED: {', '.join(failed)}")
+        return 1
     print("claude replay: ALL PASS")
     return 0
 

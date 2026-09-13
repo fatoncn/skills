@@ -27,6 +27,8 @@ SCRIPT = pathlib.Path(__file__).resolve()
 sys.path.insert(0, str(SCRIPT.parent))
 from summarize import FORBIDDEN  # noqa: E402
 
+STDOUT_DRAIN_TIMEOUT = 5.0  # protocol_error 后仍要把 stdout 读到 EOF 才落盘；这个硬超时只防子进程真挂住不退出
+
 DEFAULT_CANNED_ANSWER = (
     "编排者当前不在线，无法实时回答。请按你最合理的理解把能做的部分做完，"
     "不要在关键取舍上猜着做；把这个问题原文写进交付报告的「需要澄清」一节，"
@@ -669,6 +671,13 @@ def run_bridge(request_path: pathlib.Path) -> int:
             request_stop(True)
         assert proc.stdin and proc.stdout
         protocol_failed = False
+        # protocol_error 之后仍显式把 stdout 排空到 EOF 再落盘：子进程可能紧跟着还有一行已经在管道里
+        # 的输出（比如坏 JSON 后面那行），SIGTERM 是异步的，不能假设它一发出子进程就停止写入。
+        # drain_deadline 只在判定失败之后启用（启动期 BrokenPipe 与循环里的坏 JSON 两处都要设），
+        # 它只是「别再等下去了、提前收尾」，不是挂死的兜底：真正兜底的是 request_stop 拉起的
+        # hard_stop_after_grace，宽限期一到 SIGKILL 整个进程组。select 也只保证有数据可读，
+        # 子进程写了半行就不动的话 readline 照样阻塞，同样得等那记 SIGKILL 把管道关掉。
+        drain_deadline = None
         try:
             proc.stdin.write(pathlib.Path(req["prompt_path"]).read_bytes())
             proc.stdin.close()
@@ -677,7 +686,19 @@ def run_bridge(request_path: pathlib.Path) -> int:
             protocol_failed = True
             foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
             request_stop(False)
-        for raw in proc.stdout:
+            drain_deadline = time.monotonic() + STDOUT_DRAIN_TIMEOUT
+        while True:
+            if drain_deadline is not None:
+                remaining = drain_deadline - time.monotonic()
+                if remaining <= 0:
+                    foreman_event(jsonl, {"type": "protocol_error", "reason": "stdout 排空超时，提前收尾"})
+                    break
+                ready, _, _ = select.select([proc.stdout], [], [], remaining)
+                if not ready:
+                    continue
+            raw = proc.stdout.readline()
+            if not raw:
+                break
             append_raw(jsonl, raw)
             if protocol_failed or not raw.strip():
                 continue
@@ -690,6 +711,7 @@ def run_bridge(request_path: pathlib.Path) -> int:
                 protocol_failed = True
                 foreman_event(jsonl, {"type": "protocol_error", "reason": terminal_reason})
                 request_stop(False)
+                drain_deadline = time.monotonic() + STDOUT_DRAIN_TIMEOUT
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
                 init_session = event.get("session_id")
