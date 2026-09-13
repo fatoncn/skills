@@ -11,7 +11,7 @@
 | `REVIEW-<id>.md` | `review --prompt` | 需求口径（前因后果、做到什么程度、有意不做的）+ 关注点 | 复审者（只提意见，你拍板） |
 | `accept-brief-<id>.md` | 验收线程首轮 `run --role accept --prompt`，证据目录用 `--writable` 放开 | 复测入口、账号、逐步操作与应看到什么、证据要求、不在范围项 | 验收者 + 你 |
 | PR 描述 | `foreman pr --body-file` | 改了什么、风险档、复测入口、项目要求的实测证据 | review 机器人 + 收尾者 + 合并的人 |
-| `HANDOFF-<PR>-closeout.md` | `run <id> --closeout --prompt`（实现者续同一线程），或贴给做实现的外部会话 | 收尾任务书 | 实现者（收尾轮） |
+| `HANDOFF-<PR>-closeout.md` | `run <id> --closeout --prompt`（实现者续同一线程） | 收尾任务书 | 实现者（收尾轮） |
 | `ACCEPT-<PR>.md` | 报可合时给用户 | 验收包三件 | 亲自验收的人 |
 
 ---
