@@ -4,7 +4,7 @@
 
 | skill | 一句话 |
 | --- | --- |
-| [`foreman`](foreman/SKILL.md) | 编排层统筹、执行层干活：Claude Code 当编排者，指挥本地 codex（走 `codex app-server` 协议）在独立 git worktree 里调研、实现、交叉复审、验收、收尾成 PR；票 / 线程 / 角色由脚本强制，验收靠机械检查 + 事后越界探针。 |
+| [`foreman`](foreman/SKILL.md) | 编排层统筹、执行层干活。一份**分工指导**（统筹 / 执行怎么切、foreman → spawn → 外部会话三条通道怎么选、任务书与验收纪律，任何编排会话都适用）加一套**外派框架**（只在要把活外派给 spawn 之外的 Agent 时启用）：Claude Code 当编排者，指挥本地 codex（`codex app-server` 协议；claude 引擎 beta）在独立 git worktree 里调研、实现、交叉复审、验收、收尾成 PR，票 / 线程 / 角色由脚本强制，验收靠机械检查 + 事后越界探针。 |
 
 ## 安装
 
