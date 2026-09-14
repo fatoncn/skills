@@ -6,6 +6,7 @@
 - 五份角色文件改为引擎无关的沙箱、MCP 与提问措辞，并明确 turn 结束前缺交付报告即失败。
 - Claude 引擎事实补齐一轮一进程、禁止后台等待与改写依赖、IDE 目录不可写及环境失败如实阻塞的边界。
 - Codex / Claude 桥按角色或收尾契约传入的报告标记校验最后消息；正常结束但缺标记时返回 rc 6、subtype `no_report`，且不触发自动 check。
+- `review` 角色 Codex 档位由 gpt-6-astra / high 降为 gpt-6-astra / medium（cookie 09-15）；Claude 档位不变。
 
 ## 1.5.7 — 2026-09-15
 

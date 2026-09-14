@@ -154,10 +154,10 @@ model = "sonnet"
 effort = "high"
 
 [roles.review]
-# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
+# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + medium。硬规矩：复审永远开新线程，绝不沿用实现的会话
 engine = "codex"
 model = "gpt-6-astra"
-effort = "high"
+effort = "medium"
 
 [roles.review.claude]
 model = "opus"
