@@ -1,5 +1,9 @@
 # foreman 版本记录
 
+## 1.5.4 — 2026-09-14
+
+- 分工第二级回到最初版本（cookie 09-14，参照 foreman 之前工作区规则「开工前先对齐模式」）：派 spawn 还是 foreman 开工前由用户定，会话开头、派出第一项执行工作之前必须让用户二选一，不再预设「优先外派 foreman」；「各自擅长」表只作用户定通道的参考、不是路由判据；核心口径、第一次用、互斥、阶段 1 调研票、阶段 4 验收派谁的散见说法同步对齐。
+
 ## 1.5.3 — 2026-09-13
 
 - 修 #25：codex 桥写第一条 initialize 时子进程已经退出的话，stdin 拿到的 EPIPE 会作为未捕获异常把执行体打挂——前台 run 落不下 rc、常驻执行体也不给排队轮次判失败，shell 侧只能按「没跑起来」补 rc 3；改成把写失败转成带 `engine_exit` 标记的协议错误，和 stdout 读到 EOF 走同一条「只看子进程 stderr 尾部」的不可用分类（先等进程真正退出，再在 1s 判定窗口里轮询重读，免得读得比子进程写得早），起不来的 codex 在前台 run、常驻执行体、review、research / accept 各条派发路径上都稳定判 rc 4。新增三条回放用例：`immediate_exit_before_first_write_is_engine_down` 钉住前台 run 的 EPIPE 路径、`holder_boot_failure_marks_queued_runs_engine_down` 钉住常驻执行体把 boot 失败落成排队轮次的 rc 4、`immediate_exit_slow_stderr_still_classifies_unavailable` 钉住 stderr 迟到时仍按判定窗口轮询重读（孙进程的 stdout 重定向到 /dev/null，桥读到 EOF 时 stderr 还是空的，只读一次必然误判 rc 3）。
