@@ -97,6 +97,17 @@ expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
 expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
 expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
+printf '# 缺报告标记\n\n## 输出格式（强制）\n\n正文里没有二级标题。\n' > "$T/role-without-report-marker.md"
+cp "$FOREMAN_HOME/roles/implement.md" "$T/implement-role.saved.md"
+cp "$T/role-without-report-marker.md" "$FOREMAN_HOME/roles/implement.md"
+missing_run_marker_out="$("$F" run 1 --prompt "$T/brief.md" --title x 2>&1)"; missing_run_marker_rc=$?
+cp "$T/implement-role.saved.md" "$FOREMAN_HOME/roles/implement.md"
+if [ "$missing_run_marker_rc" -ne 0 ] && printf '%s' "$missing_run_marker_out" | grep -q '角色 implement 的输出格式段没有二级标题，无法生成报告标记'; then ok "run 拒绝缺报告标记的角色文件"; else bad "run 缺报告标记守卫" "rc=$missing_run_marker_rc"; fi
+cp "$FOREMAN_HOME/roles/review.md" "$T/review-role.saved.md"
+cp "$T/role-without-report-marker.md" "$FOREMAN_HOME/roles/review.md"
+missing_review_marker_out="$("$F" review 1 --engine codex --title x 2>&1)"; missing_review_marker_rc=$?
+cp "$T/review-role.saved.md" "$FOREMAN_HOME/roles/review.md"
+if [ "$missing_review_marker_rc" -ne 0 ] && printf '%s' "$missing_review_marker_out" | grep -q '角色 review 的输出格式段没有二级标题，无法生成报告标记'; then ok "review 拒绝缺报告标记的角色文件"; else bad "review 缺报告标记守卫" "rc=$missing_review_marker_rc"; fi
 retired_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/1/meta.json' -print -quit)")"
 retired_before="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
 retired_run_out="$("$F" run 1 --thread retired-run --engine codex-exec --prompt "$T/brief.md" --title x 2>&1)"; retired_run_rc=$?

@@ -132,7 +132,7 @@ concurrency = 3
 # 三个参考角色 implement / review / mechanical 都必需（foreman setup --confirm 会查）；再多的自己起名，foreman run --role <名> 取用。
 # 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
 #   implement  = 旗舰或次旗舰 + medium
-#   review     = 旗舰 + high
+#   review     = 旗舰 + medium
 #   mechanical = 次旗舰 + low～medium（便宜但精准）
 #   research   = 旗舰 + high 及以上（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
 #   accept     = 旗舰或次旗舰 + high，比实现者高一档（验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept）
@@ -287,7 +287,7 @@ if extra: print("  参考角色样例、未在表里（档位没定义时 run --
 PY2
   echo
   echo "implement / review / mechanical 三个参考角色必需；research（只读调研）、accept（验收）随样例一起给，建议保留；再多的自己起名。收尾不是角色，由实现者续线程做。"
-  echo "档位口径（按描述选，模型迭代后重选，foreman doctor 看当前可用模型）：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + high；轻活 = 次旗舰 + low～medium（便宜但精准）；调研 = 与实现者同级 + high 及以上；验收 = 与实现者同级 + medium。"
+  echo "档位口径（按描述选，模型迭代后重选，foreman doctor 看当前可用模型）：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + medium；轻活 = 次旗舰 + low～medium（便宜但精准）；调研 = 与实现者同级 + high 及以上；验收 = 与实现者同级 + medium。"
   echo "角色文件 = 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式），不含干活纪律；干活纪律每轮写进任务书。"
   echo "改角色：直接编辑角色文件；加角色：加 [roles.<名>] + 同名 .md（或 prompt = \"<路径>\"）。"
   echo "下一步：把这张表和角色文件念给用户过目；用户确认后执行: foreman setup --confirm 。确认前 run / review 会拒绝派活。"
@@ -1333,8 +1333,10 @@ cmd_review() {
   init_repo_context; require_git; require_project; require_issue "$issue"
   require_roles_confirmed
   require_role review
-  local review_role_file
+  local review_role_file report_marker
   review_role_file="$(role_prompt_file review)"
+  report_marker="$(report_marker_from_file "$review_role_file")"
+  [ -n "$report_marker" ] || die "角色 review 的输出格式段没有二级标题，无法生成报告标记"
   [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
   case "$engine" in codex|pi|claude) ;; *) die "review: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
   if [ "$engine" = claude ]; then
@@ -1423,7 +1425,7 @@ EOF
       "approval_policy=$(cfg codex.approval_policy on-request)" "approvals_reviewer=$(cfg codex.approvals_reviewer auto_review)" "approvals=decline" \
       "model=$model" "effort=$effort" \
       "developer_instructions=@file:$dir/review-$n.dev.md" "prompt=@file:$dir/review-$n.prompt.md" \
-      "report_marker=$(report_marker_from_file "$review_role_file")" \
+      "report_marker=$report_marker" \
       "thread_id=" "ephemeral=@json:true" \
       "meta_path=$dir/meta.json" "meta_thread_key=threads.review-$n.ref" \
       "out_jsonl=$dir/review-$n.jsonl" "out_stderr=$dir/review-$n.stderr" "out_last=$dir/review-$n.last.md" \
@@ -1462,7 +1464,7 @@ EOF
       "cwd=$PROJECT_ROOT" "work_dir=$wt" "writable_roots=@json:[]" "session_id=@json:null" \
       "timeout=@json:$timeout" "questions_path=$dir/review-$n.questions.json" "answer_path=$dir/review-$n.answer.json" \
       "question_timeout=@json:0" "user_explicitly_approved_full_access=@json:false" "full_access_reason=" \
-      "report_marker=$(report_marker_from_file "$review_role_file")" \
+      "report_marker=$report_marker" \
       "closeout=@json:false" "review_readonly=tools_only" "inherit_user_mcp=@json:false" \
       "persist_session=@json:false" "tools=Read,Glob,Grep" "no_session_persistence=@json:true" \
       "jsonl_path=$dir/review-$n.jsonl" "stderr_path=$dir/review-$n.stderr" "last_path=$dir/review-$n.last.md" "claude_json_path=$dir/review-$n.claude.json" \
