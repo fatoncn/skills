@@ -446,12 +446,15 @@ def turn_event(method, thread, turn, **extra):
     return {"method": method, "params": params}
 
 
-def run_turn(events, expect_error=False, pre_response=True, observer=None):
+def run_turn(events, expect_error=False, pre_response=True, observer=None, report_marker=None):
     response = {"$requestId": True, "result": {"turn": {"id": "root-turn"}}}
     emitted = [{"message": event} for event in events]
     step = {"method": "turn/start", "emit": (emitted + [{"message": response}]) if pre_response else ([{"message": response}] + emitted)}
     def client(server, bridge):
-        runner = bridge.Runner({"thread_id": "root-thread", "prompt": "fixture"})
+        req = {"thread_id": "root-thread", "prompt": "fixture"}
+        if report_marker is not None:
+            req["report_marker"] = report_marker
+        runner = bridge.Runner(req)
         runner.server = server
         def notify(message):
             runner.handle_notification(message)
@@ -484,6 +487,25 @@ def root_final_then_child_final():
     assert rc == 0 and runner.final_text == "ROOT"
     assert runner.token_usage is None and runner.child_token_usage["subagent-1"]["total"]["inputTokens"] == 3
     print("turn identity: root final survives child final PASS")
+
+
+def missing_report_marker_fails():
+    final = turn_event("item/completed", "root-thread", "root-turn",
+                       item={"type": "agentMessage", "phase": "final_answer", "text": "完成"})
+    completed = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    runner, rc = run_turn([final, completed], report_marker="## STATUS")
+    assert rc == 6 and runner.result_subtype == "no_report"
+    assert runner.terminal_reason == "最后一条消息缺 `## STATUS`"
+    print("report marker: missing -> no_report PASS")
+
+
+def present_report_marker_succeeds():
+    final = turn_event("item/completed", "root-thread", "root-turn",
+                       item={"type": "agentMessage", "phase": "final_answer", "text": "## STATUS\nDONE"})
+    completed = turn_event("turn/completed", "root-thread", "root-turn", status="completed")
+    _, rc = run_turn([final, completed], report_marker="## STATUS")
+    assert rc == 0
+    print("report marker: present unchanged PASS")
 
 
 def old_turn_is_ignored():
@@ -595,7 +617,8 @@ CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False)
          holder_boot_failure_marks_queued_runs_engine_down,
          expired_nested_response,
          duplicate_pending_and_suppression, real_question_steer_chain,
-         root_final_then_child_final, old_turn_is_ignored, child_completion_is_not_root_completion,
+         root_final_then_child_final, missing_report_marker_fails, present_report_marker_succeeds,
+         old_turn_is_ignored, child_completion_is_not_root_completion,
          pre_response_notifications_replayed, no_root_completion_is_not_inferred, child_second_turn_is_tracked,
          summary_uses_same_identity_rules]
 

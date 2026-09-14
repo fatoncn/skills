@@ -483,6 +483,10 @@ def classify_engine_down(text: str) -> bool:
                                              "mcp tool mcp__foreman__approve", "permission-prompt-tool"))
 
 
+def has_report_marker(text: str | None, marker: str) -> bool:
+    return any(line.strip() == marker for line in (text or "").splitlines())
+
+
 def run_bridge(request_path: pathlib.Path) -> int:
     req = json.loads(request_path.read_text(encoding="utf-8"))
     stem = pathlib.Path(str(request_path)[:-len(".request.json")])
@@ -621,7 +625,11 @@ def run_bridge(request_path: pathlib.Path) -> int:
         facts = ("\n\n---\n\n# Claude 引擎事实\n\n"
                  "- Bash 沙箱只约束 Bash 启动的子进程；本轮 cwd 内的可写范围仍以任务书为准。\n"
                  f"- Claude settings 放开的写路径：{', '.join(roots) or '无'}。\n"
-                 + mcp_fact + question_fact)
+                 + mcp_fact + question_fact
+                 + "- 一轮一进程：这个 turn 结束就是本轮结束，没有下一轮。所有命令前台跑完再继续；不要 `run_in_background`，不要 ScheduleWakeup / Monitor / `sleep` 轮询去等；后台等待会让本轮在没交付的情况下结束。\n"
+                 "- 沙箱内不装依赖，不跑会改写 `node_modules` 的包管理器命令（如 `pnpm install`）；依赖由编排者派活前备好，缺失就报 BLOCKED。\n"
+                 "- `.idea` / `.vscode` 等 IDE 目录不可写。\n"
+                 "- 环境跑不动（EPERM、mktemp 失败、命令被沙箱拒）就如实报 BLOCKED 并附原始报错；不调试沙箱、不绕沙箱。\n")
         system_path.write_text(dev + facts, encoding="utf-8")
         if not full:
             ok, why = preflight_permission(stem)
@@ -756,6 +764,10 @@ def run_bridge(request_path: pathlib.Path) -> int:
             final_rc, subtype, terminal_reason = 4, "engine_down", stderr_text.strip()[-1000:]
         else:
             final_rc, subtype, terminal_reason = 3, "protocol_error", "EOF 前未收到 result"
+        marker = str(req.get("report_marker") or "").strip()
+        final_text = (result_event or {}).get("result")
+        if final_rc == 0 and marker and not has_report_marker(final_text if isinstance(final_text, str) else None, marker):
+            final_rc, subtype, terminal_reason = 6, "no_report", f"最后一条消息缺 `{marker}`"
     except Exception as exc:
         if not terminal_reason:
             terminal_reason = f"Claude 桥异常: {exc}"

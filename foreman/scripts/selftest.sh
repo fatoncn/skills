@@ -63,6 +63,9 @@ done
 for replay_case in 'root final survives child final' 'stale turn ignored' 'child completion does not settle root' 'pre-response notifications replayed' 'no inferred root completion' 'child second turn tracked'; do
   if printf '%s\n' "$replay_out" | grep -q "turn identity: ${replay_case} PASS"; then ok "主轮身份：${replay_case}"; else bad "主轮身份：${replay_case}"; fi
 done
+for replay_case in 'missing -> no_report' 'present unchanged'; do
+  if printf '%s\n' "$replay_out" | grep -q "report marker: ${replay_case} PASS"; then ok "Codex 回放报告标记：${replay_case}"; else bad "Codex 回放报告标记：${replay_case}"; fi
+done
 
 grep -P '' /dev/null >/dev/null 2>&1; grep_p_rc=$?
 if [ "$grep_p_rc" -ne 2 ]; then
@@ -137,6 +140,9 @@ p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("\nrequest_user_
 PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
 expect_grep "位置块按环境写 rg 可用性" "执行环境：rg:" cat "${req%.request.json}.prompt.md"
+expect_grep "Codex 位置块写本轮 timeout" "本轮时限：30 秒" cat "${req%.request.json}.prompt.md"
+expect_no_grep "Codex 位置块不写 Claude 轮数 / 美元预算" "Claude 预算" cat "${req%.request.json}.prompt.md"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["report_marker"] == "## STATUS"' "$req" && ok "run 请求从角色输出格式解析报告标记" || bad "run 请求报告标记"
 expect_grep "accept 角色把范围外失败归观察" "通过（范围外 N 条）" cat "$SKILL_DIR/assets/roles/accept.md"
 expect_grep "收尾契约禁用 CI 前台 watch" "不要用.*--watch" cat "$SKILL_DIR/assets/CLOSEOUT.md"
 expect_grep "收尾契约 push 后立即报告且不等 CI" "push 并回复 / resolve.*立即交报告结束.*不在执行者 turn 里等 CI" cat "$SKILL_DIR/assets/CLOSEOUT.md"
@@ -1006,6 +1012,13 @@ report_check_out="$("$F" report 1 93 2>&1)"
 if printf '%s\n' "$report_check_out" | grep -q '需要人工/编排者判断' && printf '%s\n' "$report_check_out" | grep -q '失败命令: false'; then ok "report 完整 check FAIL 横幅"; else bad "report check FAIL 横幅" "$report_check_out"; fi
 rm -f "$steer_dir"/run-93.*
 
+printf '%s\n' '{"_fleet":"thread","threadId":"root"}' '{"method":"turn/completed","params":{"threadId":"root","turn":{"id":"turn","status":"completed"}}}' '{"_fleet":"turn_summary","threadId":"root","turnId":"turn","status":"completed","rc":6,"subtype":"no_report","terminal_reason":"最后一条消息缺 `## STATUS`"}' > "$steer_dir/run-92.jsonl"
+: > "$steer_dir/run-92.stderr"; printf '完成\n' > "$steer_dir/run-92.last.md"; printf 6 > "$steer_dir/run-92.rc"; printf implement > "$steer_dir/run-92.role"; printf here > "$steer_dir/run-92.pr"; : > "$steer_dir/run-92.argv"
+no_report_report="$($F report 1 92 2>&1)"; no_report_status="$($F status 1 2>&1)"
+if printf '%s\n' "$no_report_report" | grep -q 'rc=6 / subtype=no_report'; then ok "report 顶部横幅反映缺交付报告"; else bad "report 缺交付报告横幅" "$no_report_report"; fi
+if printf '%s\n' "$no_report_status" | grep -q 'run#92.*rc=6'; then ok "status 显示 no_report 的 rc=6"; else bad "status no_report rc" "$no_report_status"; fi
+rm -f "$steer_dir"/run-92.*
+
 printf '%s\n' '{"_fleet":"thread","threadId":"root"}' '{"_fleet":"turn_summary","threadId":"root","turnId":"turn","status":"completed"}' > "$steer_dir/run-95.jsonl"
 : > "$steer_dir/run-95.check.pending"; printf 0 > "$steer_dir/run-95.rc"; printf 'FAILED: fixture' > "$steer_dir/run-95.check.status"
 list_failed="$($F list 2>&1)"; rm -f "$steer_dir/run-95.check.status"; printf '%s' "$$" > "$steer_dir/run-95.check.pid"
@@ -1029,7 +1042,7 @@ claude_replay_out="$(python3 -B "$SKILL_DIR/tests/claude_replay.py" --selftest 2
 # （issue #27），这里不能再拿整体 claude_replay_rc 当前置条件，否则任何一条用例失败就会把其余
 # 二十多条一起标红。必须同时要求「有自己的 PASS 行」且「没有自己的 FAIL 行」，只看 PASS 会被
 # 「先 PASS 后 FAIL」的输出骗过去。
-for claude_case in snapshot_date_normalization success mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal startup_pre_popen_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql command_segments_quoted_redirection deny_rules_no_false_positive deny_rules_shared_source success_stderr_warning success_full_bypass_argv resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
+for claude_case in snapshot_date_normalization success report_marker_missing report_marker_present mcp_private_cleanup first_line_paths deny eof no_session bad_json bad_json_raw_drain unknown question_timeout signal signal_ignore_hard_deadline startup_signal startup_pre_popen_signal mcp_missing invalid_decision invalid_decision_deny forbidden closeout non_closeout_graphql command_segments_quoted_redirection deny_rules_no_false_positive deny_rules_shared_source success_stderr_warning success_full_bypass_argv resume_mismatch_no_ledger_write full_access_strict_boolean review_tools_only full_access; do
   if printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} PASS" \
      && ! printf '%s\n' "$claude_replay_out" | grep -q "claude replay: ${claude_case} FAIL"; then
     ok "Claude 回放：${claude_case}"
@@ -1050,6 +1063,7 @@ p=pathlib.Path(sys.argv[1]); stem=str(p)[:-len('.request.json')]
 m=json.load(open(p.parent/'meta.json')); assert m['threads']['claude-haiku']['ref']=='session-replay-001'
 a=pathlib.Path(stem+'.argv').read_bytes().split(b'\0'); assert b'claude_replay.py' in a[0] and b'--permission-mode' in a and b'auto' in a
 PY2
+expect_grep "Claude 位置块写轮数与美元预算" 'Claude 预算：工具调用轮数上限 80、预算 \$5' cat "${claude_req%.request.json}.prompt.md"
 expect_rc "Claude resume 轮次成功" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title resume --timeout 30 --no-check
 claude_resume_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
 python3 - "$claude_resume_req" <<'PY2' && ok "Claude resume argv 带同一 session" || bad "Claude resume argv"

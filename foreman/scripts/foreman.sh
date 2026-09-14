@@ -896,6 +896,10 @@ os.execvp(sys.argv[1], sys.argv[1:])' bash "$SCRIPT_PATH" __exec "$MAIN_REPO" "$
 # 开发者指令 = 角色提示词 + 批次背景（meta.context）+ 额外 --context 文件
 # 本轮位置：每轮生成、放在 prompt 顶部（不放开发者指令：常驻线程的开发者指令在载入时定死，而位置每轮可能换 PR）
 POSITION_WRITABLE=""   # run --writable 放开的目录，写进位置块；review 没有
+POSITION_TIMEOUT=""
+POSITION_ENGINE=""
+POSITION_MAX_TURNS=""
+POSITION_MAX_BUDGET_USD=""
 position_block() {   # 只写事实（规矩在角色文件里说一遍，这里不重复）
   echo "# 本轮位置（foreman 生成，以此为准；规矩见角色文件）"; echo
   echo "- cwd：\`${PROJECT_ROOT}\`（项目根）"
@@ -909,6 +913,10 @@ position_block() {   # 只写事实（规矩在角色文件里说一遍，这里
     echo "$loc"
   else
     echo "- 工作目录：无（只读的活；任务书没让改文件就不要改）"
+  fi
+  echo "- 本轮时限：${POSITION_TIMEOUT} 秒（到点进程被杀，本轮判失败）"
+  if [ "$POSITION_ENGINE" = "claude" ]; then
+    echo "- Claude 预算：工具调用轮数上限 ${POSITION_MAX_TURNS}、预算 \$${POSITION_MAX_BUDGET_USD}"
   fi
   local d; for d in $POSITION_WRITABLE; do echo "- 交付目录（额外可写）：\`${d}\`"; done
 }
@@ -929,6 +937,13 @@ assemble_dev_instructions() {
   done <<EOF
 $extra_ctx
 EOF
+}
+
+report_marker_from_file() { # <角色文件或收尾契约>；取「输出格式」段里的首个二级标题
+  awk '
+    seen && /^## / { print; exit }
+    /^## .*输出格式/ { seen=1 }
+  ' "$1"
 }
 
 # write_request <out.json> <key=value ...>   值以 @file 开头表示读文件内容；@json: 开头表示原样 JSON
@@ -1154,7 +1169,14 @@ cmd_run() {
   fi
   prompt_file="$dir/run-$n.prompt.md"
   [ "$engine" != "claude" ] || claude_apply_steers "$dir" "$tname" "$prompt_file"
-  POSITION_WRITABLE="$writable"; prepend_position "$prompt_file"; POSITION_WRITABLE=""
+  POSITION_WRITABLE="$writable"; POSITION_TIMEOUT="$timeout"; POSITION_ENGINE="$engine"
+  POSITION_MAX_TURNS="$max_turns"; POSITION_MAX_BUDGET_USD="$max_budget_usd"
+  prepend_position "$prompt_file"
+  POSITION_WRITABLE=""; POSITION_TIMEOUT=""; POSITION_ENGINE=""; POSITION_MAX_TURNS=""; POSITION_MAX_BUDGET_USD=""
+  local report_marker
+  if [ "$closeout" -eq 1 ]; then report_marker="$(report_marker_from_file "$ASSETS_DIR/CLOSEOUT.md")"; fi
+  [ -n "$report_marker" ] || report_marker="$(report_marker_from_file "$(role_prompt_file "$rf_role")")"
+  [ -n "$report_marker" ] || die "角色 ${rf_role} 的输出格式段没有二级标题，无法生成报告标记"
   # run-N.role 给 summarize 选探针放行表：收尾轮写 closeout（阶段标记，放行对自己 PR 的 push / gh 写），其它写角色名
   if [ "$closeout" -eq 1 ]; then printf 'closeout' > "$dir/run-$n.role"; else printf '%s' "$role" > "$dir/run-$n.role"; fi
   if [ "$full_access" -eq 1 ]; then printf '%s' "$full_access_reason" > "$dir/run-$n.full-access"; else rm -f "$dir/run-$n.full-access"; fi
@@ -1193,7 +1215,7 @@ cmd_run() {
         "config_overrides=@json:$(config_overrides_json workspace-write "$wt" "$effort" "$wt $writable")" \
         "approval_policy=$ap" "approvals_reviewer=$ar" "approvals=$(cfg codex.approvals decline)" \
         "model=$model" "effort=$effort" \
-        "developer_instructions=@file:$dir/run-$n.dev.md" "prompt=@file:$prompt_file" \
+        "developer_instructions=@file:$dir/run-$n.dev.md" "prompt=@file:$prompt_file" "report_marker=$report_marker" \
         "thread_id=$thread" "ephemeral=@json:false" \
         "out_jsonl=$dir/run-$n.jsonl" "out_stderr=$dir/run-$n.stderr" "out_last=$dir/run-$n.last.md" \
         "meta_path=$dir/meta.json" "meta_thread_key=threads.$tname.ref" \
@@ -1241,7 +1263,7 @@ EOF
         "cwd=$PROJECT_ROOT" "work_dir=$wt" "writable_roots=@json:$roots_json" "session_id=@json:$thread_json" \
         "timeout=@json:$timeout" "questions_path=$dir/run-$n.questions.json" "answer_path=$dir/run-$n.answer.json" \
         "question_timeout=@json:$qtimeout" "user_explicitly_approved_full_access=@json:$([ "$full_access" -eq 1 ] && echo true || echo false)" \
-        "full_access_reason=$full_access_reason" "closeout=@json:$([ "$closeout" -eq 1 ] && echo true || echo false)" \
+        "full_access_reason=$full_access_reason" "closeout=@json:$([ "$closeout" -eq 1 ] && echo true || echo false)" "report_marker=$report_marker" \
         "jsonl_path=$dir/run-$n.jsonl" "stderr_path=$dir/run-$n.stderr" "last_path=$dir/run-$n.last.md" "claude_json_path=$dir/run-$n.claude.json" \
         "thread_title=$thread_name" "meta_path=$dir/meta.json" \
         "max_turns=@json:$max_turns" "max_budget_usd=@json:$max_budget_usd"
@@ -1272,7 +1294,7 @@ EOF
   if [ "$detach" -eq 0 ]; then
     wait_auto_check "$dir/run-$n"
     local rc; rc="$(cat "$dir/run-$n.rc" 2>/dev/null || echo '?')"
-    [ "$rc" = "0" ] || echo "!! 执行体非零退出 rc=${rc}（1=turn failed 2=被中断 3=没跑起来 4=执行器不可用 5=线程被桌面端占着 143=超时被杀）" >&2
+    [ "$rc" = "0" ] || echo "!! 执行体非零退出 rc=${rc}（1=turn failed 2=被中断 3=没跑起来 4=执行器不可用 5=线程被桌面端占着 6=缺交付报告 143=超时被杀）" >&2
     cmd_report_inner "$issue" "$n" || true
     case "$rc" in 0) return 0 ;; [0-9]*) return "$rc" ;; *) return 1 ;; esac   # 前台跑完把执行体退出码传出去
   fi
@@ -1389,7 +1411,9 @@ $unclean"
 
 按你的输出格式给意见。
 EOF
-    append_review_focus "$dir/review-$n.prompt.md" "$focus"; prepend_position "$dir/review-$n.prompt.md"
+    append_review_focus "$dir/review-$n.prompt.md" "$focus"
+    POSITION_TIMEOUT="$timeout"; POSITION_ENGINE=codex; prepend_position "$dir/review-$n.prompt.md"
+    POSITION_TIMEOUT=""; POSITION_ENGINE=""
     thread_set "$issue" "review-$n" engine codex; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" ephemeral "@json:true" >/dev/null 2>&1 || true; thread_set "$issue" "review-$n" runs "review-$n"
     write_request "$dir/review-$n.request.json" \
       "codex_bin=$CODEX_BIN" "home=$CODEX_HOME_DIR" "cwd=$PROJECT_ROOT" "work_dir=$wt" \
@@ -1399,6 +1423,7 @@ EOF
       "approval_policy=$(cfg codex.approval_policy on-request)" "approvals_reviewer=$(cfg codex.approvals_reviewer auto_review)" "approvals=decline" \
       "model=$model" "effort=$effort" \
       "developer_instructions=@file:$dir/review-$n.dev.md" "prompt=@file:$dir/review-$n.prompt.md" \
+      "report_marker=$(report_marker_from_file "$review_role_file")" \
       "thread_id=" "ephemeral=@json:true" \
       "meta_path=$dir/meta.json" "meta_thread_key=threads.review-$n.ref" \
       "out_jsonl=$dir/review-$n.jsonl" "out_stderr=$dir/review-$n.stderr" "out_last=$dir/review-$n.last.md" \
@@ -1424,16 +1449,20 @@ diff、任务书、交付报告与被审 worktree 里的上下文都用 Read 读
 
 按你的输出格式给意见。
 EOF
-    append_review_focus "$dir/review-$n.prompt.md" "$focus"; prepend_position "$dir/review-$n.prompt.md"
-    thread_set "$issue" "review-$n" engine claude; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" ephemeral "@json:true" >/dev/null 2>&1 || true; thread_set "$issue" "review-$n" runs "review-$n"
+    append_review_focus "$dir/review-$n.prompt.md" "$focus"
     local claude_max_turns claude_max_budget
     claude_max_turns="$(cfg claude.max_turns 80)"; claude_max_budget="$(cfg claude.max_budget_usd 5)"
+    POSITION_TIMEOUT="$timeout"; POSITION_ENGINE=claude; POSITION_MAX_TURNS="$claude_max_turns"; POSITION_MAX_BUDGET_USD="$claude_max_budget"
+    prepend_position "$dir/review-$n.prompt.md"
+    POSITION_TIMEOUT=""; POSITION_ENGINE=""; POSITION_MAX_TURNS=""; POSITION_MAX_BUDGET_USD=""
+    thread_set "$issue" "review-$n" engine claude; thread_set "$issue" "review-$n" role review; thread_set "$issue" "review-$n" kind review; thread_set "$issue" "review-$n" ephemeral "@json:true" >/dev/null 2>&1 || true; thread_set "$issue" "review-$n" runs "review-$n"
     write_request "$dir/review-$n.request.json" \
       "issue=$issue" "thread=review-$n" "role=review" "model=$model" "effort=$effort" \
       "prompt_path=$dir/review-$n.prompt.md" "dev_instructions_path=$dir/review-$n.dev.md" \
       "cwd=$PROJECT_ROOT" "work_dir=$wt" "writable_roots=@json:[]" "session_id=@json:null" \
       "timeout=@json:$timeout" "questions_path=$dir/review-$n.questions.json" "answer_path=$dir/review-$n.answer.json" \
       "question_timeout=@json:0" "user_explicitly_approved_full_access=@json:false" "full_access_reason=" \
+      "report_marker=$(report_marker_from_file "$review_role_file")" \
       "closeout=@json:false" "review_readonly=tools_only" "inherit_user_mcp=@json:false" \
       "persist_session=@json:false" "tools=Read,Glob,Grep" "no_session_persistence=@json:true" \
       "jsonl_path=$dir/review-$n.jsonl" "stderr_path=$dir/review-$n.stderr" "last_path=$dir/review-$n.last.md" "claude_json_path=$dir/review-$n.claude.json" \
@@ -1615,6 +1644,10 @@ PY
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; print_check_report "$dir/$kind-$n"; return 0; fi
+  if [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 6 ]; then
+    echo "!!!! 需要人工/编排者判断 !!!!"
+    echo "  - 执行者最后一条消息缺交付报告标记（rc=6 / subtype=no_report）"
+  fi
   [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 143 ] && timed_out=1
   wt_touched_probe "$issue" "$dir" "$kind" "$n"
   if [ ! -f "$dir/$kind-$n.jsonl" ]; then

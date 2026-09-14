@@ -147,7 +147,13 @@ def fake_claude(argv: list[str]) -> int:
     if scenario == "success_stderr_warning":
         print("warning: cached rate limit notice", file=sys.stderr, flush=True)
     print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "完成"}]}}), flush=True)
-    print(json.dumps({"type": "result", "subtype": "success", "session_id": session, "result": "## STATUS\nDONE",
+    if scenario == "report_marker_missing":
+        result_text = "完成"
+    elif scenario == "success_review" or "--tools" in sys.argv:
+        result_text = "## 总体印象\n通过"
+    else:
+        result_text = "## STATUS\nDONE"
+    print(json.dumps({"type": "result", "subtype": "success", "session_id": session, "result": result_text,
                       "usage": {"input_tokens": 10, "output_tokens": 4}, "total_cost_usd": 0.01}), flush=True)
     return 0
 
@@ -178,6 +184,7 @@ def request(root: pathlib.Path, scenario: str, *, session: str = "", full: objec
         "last_path": str(stem) + ".last.md",
         "claude_json_path": str(stem) + ".claude.json", "thread_title": scenario,
         "meta_path": str(meta), "max_turns": 8, "max_budget_usd": 0.5,
+        "report_marker": "## 总体印象" if review else "## STATUS",
     }
     path = pathlib.Path(str(stem) + ".request.json")
     path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
@@ -358,6 +365,16 @@ def selftest() -> int:
             success_req, success_data = run_case(root, "success", 0)
             success_stem = str(success_req)[:-len(".request.json")]
 
+        with case("report_marker_missing"):
+            _, missing_data = run_case(root, "report_marker_missing", 6)
+            summary = missing_data[-1]["_foreman"]
+            assert summary["subtype"] == "no_report"
+            assert summary["terminal_reason"] == "最后一条消息缺 `## STATUS`"
+
+        with case("report_marker_present"):
+            _, present_data = run_case(root, "report_marker_present", 0)
+            assert present_data[-1]["_foreman"]["subtype"] == "success"
+
         with case("mcp_private_cleanup"):
             # 私有 MCP 配置是临时文件：跑完必须删干净，登记只留在 .claude.json 的名单里。
             assert success_stem is not None, "success 用例没跑成，这条无从校验"
@@ -534,7 +551,7 @@ def selftest() -> int:
                        ("Bash(*)", "Write(*)", "Edit(*)", "MultiEdit(*)", "NotebookEdit(*)"))
             assert review_meta["mcp_servers"] == ["foreman"]
             assert review_data[0]["_foreman"]["review_readonly"] == "tools_only"
-            assert review_stem.with_suffix(".last.md").read_text() == "## STATUS\nDONE"
+            assert review_stem.with_suffix(".last.md").read_text() == "## 总体印象\n通过"
             assert "success_review" not in json.loads((root / "meta.json").read_text()).get("threads", {})
             review_mcp = review_stem.with_suffix(".review-test-mcp.json")
             review_mcp.write_text(json.dumps({"mcpServers": {"foreman": {"command": sys.executable,

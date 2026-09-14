@@ -14,7 +14,8 @@
 协议实测笔记见 references/codex-app-server.md；request.json 字段表也在那里。
 
 退出码: 0 = turn 正常完成; 1 = turn failed; 2 = 被中断（turn/interrupt 生效）;
-        3 = 启动 / 协议阶段失败（没跑起来）; 4 = 执行器不可用; 5 = 线程被别的客户端占着（shared home 下桌面端打开了它）; 143 = 被 SIGTERM 杀且未能优雅中断。
+        3 = 启动 / 协议阶段失败（没跑起来）; 4 = 执行器不可用; 5 = 线程被别的客户端占着（shared home 下桌面端打开了它）;
+        6 = 最后一条 agent 消息缺交付报告标记; 143 = 被 SIGTERM 杀且未能优雅中断。
 """
 from __future__ import annotations
 
@@ -118,6 +119,10 @@ class ProtocolError(RuntimeError):
     def __init__(self, message, engine_exit: bool = False):
         super().__init__(message)
         self.engine_exit = engine_exit
+
+
+def has_report_marker(text: str | None, marker: str) -> bool:
+    return any(line.strip() == marker for line in (text or "").splitlines())
 
 
 REQUEST_INPUT_FEATURE = "default_mode_request_user_input"
@@ -844,6 +849,11 @@ class Runner:
             rc = 1
         if self.timed_out:
             rc = 143
+        marker = str(self.req.get("report_marker") or "").strip()
+        if rc == 0 and marker and not has_report_marker(self.final_text, marker):
+            rc = 6
+            self.result_subtype = "no_report"
+            self.terminal_reason = f"最后一条消息缺 `{marker}`"
         return rc
 
     def _classify_failure(self, exc) -> int:
@@ -952,7 +962,7 @@ class Runner:
         if last:
             with open(last, "w", encoding="utf-8") as fh:
                 fh.write(self.final_text or "")
-        srv.log_event({
+        summary = {
             "_fleet": "turn_summary",
             "rc": rc,
             "status": self.turn_status or ("interrupted" if self.interrupt_requested else "unknown"),
@@ -966,7 +976,11 @@ class Runner:
             "durationMs": now_ms() - self.started,
             "finalPhase": self.final_phase,
             "hasFinalText": bool(self.final_text),
-        })
+        }
+        if getattr(self, "result_subtype", None):
+            summary["subtype"] = self.result_subtype
+            summary["terminal_reason"] = self.terminal_reason
+        srv.log_event(summary)
 
 
 # ---------- hold：常驻占着线程，直到编排者 release ----------
