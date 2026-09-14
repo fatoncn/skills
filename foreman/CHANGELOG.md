@@ -1,5 +1,9 @@
 # foreman 版本记录
 
+## 1.5.5 — 2026-09-14
+
+- claude 引擎五个角色默认档位调整（cookie 09-14）：`review` fable/high → opus/xhigh，`research` sonnet/xhigh → opus/high，`implement` sonnet/medium → sonnet/high，`accept` sonnet/high → sonnet/xhigh，`mechanical` 不变（sonnet/low）。依据两天四张真实票的表现：implement 用 sonnet/medium 修脚本两轮没到根因；review 用 fable/high 意见全部成立但贵。
+
 ## 1.5.4 — 2026-09-14
 
 - 分工第二级回到最初版本（cookie 09-14，参照 foreman 之前工作区规则「开工前先对齐模式」）：派 spawn 还是 foreman 开工前由用户定，会话开头、派出第一项执行工作之前必须让用户二选一，不再预设「优先外派 foreman」；「各自擅长」表只作用户定通道的参考、不是路由判据；核心口径、第一次用、互斥、阶段 1 调研票、阶段 4 验收派谁的散见说法同步对齐。

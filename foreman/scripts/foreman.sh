@@ -151,7 +151,7 @@ effort = "medium"
 
 [roles.implement.claude]
 model = "sonnet"
-effort = "medium"
+effort = "high"
 
 [roles.review]
 # 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
@@ -160,8 +160,8 @@ model = "gpt-6-astra"
 effort = "high"
 
 [roles.review.claude]
-model = "fable"
-effort = "high"
+model = "opus"
+effort = "xhigh"
 
 [roles.mechanical]
 # 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：次旗舰 + low～medium（便宜但精准）
@@ -180,8 +180,8 @@ model = "gpt-6-astra"
 effort = "high"
 
 [roles.research.claude]
-model = "sonnet"
-effort = "xhigh"
+model = "opus"
+effort = "high"
 
 [roles.accept]
 # 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high，比实现者高一档（假「通过」最贵）
@@ -191,7 +191,7 @@ effort = "high"
 
 [roles.accept.claude]
 model = "sonnet"
-effort = "high"
+effort = "xhigh"
 
 # 再多的角色照样子加，名字自定，foreman run --role <名> 取用。
 

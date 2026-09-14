@@ -92,5 +92,5 @@ effort = "medium"
 
 [roles.implement.claude]
 model = "sonnet"
-effort = "medium"
+effort = "high"
 ```
