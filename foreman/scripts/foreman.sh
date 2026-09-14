@@ -174,9 +174,9 @@ model = "sonnet"
 effort = "low"
 
 [roles.research]
-# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + high 及以上
+# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：与实现者同级（旗舰或次旗舰）+ high
 engine = "codex"
-model = "gpt-6-astra"
+model = "gpt-5.6-sol"
 effort = "high"
 
 [roles.research.claude]

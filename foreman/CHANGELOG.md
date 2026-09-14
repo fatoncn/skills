@@ -1,5 +1,9 @@
 # foreman 版本记录
 
+## 1.5.6 — 2026-09-15
+
+- `research` 角色的 codex 档位由 gpt-6-astra / high 降为 gpt-5.6-sol / high（cookie 09-15：调研用旗舰太奢侈，与实现者同级即可）；claude 档位不变。
+
 ## 1.5.5 — 2026-09-14
 
 - claude 引擎五个角色默认档位调整（cookie 09-14）：`review` fable/high → opus/xhigh，`research` sonnet/xhigh → opus/high，`implement` sonnet/medium → sonnet/high，`accept` sonnet/high → sonnet/xhigh，`mechanical` 不变（sonnet/low）。依据两天四张真实票的表现：implement 用 sonnet/medium 修脚本两轮没到根因；review 用 fable/high 意见全部成立但贵。
