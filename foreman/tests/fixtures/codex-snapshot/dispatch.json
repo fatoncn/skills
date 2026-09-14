@@ -334,7 +334,7 @@
         "home": "<HOME>/.codex",
         "meta_path": "<TMP>/home/projects/proj/issues/<REPO_SLUG>/2/meta.json",
         "meta_thread_key": "threads.research.ref",
-        "model": "gpt-6-astra",
+        "model": "gpt-5.6-sol",
         "out_jsonl": "<TMP>/home/projects/proj/issues/<REPO_SLUG>/2/<ROUND:run-2>.jsonl",
         "out_last": "<TMP>/home/projects/proj/issues/<REPO_SLUG>/2/<ROUND:run-2>.last.md",
         "out_rc": "<TMP>/home/projects/proj/issues/<REPO_SLUG>/2/<ROUND:run-2>.rc",
