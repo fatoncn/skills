@@ -100,13 +100,28 @@ $(tail -1 "$FOREMAN_ROOT/.toml-err")"
 # cfg <dotted.key> [default]  —— 缺失且无默认时报错退出
 # 读项目配置：[repos."<当前仓库 slug>"] 里的同名键优先于顶层
 cfg() {
+  if [ -z "$PROJECT_TOML" ] || [ ! -f "$PROJECT_TOML" ]; then
+    if [ $# -ge 2 ]; then
+      gcfg "$1" "$2"
+    else
+      local v; v="$(gcfg "$1" "")"
+      [ -n "$v" ] && printf '%s' "$v" || die "foreman.toml 缺字段 $1（当前不在已初始化项目内，未找到项目配置）"
+    fi
+    return
+  fi
   if [ $# -ge 2 ]; then
     python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" "$1" --default "$2"
   else
     python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" "$1" || die "foreman.toml 缺字段 $1"
   fi
 }
-cfg_opt() { python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" "$1" --default "" 2>/dev/null || true; }
+cfg_opt() {
+  if [ -z "$PROJECT_TOML" ] || [ ! -f "$PROJECT_TOML" ]; then
+    gcfg "$1" ""
+  else
+    python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" "$1" --default "" 2>/dev/null || true
+  fi
+}
 
 # 全局配置（本机一份，所有项目共用）：并发上限放这里，因为 codex 额度是按账号算的，不分项目
 ensure_global_config() {
@@ -2443,7 +2458,7 @@ cmd_doctor() {
   if [ "$CODEX_HOME_MODE" = "shared" ]; then echo "模式=shared  CODEX_HOME=$CODEX_HOME_DIR  （桌面端能看到 foreman 线程；执行者继承桌面端 config.toml 的 MCP / 插件 / notify / 全局 AGENTS.md）"
   else echo "模式=$CODEX_HOME_MODE  CODEX_HOME=$CODEX_HOME_DIR  auth.json → $(readlink "$CODEX_HOME_DIR/auth.json" 2>/dev/null)  （桌面端看不到线程，用 foreman tail / report）"; fi
   echo; echo "--- app-server 握手（不起模型，零 token）---"
-  python3 "$PY_APPSERVER" probe --home "$CODEX_HOME_DIR" --codex "$CODEX_BIN" --request-user-input "$(cfg codex.request_user_input true)" || echo "!! app-server 握手失败：codex 执行器暂时不可用，把上面的原始报错告诉用户；不要自行排代理 / 换节点"
+  python3 "$PY_APPSERVER" probe --home "$CODEX_HOME_DIR" --codex "$CODEX_BIN" --request-user-input "$(gcfg codex.request_user_input true)" || echo "!! app-server 握手失败：codex 执行器暂时不可用，把上面的原始报错告诉用户；不要自行排代理 / 换节点"
 
   if [ -z "$wt" ]; then doctor_claude; return 0; fi
   echo; echo "--- 沙箱边界自检（codex sandbox，不起模型，零 token）---"

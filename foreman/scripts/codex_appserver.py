@@ -1240,12 +1240,14 @@ def probe(argv: list[str]) -> int:
         else:
             i += 1
     log_path = os.path.join(home, "fleet-probe.jsonl")
-    try:
-        os.remove(log_path)
-    except OSError:
-        pass
+    stderr_path = os.path.join(home, "fleet-probe.stderr")
+    for path in (log_path, stderr_path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     print(feature_report(request_input_feature(codex_bin, home, os.getcwd()), ask))
-    srv = AppServer(codex_bin, home, os.getcwd(), [(REQUEST_INPUT_KEY, ask)], log_path, os.path.join(home, "fleet-probe.stderr"))
+    srv = AppServer(codex_bin, home, os.getcwd(), [(REQUEST_INPUT_KEY, ask)], log_path, stderr_path)
     srv.on_server_request = lambda m: srv.respond(m["id"], error={"code": -32601, "message": "probe"})
     srv.on_notification = lambda m: None
     try:
@@ -1270,6 +1272,14 @@ def probe(argv: list[str]) -> int:
         return 0
     except ProtocolError as exc:
         print(f"!! probe 失败: {exc}", file=sys.stderr)
+        Runner._classify_from_stderr(srv)
+        lines = Runner._read_stderr_tail(srv).splitlines()[-20:]
+        print("app-server stderr 尾部（最多 20 行）:", file=sys.stderr)
+        if lines:
+            for line in lines:
+                print(f"  | {line}", file=sys.stderr)
+        else:
+            print("  | stderr 为空", file=sys.stderr)
         return 1
     finally:
         srv.close()

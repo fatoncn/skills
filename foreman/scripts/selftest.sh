@@ -19,7 +19,44 @@ SH
 chmod +x "$T/bin/python3"
 export PATH="$T/bin:$PATH"
 export FOREMAN_HOME="$T/home" FOREMAN_CODEX_BIN="$T/fake-codex"
-printf '#!/bin/sh\necho "fake codex: connection refused" >&2\nexit 1\n' > "$T/fake-codex"; chmod +x "$T/fake-codex"
+cat > "$T/fake-codex" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+
+if os.environ.get("FOREMAN_DOCTOR_FAKE") != "1":
+    print("fake codex: connection refused", file=sys.stderr)
+    raise SystemExit(1)
+
+with open(os.environ["FOREMAN_DOCTOR_ARGV_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(sys.argv[1:], ensure_ascii=False) + "\n")
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli fake-doctor")
+elif args[:2] == ["login", "status"]:
+    print("Logged in (fake)")
+elif args[:2] == ["features", "list"]:
+    print("default_mode_request_user_input under-development false")
+elif args and args[0] == "app-server":
+    for line in sys.stdin:
+        message = json.loads(line)
+        if "id" not in message:
+            continue
+        method = message.get("method")
+        if method == "initialize":
+            result = {"codexHome": os.environ.get("CODEX_HOME"), "userAgent": "fake-doctor"}
+        elif method == "account/read":
+            result = {"account": {"type": "chatgpt", "planType": "test"}}
+        elif method == "account/rateLimits/read":
+            result = {"rateLimits": {}}
+        elif method == "model/list":
+            result = {"data": []}
+        else:
+            result = {}
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+else:
+    raise SystemExit(2)
+PY
+chmod +x "$T/fake-codex"
 ln -s "$SKILL_DIR/tests/claude_replay.py" "$T/bin/claude"
 pass=0; fails=()
 ok()   { pass=$((pass+1)); echo "  [OK]  $1"; }
@@ -55,6 +92,7 @@ replay_out="$(python3 -B "$SKILL_DIR/tests/appserver_replay.py" --selftest 2>&1)
 if [ "$replay_rc" -eq 0 ] && printf '%s\n' "$replay_out" | grep -q 'fixture baseline:'; then ok "app-server 可编排 stdio 回放夹具自检"; else bad "app-server 回放夹具" "$replay_out"; fi
 for replay_case in outer-first inner-first 'timeout cleanup' 'nested error' 'EOF cleanup' 'unknown/late diagnostic' \
   'EOF-only stderr classification' 'immediate exit + backgrounded slow stderr still classifies ENGINE_DOWN' \
+  'probe failure prints stderr tail' \
   'engine exits before first write -> ENGINE_DOWN' 'holder boot failure marks queued runs ENGINE_DOWN' \
   'expired nested response' 'pending duplicate + diagnostic suppression' \
   'request_user_input -> consume_steers -> turn/steer'; do
@@ -91,6 +129,13 @@ cd "$T/proj/app" || exit 1
 echo "== 本机初始化 =="
 expect_rc   "setup --codex-home shared" 0 "$F" setup --codex-home shared
 expect_rc   "setup（生成角色表 + 角色文件）" 0 "$F" setup
+mkdir -p "$T/nogit-doctor" "$T/doctor-home"
+doctor_nogit_out="$(cd "$T/nogit-doctor" && FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_CODEX_HOME="$T/doctor-home" "$F" doctor 2>&1)"; doctor_nogit_rc=$?
+if [ "$doctor_nogit_rc" -eq 0 ] && ! printf '%s\n' "$doctor_nogit_out" | grep -q '需要 --path' && printf '%s\n' "$doctor_nogit_out" | grep -q -- '--- app-server 握手' && printf '%s\n' "$doctor_nogit_out" | grep -q '执行体进程值=true' && grep -q 'features.default_mode_request_user_input=true' "$T/doctor.argv"; then
+  ok "非 git 目录 doctor 不读项目配置且握手携带 request_user_input=true"
+else
+  bad "非 git 目录 doctor" "rc=${doctor_nogit_rc}，输出尾行: $(printf '%s\n' "$doctor_nogit_out" | tail -1)"
+fi
 expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1

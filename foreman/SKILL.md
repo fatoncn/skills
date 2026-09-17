@@ -2,7 +2,7 @@
 name: foreman
 description: 编排层统筹、执行层干活。一份分工指导 + 一套外派框架。分工指导（统筹与执行怎么切、两条通道 外派 foreman / 宿主 spawn 子 agent 开工前由用户选定、任务书与验收怎么写怎么核）任何编排会话都适用，走 spawn 时同样按它；外派框架（切票，派 codex 主线 / claude beta 在独立 git worktree 里调研或实现、机械验收、交叉复审、返工、收尾成 PR，pi 可选）只在要把活外派给 spawn 之外的 Agent 时启用，也只在那时才需要初始化。用户说「派给 codex / claude」「用 foreman」「拆票并发做」「排查一下」「调研一下」「交叉复审这个分支」「收尾这张 PR」「处理 review 反馈」「报可合」，或要 spawn 子 agent 分工时使用。不定需求口径、不落 DDL、不替人点合并。
 metadata:
-  version: "1.5.8"
+  version: "1.5.9"
 ---
 
 # foreman：指挥本地编码 agent 并发写代码

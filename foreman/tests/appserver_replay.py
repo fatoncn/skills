@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -263,6 +264,23 @@ def immediate_exit_slow_stderr_still_classifies_unavailable():
             rc = bridge.Runner(dead_codex_request(root, codex)).run()
         assert rc == 4, rc
     print("request routing: immediate exit + backgrounded slow stderr still classifies ENGINE_DOWN PASS")
+
+
+def probe_failure_prints_stderr_tail():
+    bridge = load_bridge()
+    with tempfile.TemporaryDirectory(prefix="foreman-appserver-probe-stderr-") as tmp:
+        root = Path(tmp)
+        marker = "fatal: invalid app-server override"
+        codex = write_fake_codex(root, f"echo '{marker}' >&2\nexit 1\n")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc = bridge.probe(["--home", str(root / "codex-home"), "--codex", str(codex)])
+        output = stderr.getvalue()
+        assert rc == 1, rc
+        assert "!! probe 失败:" in output, output
+        assert "app-server stderr 尾部" in output, output
+        assert f"  | {marker}" in output, output
+    print("request routing: probe failure prints stderr tail PASS")
 
 
 def write_fake_codex(root: Path, body: str) -> Path:
@@ -613,6 +631,7 @@ def summary_uses_same_identity_rules():
 CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False),
          outer_timeout, nested_error, eof_cleanup, orphan_diagnostics, failure_classification_uses_only_eof_tail,
          immediate_exit_slow_stderr_still_classifies_unavailable,
+         probe_failure_prints_stderr_tail,
          immediate_exit_before_first_write_is_engine_down,
          holder_boot_failure_marks_queued_runs_engine_down,
          expired_nested_response,
