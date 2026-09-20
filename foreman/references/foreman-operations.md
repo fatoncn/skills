@@ -62,7 +62,7 @@ ln -sfn ~/skills/foreman ~/.codex/skills/foreman  # 装到 Codex；Codex 新会�
 
 codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 foreman 线程，但执行者继承桌面端 config.toml 里的 MCP、插件、notify 和全局 AGENTS.md，**foreman 占着的线程桌面端打不开（这是有意的：线程由常驻执行体持锁，直到 `release` / `cleanup`）；反过来桌面端先打开了某条线程时 foreman 续不上，`status` 显示 `THREAD_BUSY`，关掉它再续**。把差别念给用户选。切换后旧线程仍按创建时的 home 续；复审线程是 ephemeral，两种模式都不留。
 
-角色 = 执行器 + 模型 + 推理档 + 角色文件：档位放 `~/.foreman/config.toml`，角色文件放 `~/.foreman/roles/<名>.md`（`setup` 从 `../assets/roles/` 拷五份样例，可改可加，或 `[roles.<名>].prompt` 指到别处）。implement / review / mechanical 三个参考角色必需，research / accept 建议保留；缺角色或缺文件拒绝派活；再多的自定，`run --role <名>` 取用。模型档位按 [通用编排指导](orchestration-guide.md#角色与模型档位) 选择。
+角色 = 执行器 + 模型 + 推理档 + 角色文件：档位放 `~/.foreman/config.toml`，角色文件放 `~/.foreman/roles/<名>.md`（`setup` 从 `../assets/roles/` 拷五份样例，可改可加，或 `[roles.<名>].prompt` 指到别处）。implement / review / mechanical 三个参考角色必需，research / accept 建议保留；缺角色或缺文件拒绝派活；再多的自定，`run --role <名>` 取用。派发沿用已配置档位；首次配置或用户要求重新选型时，按 [通用编排指导](orchestration-guide.md#角色与模型档位) 选择。
 
 **角色文件只写契约**：位置、沙箱事实、分工边界（探针会查什么）、提问方式、输出格式。怎么干活不写在里面，每轮由你写进任务书（模板有可选「工作纪律」段）、复审关注点用 `review --prompt`、收尾规则写在收尾任务书里；角色文件与项目规则或任务书冲突时以后者为准。**收尾不是角色**：由实现者带着原口径续同一线程做（`run --closeout`）。并发上限：本机 `engines.concurrency` 是默认（5），项目 `foreman.toml` 同名键可覆盖；计数是本机所有项目合计在跑的 codex 线程（run 与 review 都算），因为执行者和用户自己的 Codex 抢同一份订阅额度。claude 走独立池，上限 `[engines.claude] concurrency`（默认 3）。
 
