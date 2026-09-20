@@ -27,6 +27,8 @@ The output contains:
 - `com.public-access.<project>.plist`: macOS LaunchAgent.
 - `verification.md`: commands and expected evidence, with no automatic execution.
 
+Supervisor artifacts contain absolute paths to the current Node executable, installed skill runner, rendered manifest, and output directory. Keep that output directory in its final location. Re-render and reinstall the unit after moving the skill/output or upgrading/removing that Node installation.
+
 ## Relay preflight
 
 Before installing anything, establish these facts with read-only checks:
@@ -60,15 +62,15 @@ Do not enable the final config before its certificate files exist; Nginx will fa
 
 ## Tunnel supervision
 
-Use exactly one generated supervisor for the local operating system. The runner retries consecutive SSH failures with bounded exponential delays and exits after the configured limit; launchd/systemd may then restart the runner according to its own policy.
+Use exactly one generated supervisor for the local operating system. The runner retries consecutive SSH failures with bounded exponential delays and exits after the configured limit; launchd/systemd may then restart the runner according to its own policy. Supervise the local application independently: a healthy tunnel cannot serve an application process that has exited.
 
-For macOS, copy the plist to the user's `~/Library/LaunchAgents`, then use `launchctl bootstrap`/`kickstart` for that label. For Linux, copy the unit to `~/.config/systemd/user`, run `systemctl --user daemon-reload`, enable, and start only that unit.
+For macOS, copy the plist to the user's `~/Library/LaunchAgents`, then use `launchctl bootstrap`/`kickstart` for that label. A LaunchAgent belongs to the logged-in user session, and normal laptop sleep interrupts network reachability; use a host with an appropriate awake/power policy when continuous access is required. For Linux, copy the unit to `~/.config/systemd/user`, run `systemctl --user daemon-reload`, enable, and start only that unit. A user service normally stops with the login session unless user lingering is explicitly enabled and accepted by the operator.
 
 After a start or restart, check twice: immediately and again after at least two keepalive intervals. Confirm PID identity, fresh logs, local listener, relay loopback listeners, and application HTTP behavior. `nohup` returning a PID or a supervisor command returning zero is not residency proof.
 
 ## Verification and rollback
 
-Follow generated `verification.md` from local application outward. Treat these outcomes precisely:
+Follow generated `verification.md` from local application outward. Its relay probe sets `ClearAllForwardings=yes`; this prevents the inspection connection from requesting the configured reverse forwards or masking the runner's real state. Treat these outcomes precisely:
 
 - DNS/TLS success plus HTTP `502`: edge and Nginx are reachable; the upstream tunnel or local application is not healthy.
 - Relay loopback port absent: tunnel is down or the forward failed.

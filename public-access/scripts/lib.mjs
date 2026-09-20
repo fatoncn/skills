@@ -25,10 +25,10 @@ export function validateManifest(input) {
     host: requireHost(input.ssh.host, 'ssh.host'),
     user: requirePattern(input.ssh.user, USER, 'ssh.user'),
     port: requirePort(input.ssh.port, 'ssh.port'),
-    knownHostsFile: requireAbsolutePath(input.ssh.knownHostsFile, 'ssh.knownHostsFile'),
+    knownHostsFile: requireSshPath(input.ssh.knownHostsFile, 'ssh.knownHostsFile'),
   };
   if (input.ssh.identityFile !== undefined) {
-    ssh.identityFile = requireAbsolutePath(input.ssh.identityFile, 'ssh.identityFile');
+    ssh.identityFile = requireSshPath(input.ssh.identityFile, 'ssh.identityFile');
   }
 
   assertObject(input.tls, 'tls');
@@ -96,7 +96,7 @@ export function buildSshArgs(manifest) {
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=2',
     '-o', 'StrictHostKeyChecking=yes',
-    '-o', `UserKnownHostsFile=${checked.ssh.knownHostsFile}`,
+    '-o', `UserKnownHostsFile=${sshConfigValue(checked.ssh.knownHostsFile)}`,
     '-p', String(checked.ssh.port),
   ];
   if (checked.ssh.identityFile) {
@@ -118,14 +118,14 @@ export function renderLocations(manifest) {
   const checked = validateManifest(manifest);
   return [...checked.routes]
     .sort((a, b) => b.publicPath.length - a.publicPath.length)
-    .map((route) => renderLocation(route, checked.access.mode))
+    .map((route) => renderLocation(route, checked.access.mode, checked.project))
     .join('\n\n');
 }
 
 export function fillTemplate(template, values) {
   let result = template;
   for (const [key, value] of Object.entries(values)) {
-    result = result.replaceAll(`@@${key}@@`, String(value));
+    result = result.replaceAll(`@@${key}@@`, () => String(value));
   }
   const remaining = result.match(/@@[A-Z0-9_]+@@/g);
   if (remaining) throw new Error(`unfilled template token: ${remaining[0]}`);
@@ -138,10 +138,12 @@ export function sshConfigValue(value) {
   return `"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-export function systemdArg(value) {
-  const text = requireString(value, 'systemd argument');
-  if (CONTROL.test(text)) fail('systemd argument contains control characters');
-  return `"${text.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+export function systemdExecArg(value) {
+  return quoteSystemd(value, 'systemd ExecStart argument', true);
+}
+
+export function systemdUnitString(value) {
+  return quoteSystemd(value, 'systemd unit string', false);
 }
 
 export function xmlText(value) {
@@ -150,9 +152,9 @@ export function xmlText(value) {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 }
 
-function renderLocation(route, accessMode) {
+function renderLocation(route, accessMode, project) {
   const access = accessMode === 'gateway'
-    ? '        include /etc/nginx/snippets/public-access-gateway.conf;\n'
+    ? `        include /etc/nginx/snippets/public-access-${project}-gateway.conf;\n`
     : `        # Access mode: ${accessMode}; verify the declared control independently.\n`;
   const common = [
     `    location ^~ ${route.publicPath} {`,
@@ -227,6 +229,22 @@ function requireAbsolutePath(value, label) {
   const text = requireString(value, label);
   if (!path.isAbsolute(text) || CONTROL.test(text) || text.length > 4096) fail(`${label} must be a safe absolute path`);
   return text;
+}
+
+function requireSshPath(value, label) {
+  const text = requireAbsolutePath(value, label);
+  if (text.includes('%') || text.includes('$')) {
+    fail(`${label} cannot contain % or $ because OpenSSH expands those characters`);
+  }
+  return text;
+}
+
+function quoteSystemd(value, label, escapeDollar) {
+  const text = requireString(value, label);
+  if (CONTROL.test(text)) fail(`${label} contains control characters`);
+  let escaped = text.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  if (escapeDollar) escaped = escaped.replaceAll('$', () => '$$');
+  return `"${escaped}"`;
 }
 
 function requireRoutePath(value, label) {

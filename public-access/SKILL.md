@@ -63,6 +63,8 @@ The runner uses `ExitOnForwardFailure=yes`, `ServerAliveInterval=15`, `ServerAli
 - Rendering never connects to the relay, modifies DNS, requests certificates, or starts a process.
 - Prefer an existing relay. For a new relay, separately authorize account creation, package installation, DNS, firewall, sshd, Nginx, and ACME changes; apply least privilege and review each plan.
 - Do not weaken host-key checking, bind reverse forwards to `0.0.0.0`, run a blind stale-process cleanup, or accept `502` as end-to-end success.
+- Keep the local application independently supervised and the local host awake/reachable for the availability the user expects.
+- For an audit of the extracted implementation choices, read [references/provenance.md](references/provenance.md).
 
 ## Delivery checks
 

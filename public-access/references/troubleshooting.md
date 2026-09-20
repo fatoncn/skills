@@ -12,6 +12,8 @@ Collect evidence in this order. A failed or unavailable query leaves that layer 
 | Local app | PID/cwd, loopback listener, direct health request | Confirms the tunnel has a usable destination. |
 | Protocol | SSE receives events; WS returns 101 and exchanges a frame | A normal HTTP 200 cannot prove either protocol. |
 
+Runner lifecycle lines are JSON with stable `module`, `component`, `operation`, and `status` fields. Retry and terminal events add the applicable `attempt`, `durationMs`, `delayMs`, `exitCode`, `exitSignal`, or `exitError` fields; use these to distinguish a current failure from an old log line.
+
 ## Common signatures
 
 - `Host key verification failed`: the dedicated known-host file is missing the expected current key. Verify the fingerprint through an independent trusted channel; do not switch to `accept-new` or `no` as a shortcut.

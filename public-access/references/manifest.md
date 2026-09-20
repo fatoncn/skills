@@ -14,7 +14,7 @@ Use one JSON manifest per local project and public domain. The renderer rejects 
 | `tls.email` | ACME contact used in the generated operator steps. |
 | `routes` | One or more application routes for the same domain. |
 
-`ssh.knownHostsFile` is required and must be an absolute path to a pre-populated file. `ssh.identityFile` is an optional absolute path. Paths are references only; the renderer never reads either file and never copies key material.
+`ssh.knownHostsFile` is required and must be an absolute path to a pre-populated file. `ssh.identityFile` is an optional absolute path. Paths are references only; the renderer never reads either file and never copies key material. Both paths reject `%` and `$` because OpenSSH expands those characters; spaces and quotes are supported and rendered with OpenSSH config quoting.
 
 The runner starts `ssh` with `-F /dev/null` and explicit argv options, so a user's `~/.ssh/config` cannot inject forwards, a `ProxyCommand`, or weaker host-key policy. The generated standalone `ssh_config` is for reviewed operator connections and is likewise used only with an explicit `ssh -F`.
 
@@ -38,12 +38,14 @@ Protocol handling is intentionally different:
 - `sse`: clears `Connection`, disables response buffering/cache, and uses a long read timeout.
 - `websocket`: forwards `Upgrade` and sets `Connection "upgrade"`; it does not use the SSE connection settings.
 
+`proxy_pass` has no replacement URI, so every public prefix is preserved when sent upstream: `/events/item` remains `/events/item`. This version has no strip-prefix mode. Adapt the local application's routes when it currently serves only at `/`.
+
 Only a same-domain path router is supported. Multiple domains, wildcard certificates, raw TCP services, UDP, databases, and cross-host local targets are outside this version's contract.
 
 ## Access modes
 
 - `application`: every exposed route already enforces suitable authentication and authorization in the application.
-- `gateway`: the final Nginx config includes a required local file named `public-access-gateway.conf`; the operator must provide and validate that gateway policy before enabling the site.
+- `gateway`: the final Nginx config includes a required project-specific file named `public-access-<project>-gateway.conf`; the operator must provide and validate that gateway policy before enabling the site.
 - `public`: the operator explicitly accepts unauthenticated Internet access.
 
 The manifest records a choice; it does not prove the chosen control is correctly implemented. Verify the real unauthorized and authorized behavior after deployment.

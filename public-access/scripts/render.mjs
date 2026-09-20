@@ -6,7 +6,8 @@ import {
   fillTemplate,
   renderLocations,
   sshConfigValue,
-  systemdArg,
+  systemdExecArg,
+  systemdUnitString,
   validateManifest,
   xmlText,
 } from './lib.mjs';
@@ -57,10 +58,10 @@ export async function render(manifestPath, outputPath) {
     }),
     [`public-access-${manifest.project}.service`]: fillTemplate(templates['systemd.service'], {
       PROJECT: manifest.project,
-      WORKING_DIRECTORY: systemdArg(outputDirectory),
-      NODE: systemdArg(nodePath),
-      RUNNER: systemdArg(runnerPath),
-      MANIFEST: systemdArg(renderedManifestPath),
+      WORKING_DIRECTORY: systemdUnitString(outputDirectory),
+      NODE: systemdExecArg(nodePath),
+      RUNNER: systemdExecArg(runnerPath),
+      MANIFEST: systemdExecArg(renderedManifestPath),
     }),
     [`com.public-access.${manifest.project}.plist`]: fillTemplate(templates['launchd.plist'], {
       PROJECT: manifest.project,
@@ -119,7 +120,7 @@ function renderVerification(manifest, outputDirectory) {
     '',
     '## 3. Relay',
     '',
-    `- Connect using the generated config: \`ssh -F ${shellQuote(path.join(outputDirectory, 'ssh_config'))} public-access-${manifest.project}\`.`,
+    `- Probe without creating forwards: \`ssh -F ${shellQuote(path.join(outputDirectory, 'ssh_config'))} -o ClearAllForwardings=yes public-access-${manifest.project}\`.`,
   );
   for (const route of manifest.routes) {
     lines.push(`- Confirm ${route.name} listens exactly on relay loopback 127.0.0.1:${route.remotePort}, not 0.0.0.0 or [::].`);

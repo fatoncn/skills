@@ -24,25 +24,57 @@ export async function superviseTunnel(manifest, options = {}) {
   const maxAttempts = options.maxAttempts ?? 8;
   const stableMs = options.stableMs ?? 60_000;
   let consecutiveFailures = 0;
+  let attempt = 0;
 
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
     throw new Error('maxAttempts must be an integer from 1 to 100');
   }
 
   while (consecutiveFailures < maxAttempts) {
+    attempt += 1;
     const startedAt = now();
-    logger.info(`[public-access] starting ${checked.routes.length} reverse forward(s) for ${checked.project}`);
+    logEvent(logger, 'info', {
+      status: 'starting',
+      project: checked.project,
+      attempt,
+      routeCount: checked.routes.length,
+    });
     const child = spawnImpl('ssh', buildSshArgs(checked), { stdio: 'inherit', shell: false });
     const result = await waitForChild(child, signalSource, options);
-    if (result.shutdown) return 0;
-
     const duration = Math.max(0, now() - startedAt);
+    if (result.shutdown) {
+      logEvent(logger, 'info', {
+        status: 'stopped',
+        project: checked.project,
+        attempt,
+        durationMs: duration,
+        ...exitFields(result),
+      });
+      return 0;
+    }
+
     consecutiveFailures = duration >= stableMs ? 1 : consecutiveFailures + 1;
     if (consecutiveFailures >= maxAttempts) {
+      logEvent(logger, 'error', {
+        status: 'failed',
+        project: checked.project,
+        attempt,
+        consecutiveFailures,
+        durationMs: duration,
+        ...exitFields(result),
+      });
       throw new Error(`ssh exited ${describeExit(result)}; exhausted ${maxAttempts} consecutive attempts`);
     }
     const delay = backoffDelay(consecutiveFailures);
-    logger.warn(`[public-access] ssh exited ${describeExit(result)}; retrying in ${delay}ms (${consecutiveFailures}/${maxAttempts})`);
+    logEvent(logger, 'warn', {
+      status: 'retrying',
+      project: checked.project,
+      attempt,
+      consecutiveFailures,
+      durationMs: duration,
+      delayMs: delay,
+      ...exitFields(result),
+    });
     await sleepImpl(delay);
   }
   return 1;
@@ -90,6 +122,21 @@ function describeExit(result) {
   return `with code ${result.code ?? 'unknown'}`;
 }
 
+function exitFields(result) {
+  if (result.error) return { exitError: result.error.message };
+  if (result.signal) return { exitSignal: result.signal };
+  return { exitCode: result.code ?? null };
+}
+
+function logEvent(logger, level, fields) {
+  logger[level](JSON.stringify({
+    module: 'public_access',
+    component: 'tunnel_runner',
+    operation: 'reverse_ssh_tunnel',
+    ...fields,
+  }));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -122,7 +169,7 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error) => {
-    console.error(`[public-access] ${error.message}`);
+    logEvent(console, 'error', { status: 'failed', exitError: error.message });
     process.exitCode = 1;
   });
 }
