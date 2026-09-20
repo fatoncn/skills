@@ -1,0 +1,4 @@
+interface:
+  display_name: "Public Access"
+  short_description: "Stable public access for local web applications"
+  default_prompt: "Use $public-access to expose or diagnose this local web application through a reverse SSH relay and Nginx TLS."

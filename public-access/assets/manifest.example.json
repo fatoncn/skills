@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "project": "sample-app",
+  "domain": "app.example.com",
+  "access": { "mode": "application" },
+  "ssh": {
+    "host": "relay.example.com",
+    "user": "tunnel-sample-app",
+    "port": 22,
+    "knownHostsFile": "/Users/example/.ssh/known_hosts_public_access",
+    "identityFile": "/Users/example/.ssh/id_ed25519_public_access"
+  },
+  "tls": { "email": "operator@example.com" },
+  "routes": [
+    {
+      "name": "web", "publicPath": "/", "kind": "http",
+      "localHost": "127.0.0.1", "localPort": 3000, "remotePort": 18001,
+      "healthPath": "/healthz"
+    },
+    {
+      "name": "events", "publicPath": "/events/", "kind": "sse",
+      "localHost": "127.0.0.1", "localPort": 3000, "remotePort": 18002,
+      "healthPath": "/healthz"
+    },
+    {
+      "name": "socket", "publicPath": "/socket/", "kind": "websocket",
+      "localHost": "127.0.0.1", "localPort": 3001, "remotePort": 18003,
+      "healthPath": "/healthz"
+    }
+  ]
+}
