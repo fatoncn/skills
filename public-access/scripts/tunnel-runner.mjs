@@ -63,7 +63,9 @@ export async function superviseTunnel(manifest, options = {}) {
         durationMs: duration,
         ...exitFields(result),
       });
-      throw new Error(`ssh exited ${describeExit(result)}; exhausted ${maxAttempts} consecutive attempts`);
+      const error = new Error(`ssh exited ${describeExit(result)}; exhausted ${maxAttempts} consecutive attempts`);
+      error.publicAccessTerminalLogged = true;
+      throw error;
     }
     const delay = backoffDelay(consecutiveFailures);
     logEvent(logger, 'warn', {
@@ -137,6 +139,12 @@ function logEvent(logger, level, fields) {
   }));
 }
 
+export function reportFatalError(error, logger = console) {
+  if (!error.publicAccessTerminalLogged) {
+    logEvent(logger, 'error', { status: 'failed', exitError: error.message });
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -169,7 +177,7 @@ async function main() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((error) => {
-    logEvent(console, 'error', { status: 'failed', exitError: error.message });
+    reportFatalError(error);
     process.exitCode = 1;
   });
 }

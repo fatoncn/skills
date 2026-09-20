@@ -15,7 +15,7 @@ import {
   validateManifest,
 } from '../scripts/lib.mjs';
 import { render } from '../scripts/render.mjs';
-import { superviseTunnel } from '../scripts/tunnel-runner.mjs';
+import { reportFatalError, superviseTunnel } from '../scripts/tunnel-runner.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -146,8 +146,9 @@ test('uses bounded exponential backoff and stops after the attempt limit', async
     queueMicrotask(() => child.emit('exit', 255, null));
     return child;
   };
-  await assert.rejects(
-    superviseTunnel(validManifest(), {
+  let terminalError;
+  try {
+    await superviseTunnel(validManifest(), {
       spawnImpl,
       sleepImpl: async (delay) => delays.push(delay),
       signalSource: new EventEmitter(),
@@ -158,15 +159,30 @@ test('uses bounded exponential backoff and stops after the attempt limit', async
       },
       maxAttempts: 3,
       now: () => 0,
-    }),
-    /exhausted 3 consecutive attempts/,
-  );
+    });
+  } catch (error) {
+    terminalError = error;
+    reportFatalError(error, {
+      error: (line) => logs.push(JSON.parse(line)),
+    });
+  }
+  assert.match(terminalError.message, /exhausted 3 consecutive attempts/);
   assert.deepEqual(delays, [backoffDelay(1), backoffDelay(2)]);
   assert.equal(spawnCalls.length, 3);
   assert.ok(spawnCalls.every((call) => call.command === 'ssh' && call.options.shell === false));
   assert.ok(logs.every((entry) => entry.module === 'public_access' && entry.component === 'tunnel_runner'));
   assert.deepEqual(logs.filter((entry) => entry.status === 'retrying').map((entry) => entry.delayMs), [1000, 2000]);
+  assert.equal(logs.filter((entry) => entry.status === 'failed').length, 1);
   assert.equal(logs.at(-1).status, 'failed');
+});
+
+test('logs an unrecorded configuration failure exactly once', () => {
+  const logs = [];
+  const logger = { error: (line) => logs.push(JSON.parse(line)) };
+  reportFatalError(new Error('invalid manifest'), logger);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].status, 'failed');
+  assert.equal(logs[0].exitError, 'invalid manifest');
 });
 
 test('forwards termination signals to ssh and exits without retry', async () => {
