@@ -149,9 +149,9 @@ concurrency = 3
 #   implement  = 旗舰或次旗舰 + medium
 #   review     = 旗舰 + medium
 #   mechanical = 次旗舰 + low～medium（便宜但精准）
-#   research   = 旗舰 + high 及以上（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
+#   research   = 旗舰 + medium（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
 #   accept     = 旗舰或次旗舰 + high，比实现者高一档（验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept）
-# 下面的 model 是 2026-09-12 的对应：旗舰 gpt-6-astra；日常写码与验收用 gpt-5.6-sol（cookie 09-12：验收多是浏览器脏活、实现日常量，gpt-6 太奢侈）；轻活 gpt-5.6-terra。
+# 下面的 model 是 2026-09-20 的对应：复审与调研用旗舰 gpt-6-astra；日常写码与验收用 gpt-5.6-sol；轻活用 gpt-5.6-terra。
 # 收尾不是角色：PR 收尾由实现者带着原口径续同一线程做（foreman run --closeout），skill 会把收尾阶段契约放进那一轮的 prompt。
 # 项目文件里写同名 [roles.<名>] 可以覆盖。可用模型与推理档用 foreman doctor 看。
 # 每个角色还有一份「角色文件」= 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律），
@@ -189,10 +189,10 @@ model = "sonnet"
 effort = "low"
 
 [roles.research]
-# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：与实现者同级（旗舰或次旗舰）+ high
+# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + medium
 engine = "codex"
-model = "gpt-5.6-sol"
-effort = "high"
+model = "gpt-6-astra"
+effort = "medium"
 
 [roles.research.claude]
 model = "opus"
@@ -302,7 +302,7 @@ if extra: print("  参考角色样例、未在表里（档位没定义时 run --
 PY2
   echo
   echo "implement / review / mechanical 三个参考角色必需；research（只读调研）、accept（验收）随样例一起给，建议保留；再多的自己起名。收尾不是角色，由实现者续线程做。"
-  echo "档位口径（按描述选，模型迭代后重选，foreman doctor 看当前可用模型）：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + medium；轻活 = 次旗舰 + low～medium（便宜但精准）；调研 = 与实现者同级 + high 及以上；验收 = 与实现者同级 + medium。"
+  echo "档位口径（按描述选，模型迭代后重选，foreman doctor 看当前可用模型）：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + medium；轻活 = 次旗舰 + low～medium（便宜但精准）；调研 = 旗舰 + medium；验收 = 与实现者同级 + medium。"
   echo "角色文件 = 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式），不含干活纪律；干活纪律每轮写进任务书。"
   echo "改角色：直接编辑角色文件；加角色：加 [roles.<名>] + 同名 .md（或 prompt = \"<路径>\"）。"
   echo "下一步：把这张表和角色文件念给用户过目；用户确认后执行: foreman setup --confirm 。确认前 run / review 会拒绝派活。"
