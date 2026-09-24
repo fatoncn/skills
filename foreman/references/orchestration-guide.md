@@ -16,13 +16,13 @@
 
 派发时优先沿用 Foreman 已配置的 `model` / `effort`，不要因为下表的推荐主动覆盖。下表只用于首次配置，或用户要求重新选型时参考；用户明确为本次派发指定的模型或档位优先。重新选型时按**档位描述**选模型，不绑死模型名（模型会迭代，`doctor` 打印当前可用模型与推理档）：
 
-| 角色 | 干什么 | 档位描述 | Codex 对应（2026-09-11） | Claude 对应（beta） |
+| 角色 | 干什么 | 档位描述 | Codex 对应（2026-09-24） | Claude 对应（beta） |
 |---|---|---|---|---|
-| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + medium | gpt-5.6-sol / medium | sonnet / high |
-| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | 旗舰 + medium | gpt-6-astra / medium | opus / xhigh |
-| `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | 次旗舰 + low～medium，便宜但精准 | gpt-5.6-terra / medium | sonnet / low |
-| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 旗舰或次旗舰 + high | gpt-5.6-sol / high | opus / high |
-| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 旗舰或次旗舰 + high（比实现者高一档，假「通过」最贵；多是浏览器脏活） | gpt-5.6-sol / high | sonnet / xhigh |
+| `implement` | 实现、补测试、接线等一切写码活；`run` 默认 | 旗舰或次旗舰 + medium | gpt-6-sol / medium | sonnet / high |
+| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | 旗舰 + high | gpt-6-astra / high | claude-opus-5-5 / xhigh |
+| `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | 次旗舰 + low（便宜但精准） | gpt-6-sol / low | sonnet / low |
+| `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | 旗舰 + medium | gpt-6-astra / medium | claude-opus-5-5 / high |
+| `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | 旗舰或次旗舰 + high（比实现者高一档） | gpt-6-sol / high | sonnet / xhigh |
 
 ## 分工：编排层统筹，执行层干活；派给谁由用户定
 

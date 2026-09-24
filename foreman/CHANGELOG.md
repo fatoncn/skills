@@ -1,5 +1,16 @@
 # foreman 版本记录
 
+## 1.5.13 — 2026-09-24
+
+- Codex `implement` 由 gpt-5.6-sol / medium → gpt-6-sol / medium。
+- Codex `review` 由 gpt-6-astra / medium → gpt-6-astra / high。
+- Codex `mechanical` 由 gpt-5.6-terra / medium → gpt-6-sol / low。
+- Codex `research` 由 gpt-5.6-sol / high → gpt-6-astra / medium。
+- Codex `accept` 由 gpt-5.6-sol / high → gpt-6-sol / high。
+- Claude `review` 由 opus / xhigh → claude-opus-5-5 / xhigh。
+- Claude `research` 由 opus / high → claude-opus-5-5 / high。
+- 依据 2026-09-24 调研：gpt-6-sol 相比 gpt-5.6-sol 的 API 与 Codex credits 均为半价，AA Index 48 对 47；cookie 拍板 `review` 升 high、`research` 用 gpt-6-astra / medium。
+
 ## 1.5.12 — 2026-09-20
 
 - 明确模型与推理档位的使用顺序：派发优先沿用 Foreman 已配置值，不因角色推荐表主动覆盖；推荐表只用于首次配置或用户要求重新选型，用户对本次派发的明确指定优先。

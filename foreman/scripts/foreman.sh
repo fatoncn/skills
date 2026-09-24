@@ -147,11 +147,11 @@ concurrency = 3
 # 三个参考角色 implement / review / mechanical 都必需（foreman setup --confirm 会查）；再多的自己起名，foreman run --role <名> 取用。
 # 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
 #   implement  = 旗舰或次旗舰 + medium
-#   review     = 旗舰 + medium
-#   mechanical = 次旗舰 + low～medium（便宜但精准）
-#   research   = 旗舰或次旗舰 + high（只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research）
-#   accept     = 旗舰或次旗舰 + high，比实现者高一档（验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept）
-# 下面的 model 是 2026-09-20 的对应：复审用旗舰 gpt-6-astra；实现、调研与验收用 gpt-5.6-sol；轻活用 gpt-5.6-terra。
+#   review     = 旗舰 + high
+#   mechanical = 次旗舰 + low（便宜但精准）
+#   research   = 旗舰 + medium；只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research
+#   accept     = 旗舰或次旗舰 + high（比实现者高一档）；验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept
+# 下面的 model 是 2026-09-24 的对应：旗舰 gpt-6-astra、次旗舰 gpt-6-sol。
 # 收尾不是角色：PR 收尾由实现者带着原口径续同一线程做（foreman run --closeout），skill 会把收尾阶段契约放进那一轮的 prompt。
 # 项目文件里写同名 [roles.<名>] 可以覆盖。可用模型与推理档用 foreman doctor 看。
 # 每个角色还有一份「角色文件」= 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律），
@@ -160,7 +160,7 @@ concurrency = 3
 [roles.implement]
 # 实现 + 测试等一切写码活；foreman run 的默认角色。档位：旗舰或次旗舰 + medium
 engine = "codex"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 
@@ -169,39 +169,39 @@ model = "sonnet"
 effort = "high"
 
 [roles.review]
-# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + medium。硬规矩：复审永远开新线程，绝不沿用实现的会话
+# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
 engine = "codex"
 model = "gpt-6-astra"
-effort = "medium"
+effort = "high"
 
 [roles.review.claude]
-model = "opus"
+model = "claude-opus-5-5"
 effort = "xhigh"
 
 [roles.mechanical]
-# 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：次旗舰 + low～medium（便宜但精准）
+# 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：次旗舰 + low（便宜但精准）
 engine = "codex"
-model = "gpt-5.6-terra"
-effort = "medium"
+model = "gpt-6-sol"
+effort = "low"
 
 [roles.mechanical.claude]
 model = "sonnet"
 effort = "low"
 
 [roles.research]
-# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：与实现者同级（旗舰或次旗舰）+ high
+# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + medium
 engine = "codex"
-model = "gpt-5.6-sol"
-effort = "high"
+model = "gpt-6-astra"
+effort = "medium"
 
 [roles.research.claude]
-model = "opus"
+model = "claude-opus-5-5"
 effort = "high"
 
 [roles.accept]
-# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high，比实现者高一档（假「通过」最贵）
+# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high（比实现者高一档）
 engine = "codex"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 effort = "high"
 
 [roles.accept.claude]

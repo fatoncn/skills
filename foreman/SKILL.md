@@ -2,7 +2,7 @@
 name: foreman
 description: 使用 Foreman 外派执行器并管理其票、线程、验收和收尾。用户明确要求 Foreman 外派，或任务涉及已有 Foreman 票或线程时使用；普通调研、排查和代码审查不触发。
 metadata:
-  version: "1.5.12"
+  version: "1.5.13"
 ---
 
 # Foreman
