@@ -165,8 +165,8 @@ effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 
 [roles.implement.claude]
-model = "sonnet"
-effort = "high"
+model = "claude-opus-5-5"
+effort = "medium"
 
 [roles.review]
 # 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
@@ -175,8 +175,8 @@ model = "gpt-6-astra"
 effort = "high"
 
 [roles.review.claude]
-model = "claude-opus-5-5"
-effort = "xhigh"
+model = "claude-fable-5-1"
+effort = "high"
 
 [roles.mechanical]
 # 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：次旗舰 + low（便宜但精准）
@@ -205,8 +205,8 @@ model = "gpt-6-sol"
 effort = "high"
 
 [roles.accept.claude]
-model = "sonnet"
-effort = "xhigh"
+model = "claude-opus-5-5"
+effort = "high"
 
 # 再多的角色照样子加，名字自定，foreman run --role <名> 取用。
 

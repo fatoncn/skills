@@ -1,5 +1,12 @@
 # foreman 版本记录
 
+## 1.5.14 — 2026-09-25
+
+- Claude `implement` 由 sonnet / high → claude-opus-5-5 / medium。
+- Claude `review` 由 claude-opus-5-5 / xhigh → claude-fable-5-1 / high。
+- Claude `accept` 由 sonnet / xhigh → claude-opus-5-5 / high。
+- 依据 cookie 2026-09-25 拍板；Fable 5.1 API 价格为 Opus 5.5 的 2.5 倍，`review` 只看 diff、用量较小，可以承担。
+
 ## 1.5.13 — 2026-09-24
 
 - Codex `implement` 由 gpt-5.6-sol / medium → gpt-6-sol / medium。
