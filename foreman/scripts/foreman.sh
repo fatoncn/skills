@@ -2409,7 +2409,7 @@ cmd_cleanup() {
     echo "将删除 worktree: $wt"; [ "$keep_branch" -eq 1 ] || echo "将删除分支: $branch"
     echo "日志保留在 $(issue_dir "$issue")"; die "加 --force 才会真的执行"
   fi
-  if [ -z "$PR_HERE" ] && [ -d "$wt" ]; then
+  if [ "$IN_GIT" -eq 1 ] && [ -z "$PR_HERE" ] && [ -d "$wt" ]; then
     [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ] || die "worktree 有未提交改动，拒绝删除: $wt"
     # cleanup 只挡「未提交」挡不住「已 commit 未 push」——PR 已 MERGED 的分支最容易骗人，这里把它做成硬检查
     if [ "$discard" -ne 1 ]; then
@@ -2424,6 +2424,15 @@ cmd_cleanup() {
   local dir; dir="$(issue_dir "$issue")"; lock_runs "$dir"
   cleanup_require_pr_idle "$dir" "$PR_NAME"
   cleanup_release_idle_holds "$dir" "$PR_NAME"
+  if [ "$IN_GIT" -eq 0 ]; then
+    local hd
+    for hd in "$dir"/hold-*; do
+      [ -d "$hd" ] && hold_alive "$hd" || continue
+      hold_release_wait "$hd"
+    done
+    rm -rf -- "$dir" || die "cleanup: 删除非 git 票账本失败: $dir"
+    unlock_runs; echo "已清理非 git 票 ${issue}（账本已删除）"; return 0
+  fi
   if [ -n "$PR_HERE" ]; then
     echo "$issue 的「${PR_NAME}」是 here 登记（工作目录就是编排者自己的检出 ${wt}），只删登记不动目录与分支"
     pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"

@@ -1221,6 +1221,17 @@ else bad "Codex 分发快照未检出故意参数漂移" "$snapshot_mutation_out
 expect_rc "Claude steer 只消费一次" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --prompt "$T/brief.md" --title steer-once --timeout 30 --no-check
 claude_steer_next="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
 if ! grep -q '^## 编排者追加说明$' "${claude_steer_next%.request.json}.prompt.md"; then ok "Claude steer 下下轮不重复"; else bad "Claude steer 被重复消费"; fi
+mkdir -p "$T/nogit-cleanup"
+(cd "$T/nogit-cleanup" && "$F" init >/dev/null && "$F" here 91 >/dev/null)
+nogit91_dir="$FOREMAN_HOME/projects/nogit-cleanup/issues/_nogit/91"
+sleep 300 & nogit91_pid=$!
+make_hold_fixture "$nogit91_dir" implement 1 "$nogit91_pid" here implement
+rm -f "$nogit91_dir/hold-implement/queue/run-1.request.json"
+printf 0 > "$nogit91_dir/run-1.rc"
+printf '{"run":"run-1"}' > "$nogit91_dir/hold-implement/active.json"
+nogit91_out="$(cd "$T/nogit-cleanup" && "$F" cleanup 91 --force 2>&1)"; nogit91_rc=$?
+if [ "$nogit91_rc" -eq 0 ] && [ ! -e "$nogit91_dir" ] && ! kill -0 "$nogit91_pid" 2>/dev/null; then ok "非 git 票 cleanup --force 释放执行体并删除账本"; else bad "非 git 票 cleanup --force" "rc=$nogit91_rc $nogit91_out"; fi
+wait "$nogit91_pid" 2>/dev/null || true
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"
