@@ -367,9 +367,10 @@ wait42_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/42/m
 sleep 300 & wait42_done_pid=$!; sleep 300 & wait42_running_pid=$!
 make_hold_fixture "$wait42_dir" done-no-log 21 "$wait42_done_pid" here implement; rm -f "$wait42_dir/hold-done-no-log/queue/run-21.request.json"; printf '{"run":"run-21"}' > "$wait42_dir/hold-done-no-log/active.json"
 make_hold_fixture "$wait42_dir" still-running 22 "$wait42_running_pid" here implement; rm -f "$wait42_dir/hold-still-running/queue/run-22.request.json"; printf '{"run":"run-22"}' > "$wait42_dir/hold-still-running/active.json"
-( sleep 1; printf 0 > "$wait42_dir/run-21.rc"; kill "$wait42_done_pid" 2>/dev/null ) &
+( sleep 1; printf 1 > "$wait42_dir/run-21.rc"; kill "$wait42_done_pid" 2>/dev/null ) &
 wait42_out="$("$F" wait 42 --timeout 2 --interval 1 2>&1)"; wait42_rc=$?
 if [ "$wait42_rc" -eq 2 ] && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#21 ' && printf '%s\n' "$wait42_out" | grep -q '^== 42 run#22 ' && printf '%s\n' "$wait42_out" | grep -q '无日志，跳过摘要'; then ok "wait 缺日志摘要不覆盖 rc=2 且全表保留"; else bad "wait 摘要 die 隔离" "rc=${wait42_rc}，尾行: $(printf '%s\n' "$wait42_out" | tail -1)"; fi
+if [ "$wait42_rc" -eq 2 ] && printf '%s\n' "$wait42_out" | grep -q '^⚠ 42 run#21 结束 rc=1 模型侧失败 用时 ' && printf '%s\n' "$wait42_out" | grep -q '^== ⛔/⚠ 异常结束 ==$' && printf '%s\n' "$wait42_out" | grep -q '^== ✅ 正常完成 ==$' && printf '%s\n' "$wait42_out" | grep -q '^== 仍在跑 ==$' && printf '%s\n' "$wait42_out" | grep -q '^==> 正常完成 0 / 异常结束 1 / 仍在跑 1 / 提问 0$'; then ok "wait 超时区分 rc 非零异常结束与仍在跑"; else bad "wait 超时分组汇总" "$wait42_out"; fi
 kill "$wait42_running_pid" 2>/dev/null; wait "$wait42_done_pid" 2>/dev/null || true; wait "$wait42_running_pid" 2>/dev/null || true
 rm -rf "$wait42_dir/hold-done-no-log" "$wait42_dir/hold-still-running"; rm -f "$wait42_dir"/run-21.* "$wait42_dir"/run-22.*
 expect_grep "wait 摘要隔离测试清理" "已删登记" "$F" cleanup 42 --force
@@ -396,6 +397,7 @@ printf '%s' "$wait50_pid" > "$wait50_dir/run-1.pid"; printf '%s' "$(date +%s)" >
 ( sleep 1.2; printf 0 > "$wait50_dir/run-1.rc"; kill "$wait50_pid" 2>/dev/null ) &
 wait50_out="$("$F" wait 50 --timeout 3 --interval 1 --progress 0 --no-report 2>&1)"; wait50_rc=$?
 if [ "$wait50_rc" -eq 0 ] && printf '%s\n' "$wait50_out" | grep -q '结束 rc=0'; then ok "wait 正常结束 rc=0 不受影响"; else bad "wait 正常结束" "rc=$wait50_rc $wait50_out"; fi
+if [ "$wait50_rc" -eq 0 ] && [ "$(printf '%s\n' "$wait50_out" | grep -c '^✅ 50 run#1 结束 rc=0 用时 ')" -eq 1 ]; then ok "wait DONE 专用行只输出一次且不受 --progress 0 影响"; else bad "wait DONE 专用行" "$wait50_out"; fi
 wait "$wait50_pid" 2>/dev/null || true; rm -f "$wait50_dir"/run-1.*
 expect_grep "wait 多线程集中输出测试登记" "PR「here」" "$F" here 51
 wait51_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/51/meta.json' -print -quit)")"; sleep 300 & wait51_pid=$!

@@ -2166,10 +2166,34 @@ EOF
   echo "本机 codex 线程在跑: $(active_codex_runs) / 上限 $(concurrency_limit) | claude: $(active_claude_runs) / 上限 $(claude_concurrency_limit)"
 }
 
+wait_rc_reason() {
+  case "$1" in
+    1) printf '模型侧失败' ;;
+    3) printf '协议或启动失败' ;;
+    6) printf '缺报告标记' ;;
+    130) printf '排队轮被释放' ;;
+    143) printf '超时或中断' ;;
+  esac
+}
+
+wait_terminal_line() { # <id> <kind> <n> <prefix> <state>
+  local id="$1" kind="$2" n="$3" f="$4" st="$5" rc reason
+  case "$st" in
+    DONE)
+      rc="$(cat "$f.rc")"
+      if [ "$rc" = 0 ]; then echo "✅ $id $kind#$n 结束 rc=0 用时 $(elapsed_of "$f")"
+      else reason="$(wait_rc_reason "$rc")"; echo "⚠ $id $kind#$n 结束 rc=$rc${reason:+ $reason} 用时 $(elapsed_of "$f")"; fi ;;
+    ENGINE_DOWN|THREAD_BUSY|CANCELLED|DEAD)
+      echo "⛔ $id $kind#$n $st rc=$(cat "$f.rc" 2>/dev/null || echo '—') 用时 $(elapsed_of "$f")" ;;
+    *) return 1 ;;
+  esac
+}
+
 cmd_wait() {
   init_repo_context; require_project
   local timeout=300 interval=20 progress=300 report=1 ids=() targets=()
-  local id="" kind="" n="" f="" st="" t="" left=0 still=0 waited=0 waiting=0 timed_out=0 progress_dir="" cycle_out=""
+  local id="" kind="" n="" f="" st="" t="" i="" rc="" reason="" left=0 still=0 normal=0 abnormal=0 waited=0 waiting=0 waiting_count=0 timed_out=0 progress_dir="" cycle_out="" cycle_term=""
+  local previous_states=() terminal_printed=() final_states=()
   local waiting_id="" waiting_thread="" waiting_summary=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2192,7 +2216,11 @@ EOF
     while IFS='|' read -r kind n; do
       [ -n "$kind" ] || continue
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
-      case "$st" in RUNNING|QUEUED|WAITING|CHECKING|CANCELLED) targets[${#targets[@]}]="$id|$kind|$n" ;; esac
+      case "$st" in RUNNING|QUEUED|WAITING|CHECKING|CANCELLED)
+        targets[${#targets[@]}]="$id|$kind|$n"
+        previous_states[${#previous_states[@]}]="$st"
+        terminal_printed[${#terminal_printed[@]}]=0
+        ;; esac
     done <<EOF
 $(latest_calls_by_thread "$(issue_dir "$id")")
 EOF
@@ -2206,11 +2234,19 @@ EOF
   done
   echo "==> 等待 ${#targets[@]} 个会话，最多 ${timeout}s，进展周期 ${progress}s"
   while [ "$waited" -lt "$timeout" ]; do
-    left=0; cycle_out="$progress_dir/cycle.out"; : > "$cycle_out"
-    for t in "${targets[@]}"; do
+    left=0; cycle_out="$progress_dir/cycle.out"; cycle_term="$progress_dir/cycle.term"; : > "$cycle_out"; : > "$cycle_term"
+    for i in "${!targets[@]}"; do
+      t="${targets[$i]}"
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
       f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
       python3 "$PY_SUMMARIZE" --progress "$f.jsonl" "$progress_dir/$id-$kind-$n.json" "$id $kind#$n" "$st" "$progress" >> "$cycle_out"
+      if [ "${terminal_printed[$i]}" -eq 0 ]; then
+        case "${previous_states[$i]}" in
+          RUNNING|QUEUED|WAITING|CHECKING)
+            if wait_terminal_line "$id" "$kind" "$n" "$f" "$st" >> "$cycle_term"; then terminal_printed[$i]=1; fi ;;
+        esac
+      fi
+      previous_states[$i]="$st"
       case "$st" in RUNNING|QUEUED|WAITING|CHECKING) left=$((left+1)) ;; esac
       if [ "$st" = "WAITING" ] && [ "$waiting" -eq 0 ]; then
         waiting_id="$id"
@@ -2220,24 +2256,57 @@ EOF
       fi
     done
     [ ! -s "$cycle_out" ] || cat "$cycle_out"
+    [ ! -s "$cycle_term" ] || cat "$cycle_term"
     [ "$waiting" -eq 0 ] || break
     [ "$left" -eq 0 ] && break
     sleep "$interval"; waited=$((waited + interval))
   done
   [ "$waited" -lt "$timeout" ] || timed_out=1
   [ "$waiting" -eq 0 ] || echo "⏳ WAITING：票 $waiting_id / 线程 $waiting_thread / ${waiting_summary}；将照常打印全表后返回 rc=3"
-  for t in "${targets[@]}"; do
+  for i in "${!targets[@]}"; do
+    t="${targets[$i]}"; id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+    final_states[$i]="$(call_state "$(issue_dir "$id")/$kind-$n")"
+    if [ "${terminal_printed[$i]}" -eq 0 ]; then
+      case "${previous_states[$i]}" in
+        RUNNING|QUEUED|WAITING|CHECKING)
+          if wait_terminal_line "$id" "$kind" "$n" "$(issue_dir "$id")/$kind-$n" "${final_states[$i]}"; then terminal_printed[$i]=1; fi ;;
+      esac
+    fi
+  done
+  echo "== ⛔/⚠ 异常结束 =="
+  for i in "${!targets[@]}"; do
+    t="${targets[$i]}"
     id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
-    f="$(issue_dir "$id")/$kind-$n"; st="$(call_state "$f")"
+    f="$(issue_dir "$id")/$kind-$n"; st="${final_states[$i]}"
     case "$st" in
-      CANCELLED) echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")" ;;
-      DONE) echo "== $id $kind#$n 结束 rc=$(cat "$f.rc") 用时 $(elapsed_of "$f")" ;;
-      ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障" ;;
-      RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)) ;;
-      CHECKING) echo "== $id $kind#$n check 中 $(elapsed_of "$f")"; still=$((still+1)) ;;
-      *) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）" ;;
+      CANCELLED) echo "== $id $kind#$n CANCELLED：$(cat "$f.cancelled")"; abnormal=$((abnormal+1)) ;;
+      DONE)
+        rc="$(cat "$f.rc")"
+        if [ "$rc" != 0 ]; then reason="$(wait_rc_reason "$rc")"; echo "== $id $kind#$n 结束 rc=$rc${reason:+ $reason} 用时 $(elapsed_of "$f")"; abnormal=$((abnormal+1)); fi ;;
+      ENGINE_DOWN) echo "== $id $kind#$n ENGINE_DOWN：执行器暂时不可用（404 / 5xx / 额度 / 登录），foreman report $id 看原始报错；告知用户，不要自行排障"; abnormal=$((abnormal+1)) ;;
+      THREAD_BUSY|DEAD) echo "== $id $kind#$n ${st}（进程消失但没有完成标记，按失败处理）"; abnormal=$((abnormal+1)) ;;
     esac
   done
+  echo "== ✅ 正常完成 =="
+  for i in "${!targets[@]}"; do
+    t="${targets[$i]}"
+    id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+    f="$(issue_dir "$id")/$kind-$n"; st="${final_states[$i]}"
+    case "$st" in
+      DONE) if [ "$(cat "$f.rc")" = 0 ]; then echo "== $id $kind#$n 结束 rc=0 用时 $(elapsed_of "$f")"; normal=$((normal+1)); fi ;;
+    esac
+  done
+  echo "== 仍在跑 =="
+  for i in "${!targets[@]}"; do
+    t="${targets[$i]}"
+    id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
+    f="$(issue_dir "$id")/$kind-$n"; st="${final_states[$i]}"
+    case "$st" in
+      RUNNING|QUEUED|WAITING) echo "== $id $kind#$n 仍在运行 $(elapsed_of "$f") ($st)"; still=$((still+1)); [ "$st" != WAITING ] || waiting_count=$((waiting_count+1)) ;;
+      CHECKING) echo "== $id $kind#$n check 中 $(elapsed_of "$f")"; still=$((still+1)) ;;
+    esac
+  done
+  echo "==> 正常完成 $normal / 异常结束 $abnormal / 仍在跑 $still / 提问 $waiting_count"
   if [ "$timed_out" -eq 1 ] && [ "$waiting" -eq 0 ] && [ "$still" -gt 0 ]; then
     for t in "${targets[@]}"; do
       id="${t%%|*}"; kind="$(printf '%s' "$t" | cut -d'|' -f2)"; n="${t##*|}"
