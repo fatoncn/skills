@@ -1,5 +1,11 @@
 # foreman 版本记录
 
+## 1.5.15 — 2026-09-28
+
+- 收敛文档写明 Monitor 单次 30 分钟、Bash 后台 10 分钟上限，以及 Monitor 到期先查 `status` 再重挂的操作。
+- `wait` 在目标转入终态时打印一次专用行，按 rc 区分正常完成与异常结束；收尾状态分三组并汇总数量。
+- 非 git 的 `here` 票执行 `cleanup --force` 时释放常驻执行体并删除账本，不触发 git 清理。
+
 ## 1.5.14 — 2026-09-25
 
 - Claude `implement` 由 sonnet / high → claude-opus-5-5 / medium。

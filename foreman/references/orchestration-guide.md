@@ -154,7 +154,7 @@ Foreman 通道的对应命令见 [外派操作手册](foreman-operations.md#验�
 
 - PR 默认 draft（`github.pr_draft`），CI 绿、描述完整（含「复测入口」节、风险档；项目要求的实测证据节按项目规则）后再收尾转 Ready。收尾由实现者续同一线程（`run --closeout`）。
 - **review 机器人反馈按风险分档处理 1～2 轮**：低风险（约 ≤50 行、不改 prompt、不碰数据写路径 / 迁移 / 权限 / 计费 / 并发）1 轮，只修成立的 high / medium；中高风险最多 2 轮，第 2 轮只修第 1 轮修复引入的新 high / medium。low / nit 回复 + resolve 不 push；每轮攒齐一次 push；到上限列表交人拍板，不自行进第 3 轮；用户拍板开的第 3 轮以最大克制执行，只处理严重影响功能口径、触发概率高、严重影响用户体验的缺陷，其余回复 + resolve 不动代码、不顺带重构。同步 base 的 push 不算一轮。
-- **执行者不等 CI**：收尾轮 push 并回复 / resolve 本轮线程后立即交报告结束，不等待这次 push 的 CI 或下一轮 review。编排者用宿主的后台命令（Bash `run_in_background` / Monitor）轮询 `gh pr checks` / `gh run view` 的当前 head；CI 红了或出现新 finding，再派下一轮收尾，不让执行者 turn 前台空等。
+- **执行者不等 CI**：收尾轮 push 并回复 / resolve 本轮线程后立即交报告结束，不等待这次 push 的 CI 或下一轮 review。编排者用宿主的后台命令（Bash `run_in_background` / Monitor）轮询 `gh pr checks` / `gh run view` 的当前 head；CI 红了或出现新 finding，再派下一轮收尾，不让执行者 turn 前台空等。（cookie 2026-09-28 实测：Monitor 单次最多 30 分钟，Bash 后台最多 10 分钟；Monitor 到期先查状态再重挂。）
 - **没有 CI run 先查冲突**：PR 一个 run 都没有多半是和 base 冲突了，不是在排队（不少仓库 feature 分支只走 pull_request 触发）；解完冲突再等。
 - **报「可合」前重数当前 head**：unresolved threads + 最新 summary 评论；review job 绿 ≠ 0 findings、红 ≠ 有 findings（0 字节产物 = 没评上，自己补审）。base 前进过且同模块有删词条 / 改签名的，先 merge base 重跑再报。
 - **小修轻量收尾**：改动约 ≤50 行、不改 prompt 的修复，不做全范围复审、不写闭环表格、不重复 preview 自证；push 后一句话报 head 与一条证据，真实复测交给合测做一次。
@@ -165,4 +165,3 @@ Foreman 通道的对应命令见 [外派操作手册](foreman-operations.md#验�
 - `Closes #N` 在 PR 不进默认分支时不生效：合入后自己关票并留评论。
 - 每合一条线在汇总分支跑一次全仓 lint / type-check；合入前把最新 base 合进来重跑。
 - **清理 worktree 前查未推送提交**：`cleanup` 会拒绝有未提交或未推送改动的 worktree（PR 已 MERGED 的分支最容易骗人——合并后又追加的 commit 会悬在那里）。
-
