@@ -1,5 +1,13 @@
 # foreman 版本记录
 
+## 1.5.16 — 2026-09-29
+
+- Claude `implement` 由 claude-opus-5-5 / medium → claude-sonnet-5-5 / medium。
+- Claude `mechanical` 由 sonnet / low → claude-sonnet-5-5 / low。
+- Claude `accept` 由 claude-opus-5-5 / high → claude-sonnet-5-5 / high。
+- Claude `review` 由 claude-fable-5-1 / high → claude-opus-5-5 / xhigh。
+- 依据 cookie 2026-09-29 拍板；Sonnet 5.5 已发布，API 价格与 Sonnet 5 相同。
+
 ## 1.5.15 — 2026-09-28
 
 - 收敛文档写明 Monitor 单次 30 分钟、Bash 后台 10 分钟上限，以及 Monitor 到期先查 `status` 再重挂的操作。

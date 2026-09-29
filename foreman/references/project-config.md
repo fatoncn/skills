@@ -91,6 +91,6 @@ model = "gpt-6-sol"
 effort = "medium"
 
 [roles.implement.claude]
-model = "claude-opus-5-5"
+model = "claude-sonnet-5-5"
 effort = "medium"
 ```
