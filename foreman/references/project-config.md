@@ -87,7 +87,7 @@ Claude 角色完整例子：
 ```toml
 [roles.implement]
 engine = "codex"
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 effort = "medium"
 
 [roles.implement.claude]

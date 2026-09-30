@@ -1,5 +1,10 @@
 # foreman 版本记录
 
+## 1.5.17 — 2026-09-30
+
+- Codex implement / mechanical / accept 由 gpt-6-sol → gpt-6.1-sol，档位不变。
+- 依据 cookie 09-30 拍板；GPT-6.1 Sol 09-29 发布，需 Codex CLI ≥ 0.159.2。
+
 ## 1.5.16 — 2026-09-29
 
 - Claude `implement` 由 claude-opus-5-5 / medium → claude-sonnet-5-5 / medium。
