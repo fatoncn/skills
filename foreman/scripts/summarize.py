@@ -693,14 +693,69 @@ def report(log_path: str, stderr_path: str | None, last_path: str | None = None,
     return 0
 
 
-def tail(log_path: str, count: int = 20, engine: str | None = None) -> int:
-    """人读的进度视图：最近 N 个 item 级事件。跑到一半随时可看。"""
+def detail_rows(events, engine=None):
+    """主动查看公开文字与工具记录；不展开推理或协议控制消息。"""
+    rows = []
+    claude = engine == "claude" or is_claude(events)
+    for event in events:
+        stamp = event.get("_at", event.get("timestamp", "—"))
+        if event.get("_fleet") in ("steer", "steer_error", "steer_requeued", "question", "answer"):
+            rows.append((f"{stamp} {event['_fleet']}", event))
+            continue
+        if claude:
+            marker = event.get("_foreman") or {}
+            if isinstance(marker, dict) and marker.get("type") in ("question", "permission"):
+                rows.append((f"{stamp} {marker['type']}", marker))
+            blocks = (event.get("message") or {}).get("content") or []
+            for block in blocks if isinstance(blocks, list) else []:
+                if block.get("type") in ("text", "tool_use", "tool_result"):
+                    rows.append((f"{stamp} {block['type']}", block))
+        elif event.get("method") in ("item/started", "item/completed") and not event.get("_fleet"):
+            item = (event.get("params") or {}).get("item") or {}
+            kind = item.get("type")
+            if kind in ("agentMessage", "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange", "webSearch"):
+                if kind == "agentMessage" and event["method"] != "item/completed":
+                    continue
+                body = dict(item)
+                if kind == "commandExecution" and "aggregatedOutput" not in body:
+                    body["output_note"] = "该事件未提供输出正文（运行中增量未采集）"
+                rows.append((f"{stamp} {event['method']} {kind}", body))
+        elif engine == "pi" or event.get("type") in ("message_end", "tool_execution_start", "tool_execution_end"):
+            kind = event.get("type")
+            if kind == "message_end":
+                message = event.get("message") or {}
+                if message.get("role") == "assistant":
+                    for block in message.get("content") or []:
+                        if block.get("type") in ("text", "toolCall"):
+                            rows.append((f"{stamp} {block['type']}", block))
+            elif kind in ("tool_execution_start", "tool_execution_end"):
+                rows.append((f"{stamp} {kind}", event))
+    return rows
+
+
+def tail(log_path: str, count: int = 20, engine: str | None = None,
+         verbose=False, skip=0, max_chars=16000) -> int:
+    """默认摘要保持不变；详情与向前翻阅仅在主动调用时启用。"""
+    if count <= 0 or skip < 0 or max_chars <= 0:
+        raise ValueError("条数和 max-chars 必须大于 0，skip 必须非负")
     events = load(log_path) if os.path.isfile(log_path) else []
-    rows = event_rows(events, engine)
-    for row in rows[-count:]:
-        print(row)
-    if not rows:
-        print("（还没有 item 级事件）")
+    rows = detail_rows(events, engine) if verbose else event_rows(events, engine)
+    end = max(0, len(rows) - skip)
+    start = max(0, end - count)
+    selected = rows[start:end]
+    if verbose:
+        parts = []
+        for number, (label, body) in enumerate(selected, start + 1):
+            parts.append(f"--- 记录 {number}/{len(rows)} {label} ---\n" + json.dumps(body, ensure_ascii=False, indent=2))
+        output = "\n".join(parts)
+        print(output[:max_chars], end="\n" if output else "")
+        if len(output) > max_chars:
+            print("（详情已达到字符上限；缩小条数或调大 --max-chars 查看。仅展示已落盘内容。）")
+    else:
+        for row in selected:
+            print(row)
+    if not selected:
+        print("（所选范围没有详情记录）" if verbose or skip else "（还没有 item 级事件）")
     return 0
 
 
@@ -993,7 +1048,17 @@ if __name__ == "__main__":
         print(scan(load(argv[1]), engine)["final"])
         sys.exit(0)
     if len(argv) >= 2 and argv[0] == "--tail":
-        sys.exit(tail(argv[1], int(argv[2]) if len(argv) > 2 else 20, engine))
+        import argparse
+        parser = argparse.ArgumentParser(description="按需读取执行记录")
+        parser.add_argument("path")
+        parser.add_argument("count", nargs="?", type=int, default=20)
+        parser.add_argument("--verbose", action="store_true")
+        parser.add_argument("--skip", type=int, default=0)
+        parser.add_argument("--max-chars", type=int, default=16000)
+        args = parser.parse_args(argv[1:])
+        if args.count <= 0 or args.skip < 0 or args.max_chars <= 0:
+            parser.error("条数和 max-chars 必须大于 0，skip 必须非负")
+        sys.exit(tail(args.path, args.count, engine, args.verbose, args.skip, args.max_chars))
     if len(argv) >= 6 and argv[0] == "--progress":
         for line in progress(argv[1], argv[2], argv[3], argv[4], int(argv[5]),
                              float(argv[6]) if len(argv) > 6 else None, engine):

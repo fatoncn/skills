@@ -1708,16 +1708,48 @@ cmd_report() {
 }
 
 cmd_tail() {
-  local issue="${1:-}" count="${2:-20}"
-  [ -n "$issue" ] || die "用法: foreman tail <票 id> [N]"
+  local issue="${1:-}" count=20 count_set=0 tname="" selected="" skip=0 max_chars=16000 verbose=0
+  [ -n "$issue" ] || die "用法: foreman tail <票 id> [N] [--thread 名 | --run N|reviewN] [--verbose] [--skip N] [--max-chars N]"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --verbose) verbose=1; shift ;;
+      --thread|--run|--skip|--max-chars)
+        [ $# -ge 2 ] && [ -n "$2" ] || die "tail: $1 缺少值"
+        case "$1" in --thread) tname="$2" ;; --run) selected="$2" ;; --skip) skip="$2" ;; --max-chars) max_chars="$2" ;; esac
+        shift 2 ;;
+      -*) die "tail: 未知参数 $1" ;;
+      *) [ "$count_set" -eq 0 ] || die "tail: 多余参数 $1"; count="$1"; count_set=1; shift ;;
+    esac
+  done
+  [[ "$count" =~ ^[0-9]+$ && "$count" =~ [1-9] ]] || die "tail: 条数必须为正整数"
+  [[ "$skip" =~ ^[0-9]+$ ]] || die "tail: --skip 必须为非负整数"
+  [[ "$max_chars" =~ ^[0-9]+$ && "$max_chars" =~ [1-9] ]] || die "tail: --max-chars 必须为正整数"
+  [ -z "$tname" ] || [ -z "$selected" ] || die "tail: --thread 与 --run 不能同时使用"
   init_repo_context; require_project; require_issue "$issue"
-  local dir; dir="$(issue_dir "$issue")"
-  local kind n f
-  for kind in run review; do
-    n="$(latest_n "$dir" "$kind")"; [ "$n" -gt 0 ] || continue
-    f="$dir/$kind-$n"
+  local dir kind n f runs; dir="$(issue_dir "$issue")"
+  local targets=() detail_args=()
+  if [ -n "$tname" ]; then
+    runs="$(thread_get "$issue" "$tname" runs)"
+    [ -n "$runs" ] || die "tail: 线程 '$tname' 不存在或没有轮次"
+    selected="${runs##*,}"
+  fi
+  if [ -n "$selected" ]; then
+    case "$selected" in review-*) ;; review*) selected="review-${selected#review}" ;; run-*) ;; *) selected="run-$selected" ;; esac
+    [[ "$selected" =~ ^(run|review)-[0-9]+$ ]] || die "tail: 无效轮次 $selected"
+    [ -f "$dir/$selected.jsonl" ] || die "tail: $selected 尚无事件日志"
+    targets=("$selected")
+  else
+    for kind in run review; do
+      n="$(latest_n "$dir" "$kind")"; [ "$n" -gt 0 ] || continue
+      targets[${#targets[@]}]="$kind-$n"
+    done
+  fi
+  [ "$verbose" -eq 0 ] || detail_args=(--verbose)
+  for selected in ${targets[@]+"${targets[@]}"}; do
+    kind="${selected%-*}"; n="${selected##*-}"; f="$dir/$selected"
     echo "== $issue $kind#$n $(call_state "$f") $(elapsed_of "$f")"
-    python3 "$PY_SUMMARIZE" --tail "$f.jsonl" "$count"
+    python3 "$PY_SUMMARIZE" --tail "$f.jsonl" "$count" ${detail_args[@]+"${detail_args[@]}"} --skip "$skip" --max-chars "$max_chars" || return $?
   done
 }
 
@@ -2608,7 +2640,7 @@ foreman <command>            执行器: codex（默认，app-server）| claude�
   status [<id>...]         最近一轮 run / review 的状态（RUNNING / WAITING / DONE / ENGINE_DOWN / DEAD）
   threads <id>             这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次），与引擎无关
   wait [<id>...] [--timeout 300] [--progress 300|0] [--interval 20] [--no-report]   有进展才按周期打印；超时附事件尾；返回 2 = 还在跑，3 = 执行者在提问
-  report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N]   最近 N 个 item 级事件（跑到一半也能看）
+  report <id> [N|reviewN] [--pr <名>]  重看某轮摘要      tail <id> [N] [--thread 名 | --run N|reviewN] [--verbose] [--skip N] [--max-chars N]   按需查看执行记录
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）
   pr <id> --title t --body-file f [--base b] [--draft|--ready] [--yes]   打印 push + gh pr create 命令；--yes 才执行

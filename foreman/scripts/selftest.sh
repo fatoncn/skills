@@ -612,6 +612,26 @@ sed "s#/workspace/proj/other/b.ts#$T/system-temp.txt#" "$T/probe.jsonl" > "$T/pr
 expect_no_grep "系统临时目录不计工作目录之外" "工作目录之外" python3 "$SKILL_DIR/scripts/summarize.py" "$T/probe-tmp.jsonl" "$T/probe.stderr" "$T/probe.last.md"
 expect_no_grep "accept 交付目录 fileChange 从模型改动列表排除" '/workspace/proj/other/b.ts' python3 "$SKILL_DIR/scripts/summarize.py" --role accept "$T/probe2.jsonl" "$T/probe2.stderr" "$T/probe2.last.md"
 expect_no_grep "fileChange 只列事实、不判只看不改角色作废" '改了这轮作废' python3 "$SKILL_DIR/scripts/summarize.py" --role review "$T/probe.jsonl" "$T/probe.stderr" "$T/probe.last.md"
+python3 -B "$SKILL_DIR/tests/tail_details.py" && ok "tail 主动详情与分页预算" || bad "tail 主动详情与分页预算"
+# 独立票夹具：验证公开 CLI 的线程/轮次定位，不启动执行器。
+tail_dir="$(dirname "$steer_dir")/tail-inspect"
+mkdir -p "$tail_dir"
+printf '%s\n' '{"threads":{"worker":{"runs":["run-1"]},"reviewer":{"runs":["review-1"]}}}' > "$tail_dir/meta.json"
+expect_rc "tail 空票不触发空数组错误" 0 "$F" tail tail-inspect
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"worker-history"}}}' > "$tail_dir/run-1.jsonl"
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"latest-other-thread"}}}' > "$tail_dir/run-2.jsonl"
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"review-history"}}}' > "$tail_dir/review-1.jsonl"
+expect_grep "tail 按线程定位历史轮次" "worker-history" "$F" tail tail-inspect --thread worker --verbose
+expect_no_grep "tail 不串到其它线程" "latest-other-thread" "$F" tail tail-inspect --thread worker --verbose
+expect_grep "tail 按复审轮次定位" "review-history" "$F" tail tail-inspect --run review1 --verbose
+expect_grep "tail 默认仍取最新 run" "latest-other-thread" "$F" tail tail-inspect
+expect_grep "tail 显式 run 前缀" "worker-history" "$F" tail tail-inspect --run run-1
+expect_grep "tail 线程选择复审轮次" "review-history" "$F" tail tail-inspect --thread reviewer --verbose
+expect_grep "tail 拒绝互斥选择" "不能同时使用" "$F" tail tail-inspect --thread worker --run 1
+expect_grep "tail 拒绝缺失线程" "不存在或没有轮次" "$F" tail tail-inspect --thread missing
+expect_grep "tail 拒绝零条数" "条数必须为正整数" "$F" tail tail-inspect 0
+expect_grep "tail 拒绝缺少值" "缺少值" "$F" tail tail-inspect --skip
+rm -r "$tail_dir"
 echo "== wait 进展摘要 =="
 progress_log="$T/progress.jsonl"; progress_state="$T/progress.state.json"
 printf 1000 > "$T/progress.started"; printf 3600 > "$T/progress.timeout"
