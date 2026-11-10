@@ -38,7 +38,7 @@
 
 | 通道 | 怎么派 | 它有什么 | 代价 |
 |---|---|---|---|
-| **外派 foreman**（codex 主线 / claude beta） | `$FOREMAN run` | 独立 worktree + OS 沙箱；线程可续、返工记得上一轮；第二模型视角；`report` 事后越界探针；本机凭证、CLI、网络经「替我审批」放行后都能用；调研走 `--role research` | 吃 codex 订阅额度（与用户自己的 Codex 共享）；一轮 20～40 分钟；看不到你的会话上下文和你的 MCP |
+| **外派 foreman**（codex 主线 / claude beta） | `$FOREMAN run`（只用 codex 引擎；claude 引擎是 beta，用户明确要求才用） | 独立 worktree + OS 沙箱；线程可续、返工记得上一轮；第二模型视角；`report` 事后越界探针；本机凭证、CLI、网络经「替我审批」放行后都能用；调研走 `--role research` | 吃 codex 订阅额度（与用户自己的 Codex 共享）；一轮 20～40 分钟；看不到你的会话上下文和你的 MCP |
 | **宿主 spawn 子 agent** | 宿主自带的子 agent 机制（Claude Code 是 `Agent` 工具，Codex 是它的子 agent；默认次旗舰模型，如 `opus`） | 快、便宜；看得到你的上下文与工具；追加指令续同一个 agent（Claude Code 用 `SendMessage`） | 同源模型视角单一；没有 OS 沙箱，只有权限模式 |
 
 各自擅长，给用户定通道时参考（不是路由判据）：

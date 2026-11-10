@@ -143,7 +143,8 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 
 ## 已知降级
 
-- claude 引擎整体 beta：只跑过一张真实票。其沙箱内跑 `pnpm` 脚本会触发依赖校验重装并损坏 `node_modules`（仓库 issue #26 待修；根子是 Claude Code 沙箱把 pnpm store 指到临时目录、且禁写 `.idea` / `.vscode`），修好前 claude 线程只派不跑包管理器脚本的活。
+- claude 引擎整体 beta，**用户没有明确要求就不派**：只跑过一张真实票。其沙箱内跑 `pnpm` 脚本会触发依赖校验重装并损坏 `node_modules`（仓库 issue #26 待修；根子是 Claude Code 沙箱把 pnpm store 指到临时目录、且禁写 `.idea` / `.vscode`），修好前 claude 线程只派不跑包管理器脚本的活。
+- claude 引擎每一轮都在执行目录起一个 `claude -p` 会话并照常保存（复审轮除外，复审带 `--no-session-persistence`），会话沿用编排会话的入口标记（桌面版 / VSCode），因此会出现在用户自己的 Claude 会话列表里，和用户的正常会话混在一起；codex 引擎与宿主 spawn 的子 agent 不会。
 - Claude 的 `steer` 只排到下一轮 `run`，不中断或谎报已注入当前进程。
 - Claude 复审只读是 Read / Glob / Grep 工具级，不是 OS 级只读。
 - 用户 MCP 的远程写不在本地 Bash / 文件事件探针观测面。
