@@ -223,6 +223,36 @@ if [ -n "$req" ]; then
   rm -rf "$rd/hold-release-test" "$rd"/run-88.*
 fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
+
+# 用两个不同的活 PID 模拟执行体与自动检查，避免 PID 去重掩盖重复计数。
+count_dir="$FOREMAN_HOME/projects/pid-count/issues/test/1"
+mkdir -p "$count_dir"; printf '{}' > "$count_dir/meta.json"
+sleep 300 & count_run_pid=$!
+sleep 300 & count_check_pid=$!
+for count_engine in codex claude; do
+  for count_kind in run review; do
+    count_prefix="$count_dir/$count_kind-12"
+    printf '%s' "$count_run_pid" > "$count_prefix.pid"
+    printf '%s' "$count_engine" > "$count_prefix.engine"
+    printf '%s' "$count_check_pid" > "$count_prefix.check.pid"
+    if [ "$count_engine" = codex ]; then count_expected='codex 线程在跑: 1 / 上限 .* | claude: 0 / 上限'
+    else count_expected='codex 线程在跑: 0 / 上限 .* | claude: 1 / 上限'; fi
+    expect_grep "$count_engine $count_kind 执行体与自动检查同时存活只计 1" "$count_expected" "$F" status 1
+    printf 0 > "$count_prefix.rc"
+    expect_grep "$count_engine $count_kind 已有 rc 而自动检查存活计 0" 'codex 线程在跑: 0 / 上限 .* | claude: 0 / 上限' "$F" status 1
+    rm -f "$count_prefix.pid" "$count_prefix.engine" "$count_prefix.check.pid" "$count_prefix.rc"
+  done
+  # 即使后缀文件有 engine 标记，也不能把它当执行体；非数字轮次同样排除。
+  for count_name in run-12.check review-12.extra run-invalid review-12x; do
+    printf '%s' "$count_check_pid" > "$count_dir/$count_name.pid"
+    printf '%s' "$count_engine" > "$count_dir/$count_name.engine"
+  done
+  expect_grep "$count_engine 排除有 engine 的后缀 PID 与非数字轮次" 'codex 线程在跑: 0 / 上限 .* | claude: 0 / 上限' "$F" status 1
+  rm -f "$count_dir"/*.pid "$count_dir"/*.engine
+done
+kill "$count_run_pid" "$count_check_pid" 2>/dev/null || true
+wait "$count_run_pid" "$count_check_pid" 2>/dev/null || true
+rm -rf "$FOREMAN_HOME/projects/pid-count"
 expect_grep "status 说明用时从派发起算且交接不归零" "QUEUED→RUNNING 不归零" "$F" status
 expect_grep "超时现场报告测试登记" "PR「here」" "$F" here 47
 timeout47_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/47/meta.json' -print -quit)")"

@@ -355,6 +355,8 @@ active_codex_runs() {
     [ -f "$d/meta.json" ] || continue
     for f in "$d"/run-*.pid "$d"/review-*.pid; do
       [ -f "$f" ] || continue
+      # 只计执行体，排除自动检查等带后缀的 PID 文件。
+      [[ "${f##*/}" =~ ^(run|review)-[0-9]+\.pid$ ]] || continue
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || echo codex)"
       case "$eng" in codex) ;; *) continue ;; esac
       [ -f "${f%.pid}.rc" ] && continue
@@ -370,6 +372,8 @@ active_claude_runs() {
     [ -f "$d/meta.json" ] || continue
     for f in "$d"/run-*.pid "$d"/review-*.pid; do
       [ -f "$f" ] || continue
+      # 只计执行体，排除自动检查等带后缀的 PID 文件。
+      [[ "${f##*/}" =~ ^(run|review)-[0-9]+\.pid$ ]] || continue
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || true)"
       [ "$eng" = "claude" ] || continue
       [ -f "${f%.pid}.rc" ] && continue
