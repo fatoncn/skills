@@ -39,7 +39,7 @@
 | 通道 | 怎么派 | 它有什么 | 代价 |
 |---|---|---|---|
 | **外派 foreman**（codex 主线 / claude beta） | `$FOREMAN run`（只用 codex 引擎；claude 引擎是 beta，用户明确要求才用；唯一例外是高风险票的 Claude `/code-review` 那一轮，见阶段 4） | 独立 worktree + OS 沙箱；线程可续、返工记得上一轮；第二模型视角；`report` 事后越界探针；本机凭证、CLI、网络经「替我审批」放行后都能用；调研走 `--role research` | 吃 codex 订阅额度（与用户自己的 Codex 共享）；一轮 20～40 分钟；看不到你的会话上下文和你的 MCP |
-| **宿主 spawn 子 agent** | 宿主自带的子 agent 机制（Claude Code 是 `Agent` 工具，Codex 是它的子 agent；默认次旗舰模型，如 `opus`） | 快、便宜；看得到你的上下文与工具；追加指令续同一个 agent（Claude Code 用 `SendMessage`） | 同源模型视角单一；没有 OS 沙箱，只有权限模式 |
+| **宿主 spawn 子 agent** | 宿主自带的子 agent 机制（Claude Code 是 `Agent` 工具，Codex 是它的子 agent；模型按角色表选） | 快、便宜；看得到你的上下文与工具；追加指令续同一个 agent（Claude Code 用 `SendMessage`） | 同源模型视角单一；没有 OS 沙箱，只有权限模式 |
 
 各自擅长，给用户定通道时参考（不是路由判据）：
 
@@ -61,7 +61,7 @@
 
 ### spawn 通道的具体规则
 
-- 子 agent 默认次旗舰模型（主会话跑旗舰时显式传 `model: "opus"`），只有用户要求或子任务确需更强推理才升级。
+- 子 agent 按上文角色表的 Claude 列显式传 `model`（Agent 工具传对应的别名，如 `sonnet`、`opus`），不继承主会话的模型。只有用户要求、或任务书里契约写不死要执行者自己取舍时才升一档。
 - 多个互不依赖的子任务**在同一条消息里一次性并发派发**。
 - 权限边界：不为子 agent 单独放宽权限模式，它跟随主会话的权限模式；改代码的子 agent 也只在自己的 worktree 或当前检出里改，不碰别人的 worktree。
 - **角色文件必须随 prompt 带上（硬规则）**：foreman 通道由脚本自动把 `~/.foreman/roles/<角色>.md` 注入执行者，spawn 没有这一层，所以每次 spawn 的 prompt 开头必须写明「先读 `~/.foreman/roles/<implement|review|research|accept|mechanical>.md`，按它的契约（位置、分工边界、提问方式、输出格式、复审默认清单）工作，与任务书或项目规则冲突时以后者为准」；任务书本身只写本票特有的目标、范围、要求、完成定义与关注点，不重复角色文件里的默认清单与输出格式。没带角色文件的 spawn 不算合规派活。依据：2026-10-19 一批 spawn 复审与实现全靠编排者临时写清单，复审把「与另一端同名不同口径」报成一句备注而非角色文件要求的「对齐风险」单列节，真问题（事件取错名）被注释关掉后合入。
