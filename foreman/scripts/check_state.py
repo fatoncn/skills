@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 
 
 TERMINAL_STATUS = re.compile(r"^(SKIPPED|UNCONFIGURED|FAILED)(?::|$)")
@@ -16,8 +16,33 @@ def _read(path: Path) -> str:
         return ""
 
 
-def pid_alive(value) -> bool:
-    """Treat a PID that cannot be probed as live unless it is known to be absent."""
+def _pid_reused(pid, started_file, pid_file):
+    if not started_file:
+        return False
+
+    import subprocess
+    from datetime import datetime, timezone
+
+    try:
+        path = Path(started_file)
+        started = _read(path)
+        recorded_at = int(started) if started else path.stat().st_mtime
+        # The dispatcher can publish the actual child PID after recording the
+        # round start. A live child born within that interval is not proof of reuse.
+        if pid_file:
+            recorded_at = max(recorded_at, Path(pid_file).stat().st_mtime)
+        actual = subprocess.check_output(
+            ["ps", "-o", "lstart=", "-p", str(pid)], text=True, stderr=subprocess.DEVNULL,
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"}, timeout=3,
+        ).strip()
+        process_start = datetime.strptime(actual, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+        return process_start.timestamp() > recorded_at
+    except (OSError, ValueError, OverflowError, subprocess.SubprocessError):
+        return False
+
+
+def pid_alive(value, started_file=None, pid_file=None) -> bool:
+    """Keep a PID live when the process exists but its identity is uncertain."""
     try:
         pid = int(value)
         if pid <= 0:
@@ -25,8 +50,9 @@ def pid_alive(value) -> bool:
         os.kill(pid, 0)
     except (ProcessLookupError, ValueError, TypeError, OverflowError):
         return False
+    except PermissionError:
+        return not _pid_reused(pid, started_file, pid_file)
     except OSError:
-        # Includes EPERM, which says nothing about whether the process has exited.
         pass
     return True
 
@@ -45,7 +71,8 @@ def check_state(prefix) -> str:
         return "PENDING_RUN"
     if rc != "0":
         return "TERMINAL"
-    return "CHECKING" if pid_alive(_read(Path(str(prefix) + ".check.pid"))) else "WORKER_GONE"
+    pid_file = Path(str(prefix) + ".check.pid")
+    return "CHECKING" if pid_alive(_read(pid_file), str(prefix) + ".check.started", pid_file) else "WORKER_GONE"
 
 
 def check_result(prefix) -> str:
@@ -71,4 +98,4 @@ def check_result(prefix) -> str:
 if __name__ == "__main__":
     import sys
 
-    sys.exit(0 if pid_alive(sys.argv[1]) else 1)
+    sys.exit(0 if pid_alive(*sys.argv[1:]) else 3)

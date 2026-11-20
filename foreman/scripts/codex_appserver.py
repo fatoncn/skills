@@ -425,11 +425,12 @@ def enqueue_steer(directory, tname, message):
         other = thread_file.read_text() if thread_file.exists() else Path(prefix).name
         if other == tname:
             continue
+        pid_file = Path(prefix + ".pid")
         try:
-            pid = Path(prefix + ".pid").read_text()
+            pid = pid_file.read_text()
         except OSError:
             continue
-        if not pid_alive(pid):
+        if not pid_alive(pid, prefix + ".started", pid_file):
             continue
         raise ValueError(f"PR「{pr}」上线程 '{other}' 仍在跑：同一 PR 同时只准一条线程；引导保留，请等它结束再重发")
     n = max(run_numbers(directory), default=0) + 1

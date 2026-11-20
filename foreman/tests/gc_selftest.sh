@@ -2,19 +2,28 @@
 gc_selftest() {
   local FOREMAN_HOME="$T/gc-home" GC_PROJECT="$T/gc project" GC_RACE_LOG
   export FOREMAN_HOME GC_PROJECT GC_RACE_LOG
-  local GC_REAL_GIT GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
-  GC_REAL_GIT="$(command -v git)"
+  local GC_REAL_GIT GC_REAL_PS GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
+  GC_REAL_GIT="$(command -v git)"; GC_REAL_PS="$(command -v ps)"
   GC_LATE_ALIAS="$FOREMAN_HOME/projects/gc-nogit/issues/_nogit/late-alias/meta.json"
   GC_REOPEN_SEEN="$T/gc-reopen-seen"
-  export GC_REAL_GIT GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
+  export GC_REAL_GIT GC_REAL_PS GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
   local PATH="$T/gc-tools:$PATH" PYTHONPATH="$T/gc-tools${PYTHONPATH:+:$PYTHONPATH}"
   export PATH PYTHONPATH
-  mkdir -p "$GC_PROJECT" "$T/gc-outside" "$T/gc-nogit" "$T/gc-tools"
+  mkdir -p "$GC_PROJECT" "$T/gc-outside" "$T/gc-nogit" "$T/gc-tools" "$T/gc-snapshot"
+  cat > "$T/gc-tools/ps" <<'SH'
+#!/usr/bin/env bash
+case "${4:-}" in
+  88888811) printf 'Wed Jan  1 00:00:00 2025\n' ;;
+  88888812) exit 1 ;;
+  *) exec "$GC_REAL_PS" "$@" ;;
+esac
+SH
+  chmod +x "$T/gc-tools/ps"
   cat > "$T/gc-tools/sitecustomize.py" <<'PY'
 import os
 kill = os.kill
 def kill_with_eperm(pid, sig):
-    if sig == 0 and pid in (88888801, 88888802):
+    if sig == 0 and pid in (88888801, 88888802, 88888804, 88888811, 88888812):
         raise PermissionError(1, "fixture EPERM")
     return kill(pid, sig)
 os.kill = kill_with_eperm
@@ -22,8 +31,22 @@ PY
   cat > "$T/gc-tools/git" <<'SH'
 #!/usr/bin/env bash
 set -eu
+with_base_checkout() {
+  local wt="$2" original status=0
+  original="$("$GC_REAL_GIT" -C "$wt" symbolic-ref --short HEAD)"
+  "$GC_REAL_GIT" -C "$wt" switch -q --detach refs/remotes/origin/main
+  "$GC_REAL_GIT" "$@" || status=$?
+  "$GC_REAL_GIT" -C "$wt" switch -q "$original"
+  touch "$GC_SNAPSHOT/${wt##*/}.checked"
+  exit "$status"
+}
 if [ "${1:-}" = -C ]; then
   case "${3:-}" in
+    merge-base)
+      if [ "${2##*/}" = foreman-narrow ] && [ -n "${GC_SNAPSHOT:-}" ] &&
+        [ -f "$GC_SNAPSHOT/foreman-narrow.fetched" ]; then
+        with_base_checkout "$@"
+      fi ;;
     remote)
       if [ "${4:-}" = get-url ] && [ "${5:-}" = origin ] && [ -n "${GC_TEST_ORIGIN:-}" ]; then
         printf '%s\n' "$GC_TEST_ORIGIN"; exit 0
@@ -31,8 +54,23 @@ if [ "${1:-}" = -C ]; then
     rev-list)
       if [ "$2" = "${GC_REV_LIST_FAILURE_WT:-}" ]; then
         echo 'fixture rev-list failure' >&2; exit 128
+      fi
+      if [ "${2##*/}" = foreman-push-snapshot ] && [ -n "${GC_SNAPSHOT:-}" ] &&
+        [ -f "$GC_SNAPSHOT/foreman-push-snapshot.fetched" ]; then
+        with_base_checkout "$@"
       fi ;;
     fetch)
+      if [ -n "${GC_SNAPSHOT:-}" ]; then
+        case "${2##*/}" in
+          foreman-narrow|foreman-push-snapshot)
+            "$GC_REAL_GIT" "$@"
+            if [ "${2##*/}" = foreman-push-snapshot ]; then
+              "$GC_REAL_GIT" -C "$2" fetch --quiet origin '+refs/heads/main:refs/remotes/origin/feat/gc-push-snapshot'
+            fi
+            touch "$GC_SNAPSHOT/${2##*/}.fetched"
+            exit 0 ;;
+        esac
+      fi
       if [ "${2##*/}" = foreman-late-ledger ] && [ -n "${GC_LATE_CORRUPT:-}" ]; then
         "$GC_REAL_GIT" "$@"
         printf '{' > "$GC_LATE_CORRUPT"
@@ -40,6 +78,10 @@ if [ "${1:-}" = -C ]; then
       fi
       if [ "${GC_INJECT:-}" = 1 ]; then
         case "${2##*/}" in
+          foreman-late-check)
+            "$GC_REAL_GIT" "$@"
+            printf 'check started\n' > "$GC_CHECK_LOG_DIR/check-late-fixture.log"
+            exit 0 ;;
           foreman-late-shared)
             "$GC_REAL_GIT" "$@"
             mkdir -p "$(dirname "$GC_LATE_ALIAS")"
@@ -84,26 +126,27 @@ set -euo pipefail
 [ "${@: -2:1}" = --repo ] && [ "${@: -1}" = "$GC_EXPECT_REPO" ] || exit 1
 [ "$GH_HOST" = "${GC_EXPECT_HOST:-github.com}" ] || exit 1
 case "$2" in
-  view) [ "$3" = 41 ]; state=MERGED; number=41 ;;
+  view) [ "$3" = 41 ]; state=MERGED; number=41; base=retargeted ;;
   list)
     [ "$3" = --state ] && [ "$4" = all ] && [ "$5" = --head ] &&
       [ "$7" = --base ] && [ "$8" = main ] && [ "$9" = --limit ] && [ "${10}" = 2 ] || exit 1
-    number=42
+    number=42; base=main
     case "$6" in
       feat/gc-gh-fail) exit 1 ;;
       feat/gc-race) state=MERGED; if [ "${GC_RACE:-}" = 1 ]; then touch "$GC_RACE_LOG"; fi ;;
-      feat/gc-closed|feat/gc-ambiguous) state=CLOSED ;;
+      feat/gc-closed|feat/gc-ambiguous|feat/gc-push-snapshot) state=CLOSED ;;
       feat/gc-reopened)
         state=CLOSED
         if [ "${GC_INJECT:-}" = 1 ]; then
           if [ -f "$GC_REOPEN_SEEN" ]; then state=OPEN; else touch "$GC_REOPEN_SEEN"; fi
         fi ;;
       *) echo '[]'; exit 0 ;;
-    esac ;;
+    esac
+    if [ "${GC_LIST_BASE_MISMATCH:-}" = 1 ]; then base=wrong; fi ;;
   *) exit 1 ;;
 esac
-printf -v result '{"number":%s,"state":"%s","baseRefName":"main","headRefName":"%s","headRefOid":"%s","isCrossRepository":false}' \
-  "$number" "$state" "$(git branch --show-current)" "$(git rev-parse HEAD)"
+printf -v result '{"number":%s,"state":"%s","baseRefName":"%s","headRefName":"%s","headRefOid":"%s","isCrossRepository":false}' \
+  "$number" "$state" "$base" "$(git branch --show-current)" "$(git rev-parse HEAD)"
 if [ "$2" = view ]; then printf '%s\n' "$result"
 elif [ "$6" = feat/gc-ambiguous ]; then printf '[%s,%s]\n' "$result" "$result"
 else printf '[%s]\n' "$result"; fi
@@ -116,18 +159,19 @@ SH
   export GC_EXPECT_REPO
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
-    shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following; do
+    shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
+    late-check push-snapshot check-lock held reused; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
     case "$id" in
-      merged|unpushed|gh-fail|race|closed|ambiguous|reopened)
+      merged|unpushed|gh-fail|race|closed|ambiguous|reopened|push-snapshot)
         git -C "$wt" -c user.name=test -c user.email=test@example.com commit --allow-empty -qm "$id" ||
           { bad "gc commit $id"; return; }
         ;;
     esac
     case "$id" in
-      merged|gh-fail|race|ambiguous|reopened) git -C "$wt" push -qu origin HEAD || { bad "gc push $id"; return; } ;;
+      merged|gh-fail|race|ambiguous|reopened|push-snapshot) git -C "$wt" push -qu origin HEAD || { bad "gc push $id"; return; } ;;
       closed) git -C "$wt" push -q origin HEAD || { bad "gc push $id"; return; } ;;
       missing) git -C "$GC_PROJECT" worktree remove "$wt" || { bad "gc missing 夹具"; return; } ;;
       dirty) printf dirty > "$wt/untracked" ;;
@@ -152,7 +196,7 @@ for d in ledger.iterdir():
     for pr in meta["prs"].values():
         pr["created"] = old_iso
         marker = Path(pr["worktree"]) / ".git"
-        if marker.is_file() and d.name not in ("partial", "narrow", "late-ledger", "zz-following"):
+        if marker.is_file() and d.name not in ("partial", "narrow", "late-ledger", "zz-following", "check-lock"):
             os.utime(marker, (old, old))
     if d.name == "merged":
         meta["prs"]["work"]["gh_pr"] = 41
@@ -168,11 +212,17 @@ for d in ledger.iterdir():
                       "run-2.rc": "0", "run-2.check.pending": "", "run-2.check.pid": "88888802",
                       "run-2.thread": "check-locked"},
         "manual": {"check-2000-fixture.log": "recent manual check"},
+        "held": {"run-1.thread": "blocked", "run-1.rc": "0"},
+        "reused": {"run-1.argv": "", "run-1.started": str(old), "run-1.pid": "88888811",
+                   "run-1.thread": "reused-pid", "run-2.argv": "", "run-2.started": str(old),
+                   "run-2.pid": "88888812", "run-2.thread": "unreadable-start",
+                   "run-3.argv": "", "run-3.started": str(old), "run-3.pid": "88888811",
+                   "run-3.thread": "late-pid-publication"},
     }
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
         f.write_text(value)
-        if d.name not in ("recent", "manual"):
+        if d.name not in ("recent", "manual") and (d.name, name) != ("reused", "run-3.pid"):
             os.utime(f, (old, old))
 PY
   wt="$GC_PROJECT/.claude/worktrees/foreman-recreated"
@@ -191,6 +241,8 @@ assert os.path.samefile(original, alias) and original != alias
 target.parent.mkdir(parents=True)
 target.write_text(json.dumps({"prs":{"here":{"registered_here":True, "worktree":str(alias)}}}))
 PY
+  mkdir -p "$ledger/held/hold-blocked"
+  printf '88888804' > "$ledger/held/hold-blocked/bridge.pid"
   export GC_RACE_LOG="$ledger/race/run-1.jsonl"
   cd "$T/gc-outside" || { bad "gc 外部目录夹具"; return; }
   local json_rc text_rc preview_rc force_rc
@@ -216,6 +268,8 @@ assert rows["active"]["active"] is True and rows["active"]["threads"][0]["round"
 assert rows["active"]["threads"][0]["state"] == "DONE", rows["active"]
 assert rows["missing"]["exists"] is False and rows["missing"]["gh_pr"] is None, rows["missing"]
 assert rows["current"]["here"] is True and rows["notes"]["repo"] == "_nogit", rows
+assert {t["name"]: t["state"] for t in rows["reused"]["threads"]} == {
+    "reused-pid": "DEAD", "unreadable-start": "RUNNING", "late-pid-publication": "RUNNING"}, rows["reused"]
 assert rows["protected"]["active"] and {t["state"] for t in rows["protected"]["threads"]} == {"RUNNING", "CHECKING"}, rows["protected"]
 manual = [row["last_activity"] for row in all_rows if row["ticket"] == "manual"]
 assert len(manual) == 2 and len(set(manual)) == 1 and manual[0] > m["last_activity"], manual
@@ -256,6 +310,17 @@ PY
   GC_TEST_ORIGIN= "$F" gc --project 'gc project' > "$T/gc-local-origin"
   gc_check "$T/gc-local-origin" merged '跳过 unknown_host'
 
+  local bad_origin
+  for bad_origin in "file:///$repo.git" "https://ghe.example.invalid:8443/$repo.git"; do
+    GC_TEST_ORIGIN="$bad_origin" "$F" gc --project 'gc project' > "$T/gc-bad-origin"
+    if gc_has "$T/gc-bad-origin" merged '跳过 unknown_host'; then
+      ok "gc 跳过无法映射的 origin $bad_origin"
+    else bad "gc 无法映射的 origin $bad_origin"; fi
+  done
+  GC_LIST_BASE_MISMATCH=1 "$F" gc --project 'gc project' > "$T/gc-wrong-base"
+  gc_check "$T/gc-wrong-base" closed '跳过 pr_base_mismatch'
+  gc_check "$T/gc-wrong-base" merged '预览 pr_merged'
+
   local check_state
   check_state="$(FOREMAN_SELFTEST=1 "$F" __call_state "$ledger/protected/run-2")"
   if [ "$check_state" = CHECKING ] &&
@@ -284,6 +349,58 @@ assert pid_alive("88888802") and not pid_alive("88888803")
       ok "gc origin $origin_url 用正确的 --repo 查到 MERGED 和 CLOSED"
     else bad "gc origin $origin_url 的 --repo" "$(cat "$T/gc-repo-preview")"; fi
   done
+  if (cd "$GC_PROJECT" && PYTHONPROFILEIMPORTTIME=1 "$F" list --json) \
+    > "$T/gc-profile.json" 2> "$T/gc-profile.stderr" &&
+    grep -q 'import time:' "$T/gc-profile.stderr" &&
+    python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))' "$T/gc-profile.json"; then
+    ok "项目根校验只用 stdout，Python 导入诊断保留在 stderr"
+  else bad "项目根校验误收导入诊断"; fi
+
+  if (cd "$GC_PROJECT" && "$F" status held) > "$T/gc-hold-status" &&
+    grep -q 'HOLD.*blocked' "$T/gc-hold-status"; then
+    ok "hold 探测无权限时仍显示存活"
+  else bad "hold 无权限时漏掉存活进程" "$(cat "$T/gc-hold-status")"; fi
+  (cd "$GC_PROJECT" && "$F" release held --thread blocked) > "$T/gc-hold-release" 2>&1
+  force_rc=$?
+  if [ "$force_rc" -eq 1 ] && grep -q '发送 TERM，停止释放' "$T/gc-hold-release" &&
+    [ "$(cat "$ledger/held/hold-blocked/bridge.pid")" = 88888804 ]; then
+    ok "hold 发信号失败即报错停止"
+  else bad "hold 发信号失败后未停止" "rc=$force_rc $(cat "$T/gc-hold-release")"; fi
+
+  local check_cmd check_pid
+  check_cmd="$(cat <<'SH'
+python3 - <<'PY'
+import fcntl, os
+from pathlib import Path
+directory = Path(os.environ["GC_CHECK_LOG_DIR"])
+with (directory / ".runs.lock").open() as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert any(p.read_text().startswith("check started") for p in directory.glob("check-*.log"))
+PY
+SH
+)"
+  if (cd "$GC_PROJECT" && GC_CHECK_LOG_DIR="$ledger/manual" "$F" check manual --pr work "$check_cmd") \
+    > "$T/gc-check-start" 2>&1 && grep -q 'RESULT: ALL PASS' "$T/gc-check-start"; then
+    ok "手动 check 发布开始日志并释放票锁后执行"
+  else bad "手动 check 启动顺序" "$(cat "$T/gc-check-start")"; fi
+
+  (cd "$GC_PROJECT" && FOREMAN_SELFTEST_LOCK_READY="$T/gc-check-locked" \
+    FOREMAN_SELFTEST_LOCK_RELEASE="$T/gc-check-unlock" "$F" check check-lock --pr work false) \
+    > "$T/gc-check-lost-pr" 2>&1 &
+  check_pid=$!
+  local i
+  for i in $(seq 1 200); do [ -f "$T/gc-check-locked" ] && break; sleep 0.05; done
+  if [ -f "$T/gc-check-locked" ]; then
+    printf '{"issue":"check-lock","prs":{}}\n' > "$ledger/check-lock/meta.json"
+  fi
+  touch "$T/gc-check-unlock"
+  wait "$check_pid"; force_rc=$?
+  if [ "$force_rc" -ne 0 ] && [ -f "$T/gc-check-locked" ] &&
+    grep -q '没有名为 work 的 PR' "$T/gc-check-lost-pr" &&
+    ! grep -q '=== false ===' "$T/gc-check-lost-pr"; then
+    ok "手动 check 在票锁内重新确认 PR 登记"
+  else bad "手动 check 未复核登记" "rc=$force_rc $(cat "$T/gc-check-lost-pr")"; fi
+
   local broken="$FOREMAN_HOME/projects/gc-nogit/issues/_nogit/corrupted/meta.json"
   mkdir -p "$(dirname "$broken")"; printf '{' > "$broken"
   "$F" gc > "$T/gc-broken-preview"; preview_rc=$?
@@ -312,7 +429,7 @@ assert pid_alive("88888802") and not pid_alive("88888803")
     ok "cleanup 不接受 Git 配置隐藏的未跟踪文件"
   else bad "cleanup 隐藏的未跟踪文件守卫"; fi
 
-  GC_RACE=1 GC_INJECT=1 "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
+  GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
@@ -324,6 +441,13 @@ assert pid_alive("88888802") and not pid_alive("88888803")
   gc_check "$T/gc-force" head-change '跳过 worktree_changed'
   gc_check "$T/gc-force" late-dirty '跳过 worktree_remove_failed'
   gc_check "$T/gc-force" reopened '跳过 pr_changed'
+  gc_check "$T/gc-force" late-check '跳过 recent_activity'
+  gc_check "$T/gc-force" held '跳过 hold_release_failed'
+  if gc_has "$T/gc-force" push-snapshot '跳过 unpushed' &&
+    [ -f "$T/gc-snapshot/foreman-push-snapshot.checked" ] &&
+    [ "$(git -C "$GC_PROJECT/.claude/worktrees/foreman-push-snapshot" symbolic-ref --short HEAD)" = feat/gc-push-snapshot ]; then
+    ok "gc 未推送检查按首轮 OID，临时换 HEAD 后仍拒绝"
+  else bad "gc 未推送检查未固定 OID" "$(cat "$T/gc-force")"; fi
   for id in merged research; do
     if [ ! -e "$GC_PROJECT/.claude/worktrees/foreman-$id" ] &&
       ! git -C "$GC_PROJECT" show-ref --verify --quiet "refs/heads/feat/gc-$id" &&
@@ -338,6 +462,9 @@ assert pid_alive("88888802") and not pid_alive("88888803")
   for id in active unpushed recent gh-fail race dirty shared late-shared head-change late-dirty reopened; do
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 跳过后保留 worktree" || bad "gc $id 跳过后目录丢失"
   done
+
+  rm -f "$ledger/held/hold-blocked/bridge.pid"
+  touch "$GC_PROJECT/.claude/worktrees/foreman-held/.git"
 
   touch -t 202001010000 "$GC_PROJECT/.claude/worktrees/foreman-partial/.git"
   GC_BREAK_DELETE="$ledger/partial/meta.json" "$F" gc --project 'gc project' --force > "$T/gc-partial"; force_rc=$?
@@ -372,9 +499,11 @@ assert pid_alive("88888802") and not pid_alive("88888803")
     git -C "$T/gc-origin.git" branch -f main rewritten &&
     git -C "$GC_PROJECT" config remote.origin.fetch '+refs/heads/rewritten:refs/remotes/origin/rewritten' &&
     touch -t 202001010000 "$wt/.git" || { bad "gc 窄 fetch 夹具"; return; }
-  "$F" gc --project 'gc project' --force > "$T/gc-narrow"; force_rc=$?
+  GC_SNAPSHOT="$T/gc-snapshot" "$F" gc --project 'gc project' --force > "$T/gc-narrow"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && gc_has "$T/gc-narrow" narrow '跳过 base_changed' && [ -d "$wt" ] &&
-    [ "$(git -C "$wt" rev-parse refs/remotes/origin/main)" = "$rewritten" ]; then
-    ok "gc 窄 fetch 映射仍复核本次取得的远端 base"
+    [ "$(git -C "$wt" rev-parse refs/remotes/origin/main)" = "$rewritten" ] &&
+    [ -f "$T/gc-snapshot/foreman-narrow.checked" ] &&
+    [ "$(git -C "$wt" symbolic-ref --short HEAD)" = feat/gc-narrow ]; then
+    ok "gc 窄 fetch 祖先复核用本次取得的 base 和首轮 OID，临时换 HEAD 后仍拒绝"
   else bad "gc 窄 fetch 后复核 base" "$(cat "$T/gc-narrow")"; fi
 }

@@ -225,8 +225,12 @@ def cmd_get(argv: list[str]) -> int:
             key = argv[i]; i += 1
     if not path or not key:
         print("get: 需要 --path 与 key", file=sys.stderr); return 2
-    with open(path, "rb") as fh:
-        cfg = tomllib.load(fh)
+    try:
+        with open(path, "rb") as fh:
+            cfg = tomllib.load(fh)
+    except (OSError, ValueError) as exc:
+        print(str(exc).splitlines()[-1], file=sys.stderr)
+        return 1
     value = None
     if repo:
         value = lookup((cfg.get("repos") or {}).get(repo) or {}, key)

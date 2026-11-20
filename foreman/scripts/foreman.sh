@@ -92,9 +92,8 @@ expand_path_tpl() { local s="$1"; s="${s//\{repo\}/$MAIN_REPO}"; s="${s//\{proje
 require_project() {
   [ -f "$PROJECT_TOML" ] || die "项目 ${PROJECT_SLUG}（${PROJECT_ROOT}）还没初始化。先跑: foreman init   （然后和用户过一遍 ${PROJECT_TOML}）"
   local root
-  root="$(python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" project.root --default "" 2>&1)" ||
-    die "项目配置有语法错误（cfg 会静默回落到默认值，所以先拦）: ${PROJECT_TOML}
-${root##*$'\n'}"
+  root="$(python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" project.root --default "")" ||
+    die "项目配置有语法错误或读取失败: ${PROJECT_TOML}"
   if [ -n "$root" ] && ! same_path "$root" "$PROJECT_ROOT"; then
     die "项目目录名撞车：${PROJECT_TOML} 属于 ${root}，当前项目根却是 ${PROJECT_ROOT}。给其中一个项目换个目录名，或用 FOREMAN_HOME 分开。"
   fi
@@ -354,7 +353,11 @@ require_required_roles() {
 pid_alive() {
   [[ "$1" =~ ^[0-9]+$ && "$1" =~ [1-9] ]] || return 1
   # kill 的退出码不区分 ESRCH 和 EPERM；失败时用共享探测读取 errno。
-  kill -0 "$1" 2>/dev/null || python3 "$SKILL_DIR/scripts/check_state.py" "$1"
+  local rc=0
+  if kill -0 "$1" 2>/dev/null; then return 0; fi
+  python3 "$SKILL_DIR/scripts/check_state.py" "$@" || rc=$?
+  # 只有探测器明确确认退出才放行。启动失败等未知结果继续保护。
+  [ "$rc" -ne 3 ]
 }
 
 # 本机所有项目里仍在跑的 codex 线程数（run + review）
@@ -369,7 +372,7 @@ active_codex_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || echo codex)"
       case "$eng" in codex) ;; *) continue ;; esac
       [ -f "${f%.pid}.rc" ] && continue
-      pid_alive "$(cat "$f")" && seen="$seen $(cat "$f")"
+      pid_alive "$(cat "$f")" "${f%.pid}.started" "$f" && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -386,7 +389,7 @@ active_claude_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || true)"
       [ "$eng" = "claude" ] || continue
       [ -f "${f%.pid}.rc" ] && continue
-      pid_alive "$(cat "$f")" && seen="$seen $(cat "$f")"
+      pid_alive "$(cat "$f")" "${f%.pid}.started" "$f" && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -805,7 +808,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/
 }
 
 hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
-hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; pid_alive "$pid"; }
 hold_cancel_queued() {  # <票目录> <hold 目录>
   local dir="$1" hd="$2" q base n
   lock_runs "$dir"
@@ -819,14 +822,30 @@ hold_cancel_queued() {  # <票目录> <hold 目录>
   done
   unlock_runs
 }
+hold_signal() { # <PID> <信号>
+  local pid="$1" sig="$2"
+  if kill "-$sig" "$pid" 2>/dev/null || ! pid_alive "$pid"; then return 0; fi
+  printf 'foreman: 无法向常驻执行体 PID %s 发送 %s，停止释放\n' "$pid" "$sig" >&2
+  return 1
+}
 hold_release_wait() {  # <hold 目录> [秒]
-  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i
-  hold_alive "$hd" || return 0
-  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"; kill -TERM "$pid" 2>/dev/null || true
-  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM）"; return 0; }; sleep 1; done
-  kill -KILL "$pid" 2>/dev/null || true
-  while hold_alive "$hd"; do sleep 0.1; kill -KILL "$pid" 2>/dev/null || true; done
-  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM 超时后 KILL）"
+  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i name
+  pid="$(cat "$hd/bridge.pid" 2>/dev/null || true)"
+  pid_alive "$pid" || return 0
+  name="${hd##*/hold-}"
+  : > "$hd/release" || return 1
+  hold_signal "$pid" TERM || return 1
+  for i in $(seq 1 "$secs"); do
+    pid_alive "$pid" || { echo "  已释放线程（${name}，TERM）"; return 0; }
+    sleep 1
+  done
+  hold_signal "$pid" KILL || return 1
+  for i in $(seq 1 50); do
+    pid_alive "$pid" || { echo "  已释放线程（${name}，TERM 超时后 KILL）"; return 0; }
+    sleep 0.1
+  done
+  printf 'foreman: 常驻执行体 PID %s 仍未退出，停止释放\n' "$pid" >&2
+  return 1
 }
 hold_dispatch() {  # <issue> <票目录> <n> <线程名> <detach> <timeout>
   local issue="$1" dir="$2" n="$3" tname="$4" detach="$5" timeout="$6"
@@ -1779,7 +1798,7 @@ cmd_diff() {
 
 run_check_commands() { # <worktree> <日志> <命令...>
   local wt="$1" out="$2"; shift 2
-  local failed=0 c rc tmp; tmp="$(mktemp)"; : > "$out"; rm -f "${out%.log}.failed-command"
+  local failed=0 c rc tmp; tmp="$(mktemp)"; rm -f "${out%.log}.failed-command"
   for c in "$@"; do
     echo "=== $c ==="; rc=0
     ( cd "$wt" && eval "$c" ) >"$tmp" 2>&1 || rc=$?
@@ -1795,7 +1814,11 @@ cmd_check() {
   local issue="$1"; shift || true
   local prname=""; if [ "${1:-}" = "--pr" ]; then prname="$2"; shift 2; fi
   init_repo_context; require_project; require_issue "$issue"
-  local wt; resolve_pr "$issue" "$prname"; wt="$PR_WT"; [ -n "$wt" ] || die "check: 票 $issue 没有登记 PR / 工作目录"
+  local wt selected_pr identity
+  resolve_pr "$issue" "$prname"; selected_pr="$PR_NAME"; wt="$PR_WT"
+  [ -n "$wt" ] || die "check: 票 $issue 没有登记 PR / 工作目录"
+  identity="$(python3 "$PY_SUMMARIZE" --directory-id "$wt")"
+  [ -n "$identity" ] || die "check: 工作目录不存在: $wt"
   local cmds=("$@")
   if [ ${#cmds[@]} -eq 0 ]; then
     while IFS= read -r line; do [ -n "$line" ] && cmds[${#cmds[@]}]="$line"; done <<EOF
@@ -1807,6 +1830,12 @@ EOF
   dir="$(issue_dir "$issue")"; stamp="$(date +%Y%m%dT%H%M%S)"
   [ "${FOREMAN_SELFTEST:-}" = 1 ] && [ -n "${FOREMAN_CHECK_LOG_STAMP:-}" ] && stamp="$FOREMAN_CHECK_LOG_STAMP"
   out="$dir/check-${stamp}-$$.log"
+  lock_runs "$dir"
+  require_issue "$issue"; resolve_pr "$issue" "$selected_pr"
+  [ "$PR_WT" = "$wt" ] && [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] ||
+    die "check: 工作目录登记或身份已变更: $wt"
+  printf 'check started\n' > "$out"
+  unlock_runs
   run_check_commands "$wt" "$out" "${cmds[@]}" || failed=$?
   echo; echo "完整输出: $out"
   [ "$failed" -eq 0 ] && echo "RESULT: ALL PASS" || echo "RESULT: FAIL"
@@ -1848,6 +1877,7 @@ auto_check_wait() { # <dir> <kind> <n> <worktree>
   if [ "$rc" != 0 ]; then printf 'SKIPPED: 执行体 rc=%s' "$rc" > "$f.check.status"; rm -f "$f.check.pending"; return 0; fi
   : > "$f.check.started"
   while IFS= read -r line; do [ -n "$line" ] && cmds[${#cmds[@]}]="$line"; done < "$f.check.commands"
+  : > "$f.check.log"
   run_check_commands "$wt" "$f.check.log" "${cmds[@]}" >/dev/null 2>&1 || check_rc=$?
   printf '%s' "$check_rc" > "$f.check.rc.$$" && mv "$f.check.rc.$$" "$f.check.rc"
   rm -f "$f.check.pending"
@@ -1900,7 +1930,7 @@ check_state() { # <stem>: TERMINAL / PENDING_RUN / CHECKING / WORKER_GONE
   [ "$rc" = 0 ] || { printf TERMINAL; return; }
   pid="$(cat "$f.check.pid" 2>/dev/null || true)"
   pid="$(printf '%s' "$pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  if pid_alive "$pid"; then printf CHECKING; else printf WORKER_GONE; fi
+  if pid_alive "$pid" "$f.check.started" "$f.check.pid"; then printf CHECKING; else printf WORKER_GONE; fi
 }
 check_result() {
   local f="$1" status phase check_rc; phase="$(check_state "$f")"
@@ -1935,7 +1965,7 @@ call_state() {
     return 0
   fi
   if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
-  if pid_alive "$pid"; then
+  if pid_alive "$pid" "$f.started" "$f.pid"; then
     local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
     if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
     if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
@@ -2059,17 +2089,18 @@ round_pr() { # <票目录> <run-N|review-N>
   if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_of_dir "$1"; fi
 }
 hold_active_run() { # <票目录> <hold 目录>；兼容没有 active.json 的旧执行体
-  python3 - "$1" "$2" <<'PY2'
-import json,os,pathlib,re,sys
-d,hd=map(pathlib.Path,sys.argv[1:]); active=hd/"active.json"
+  python3 - "$1" "$2" "$SKILL_DIR/scripts" <<'PY2'
+import json,pathlib,re,sys
+sys.path.insert(0, sys.argv[3])
+from check_state import pid_alive
+d,hd=map(pathlib.Path,sys.argv[1:3]); active=hd/"active.json"
 try:
     run=json.load(open(active)).get("run","")
     if re.fullmatch(r"(?:run|review)-\d+",run): print(run); raise SystemExit
 except (OSError,ValueError): pass
 try: bridge=int((hd/"bridge.pid").read_text())
 except (OSError,ValueError): raise SystemExit
-try: os.kill(bridge,0)
-except OSError: raise SystemExit
+if not pid_alive(bridge): raise SystemExit
 thread=hd.name[5:]; found=[]
 for tf in d.glob("run-*.thread"):
     m=re.fullmatch(r"run-(\d+)\.thread",tf.name)
@@ -2094,13 +2125,15 @@ cleanup_require_pr_idle() { # <票目录> <PR>；调用者已持 runs lock
   return 0
 }
 cleanup_release_idle_holds() { # <票目录> <PR>；调用者已持 runs lock
-  local dir="$1" pr="$2" hd="" ht="" active="" q=""
+  local dir="$1" pr="$2" mode="${3:-}" hd="" ht="" active="" q=""
   for hd in "$dir"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
     active="$(hold_active_run "$dir" "$hd")"
     if [ -z "$active" ]; then
       q="$(find "$hd/queue" -type f -name 'run-*.request.json' -print -quit 2>/dev/null || true)"
-      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then hold_release_wait "$hd"; fi
+      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then
+        hold_release_wait "$hd" || cleanup_reject "$mode" hold_release_failed "cleanup: 无法释放空闲线程「${ht}」"
+      fi
     fi
   done
   return 0
@@ -2478,16 +2511,16 @@ cleanup_require_clean() {
 }
 
 cleanup_unpushed_count() {
-  local mode="${1:-}"
-  if git -C "$PR_WT" merge-base --is-ancestor HEAD "origin/$PR_BASE"; then printf '0'
+  local mode="${1:-}" commit="${2:-HEAD}"
+  if git -C "$PR_WT" merge-base --is-ancestor "$commit" "origin/$PR_BASE"; then printf '0'
   elif git -C "$PR_WT" show-ref --verify --quiet "refs/remotes/origin/$PR_BRANCH"; then
-    git -C "$PR_WT" rev-list --count "origin/$PR_BRANCH..HEAD"
-  elif [ "$mode" = gc ]; then git -C "$PR_WT" rev-list --count "origin/$PR_BASE..HEAD"
+    git -C "$PR_WT" rev-list --count "origin/$PR_BRANCH..$commit"
+  elif [ "$mode" = gc ]; then git -C "$PR_WT" rev-list --count "origin/$PR_BASE..$commit"
   else git -C "$PR_WT" rev-list --count "origin/$PR_BASE..HEAD" 2>/dev/null || echo 0; fi
 }
 
 cleanup_require_pushed() {
-  local mode="${1:-}" proof="${2:-}" unpushed
+  local mode="${1:-}" proof="${2:-}" commit="${3:-}" unpushed
   # 已合并的 PR 也可能有后续本地提交，仍按 cleanup 的规则检查推送状态。
   local -a fetch=(git -C "$PR_WT" fetch --prune origin "$PR_BASE" --quiet)
   if [ "$mode" = gc ]; then
@@ -2499,11 +2532,11 @@ except (OSError, subprocess.TimeoutExpired):
   fi
   "${fetch[@]}" || cleanup_reject "$mode" fetch_failed "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
   if [ "$proof" = no_commits ]; then
-    git -C "$PR_WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$PR_BASE" ||
+    git -C "$PR_WT" merge-base --is-ancestor "$commit" "refs/remotes/origin/$PR_BASE" ||
       cleanup_reject "$mode" base_changed "更新后无法确认分支没有超出基线的提交"
   fi
   if [ "$mode" = gc ]; then
-    unpushed="$(cleanup_unpushed_count gc)" ||
+    unpushed="$(cleanup_unpushed_count gc "$commit")" ||
       cleanup_reject "$mode" git_refs_unavailable "cleanup: 无法判断是否已推送"
   else
     unpushed="$(cleanup_unpushed_count)"
@@ -2517,7 +2550,7 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
   local dir wt="$PR_WT" branch="$PR_BRANCH" branch_kept=""
   dir="$(issue_dir "$issue")"
   cleanup_require_pr_idle "$dir" "$PR_NAME" "$mode"
-  cleanup_release_idle_holds "$dir" "$PR_NAME"
+  cleanup_release_idle_holds "$dir" "$PR_NAME" "$mode"
   if [ "$IN_GIT" -eq 0 ]; then
     local hd
     for hd in "$dir"/hold-*; do
@@ -2593,10 +2626,15 @@ else:
 
 try:
     # 明确使用 origin，以免 gh 的默认远端或外层 shell 的 GH_REPO 指向其他仓库。
-    remote = urlsplit(origin) if "://" in origin else None
     host, path = "", ""
-    if remote and remote.hostname:
-        host, path = remote.hostname, remote.path
+    if "://" in origin:
+        try:
+            remote = urlsplit(origin)
+            if (remote.scheme != "file" and remote.hostname
+                    and (remote.scheme not in ("http", "https") or remote.port is None)):
+                host, path = remote.hostname, remote.path
+        except ValueError:
+            pass
     elif match := re.fullmatch(r"(?:[^/@:]+@)?([^/:]+):([^:]+)", origin):
         host, path = match.groups()
     if not host:
@@ -2620,7 +2658,7 @@ try:
         print("no_pr")
     elif pr["state"] not in ("CLOSED", "MERGED", "OPEN"):
         raise ValueError()
-    elif pr["baseRefName"] != base:
+    elif not number and pr["baseRefName"] != base:
         print("pr_base_mismatch")
     elif pr["headRefName"] != branch or pr["isCrossRepository"] is not False:
         print("pr_head_mismatch")
@@ -2638,6 +2676,13 @@ except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
 PY2
 }
 
+gc_check_registration() {
+  local reason
+  reason="$(python3 "$PY_SUMMARIZE" --gc-recheck "$dir/meta.json" "$pr" "$cutoff" "$wt" "$branch" "$base" "$gh_pr")" ||
+    gc_skip ledger_error
+  [ -z "$reason" ] || gc_skip "$reason"
+}
+
 gc_final_guard() {
   # 持锁并释放空闲 hold 后，先重查远端；本地归属与身份复核紧贴删除。
   local reason
@@ -2647,6 +2692,7 @@ gc_final_guard() {
   reason="$(python3 "$PY_SUMMARIZE" --gc-owners "$FOREMAN_ROOT/projects" "$dir/meta.json" \
     "$pr" "$identity" "$wt" "$branch" "$base" "$gh_pr")" || gc_skip ledger_error
   [ -z "$reason" ] || gc_skip "$reason"
+  gc_check_registration
   [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] &&
     [ "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)" = "$expected_common" ] &&
     [ "$(git -C "$wt" symbolic-ref --quiet HEAD)" = "refs/heads/$branch" ] &&
@@ -2656,7 +2702,7 @@ gc_final_guard() {
 gc_registration() {
   local project="$1" repo="$2" ticket="$3" pr="$4" wt="$5" branch="$6" base="$7" gh_pr="$8"
   local identity="$9" force="${10}" cutoff="${11}" origin common expected_origin expected_common
-  local gh head proof query unpushed reason dir
+  local gh head proof query unpushed dir
   # 从账本和现存 git 检出恢复项目上下文，与调用者所在目录无关。
   PROJECT_DIR="$FOREMAN_ROOT/projects/$project"; PROJECT_TOML="$PROJECT_DIR/foreman.toml"
   REPO_SLUG="$repo"; ISSUES_DIR="$PROJECT_DIR/issues/$repo"
@@ -2671,7 +2717,7 @@ gc_registration() {
   expected_common="$common"; expected_origin="$origin"
   cleanup_require_clean gc
   head="$(git -C "$wt" rev-parse --verify HEAD)" || gc_skip invalid_worktree
-  unpushed="$(cleanup_unpushed_count gc)" || gc_skip git_refs_unavailable
+  unpushed="$(cleanup_unpushed_count gc "$head")" || gc_skip git_refs_unavailable
   [ "$unpushed" = 0 ] || gc_skip unpushed
   if git -C "$wt" merge-base --is-ancestor "$head" "refs/remotes/origin/$base"; then
     proof=no_commits
@@ -2689,13 +2735,11 @@ gc_registration() {
   dir="$(issue_dir "$ticket")"
   [ -f "$dir/meta.json" ] || gc_skip registration_changed
   lock_runs "$dir"
-  reason="$(python3 "$PY_SUMMARIZE" --gc-recheck "$dir/meta.json" "$pr" "$cutoff" "$wt" "$branch" "$base" "$gh_pr")" ||
-    gc_skip ledger_error
-  [ -z "$reason" ] || gc_skip "$reason"
+  gc_check_registration
   gc_git_context
   [ "$common" = "$expected_common" ] && [ "$origin" = "$expected_origin" ] || gc_skip repo_changed
   cleanup_require_clean gc
-  cleanup_require_pushed gc "$proof"
+  cleanup_require_pushed gc "$proof" "$head"
   cleanup_apply "$ticket" 0 0 gc "$proof"
 }
 
