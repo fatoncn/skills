@@ -974,11 +974,11 @@ def repo_ledgers(projects, project="", repo=""):
                 yield ledger
 
 
-def read_marker(path, default=""):
+def read_marker(path):
     try:
         return path.read_text(encoding="utf-8").rstrip("\n")
     except FileNotFoundError:
-        return default
+        return ""
 
 
 def activity_time(value):
@@ -1025,7 +1025,7 @@ def read_registrations(meta_path):
     thread_by_round = {stem: name for name, thread in thread_meta.items()
                        for stem in thread.get("runs") or []}
     issue_dir = meta_path.parent
-    rounds, holds = {}, {}
+    rounds, hold_pids = {}, []
     manual_check_time = 0
     for path in issue_dir.iterdir():
         stem, _, suffix = path.name.partition(".")
@@ -1033,7 +1033,7 @@ def read_registrations(meta_path):
         is_manual_check = path.name.startswith("check-") and path.suffix == ".log"
         if not (is_round or is_manual_check):
             if path.name.startswith("hold-") and path.is_dir():
-                holds[path.name.removeprefix("hold-")] = path / "bridge.pid"
+                hold_pids.append(path / "bridge.pid")
             continue
         info = optional_stat(path)
         if info is None:
@@ -1043,29 +1043,18 @@ def read_registrations(meta_path):
         elif stat.S_ISREG(info.st_mode):
             manual_check_time = max(manual_check_time, info.st_mtime)
     grouped = {name: [] for name in prs}
-    last_round_by_hold = {}
     for stem, times in rounds.items():
         prefix = issue_dir / stem
-        pr_marker = read_marker(prefix.with_suffix(".pr"), default_pr)
-        thread_marker = read_marker(prefix.with_suffix(".thread"), None)
-        name = pr_marker or default_pr
-        hold_thread = thread_marker.strip() if thread_marker is not None else "implement"
-        if stem.startswith("run-") and hold_thread in holds:
-            number = int(stem.split("-", 1)[1])
-            if number > last_round_by_hold.get(hold_thread, (-1, ""))[0]:
-                last_round_by_hold[hold_thread] = number, pr_marker.strip()
+        name = read_marker(prefix.with_suffix(".pr")) or default_pr
         if name not in prs:
             continue
         started = read_marker(prefix.with_suffix(".started"))
         if re.fullmatch(r"[0-9]{1,11}", started.strip()):
             times.append(int(started))
-        thread = (thread_marker or thread_by_round.get(stem)
+        thread = (read_marker(prefix.with_suffix(".thread")) or thread_by_round.get(stem)
                   or (stem if stem.startswith("review-") else "implement"))
         grouped[name].append((prefix, thread, max(times)))
-    holds_by_pr = {name: [] for name in prs}
-    for thread, (_, name) in last_round_by_hold.items():
-        if name in holds_by_pr:
-            holds_by_pr[name].append(holds[thread])
+    hold_pids = tuple(hold_pids)
     rows = []
     for name, pr in prs.items():
         worktree = pr.get("worktree") or ""
@@ -1084,7 +1073,7 @@ def read_registrations(meta_path):
             "exists": identity is not None, "_identity": identity, "branch": pr.get("branch") or "",
             "base": pr.get("base") or "", "gh_pr": pr.get("gh_pr") or None,
             "here": bool(pr.get("registered_here")) or name == "here",
-            "active": False, "_hold_pids": holds_by_pr[name], "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
+            "active": False, "_hold_pids": hold_pids, "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
             "threads": [],
         }, grouped[name], thread_meta))
     return rows
@@ -1095,6 +1084,8 @@ def pid_unverifiable(pid_path):
         pid = int(read_marker(pid_path))
     except ValueError:
         return False
+    except OSError:
+        return True
     if pid <= 0:
         return False
     try:
@@ -1114,8 +1105,12 @@ def with_round_states(registrations):
                                 input=b"".join(os.fsencode(prefix) + b"\0" for prefix in stems),
                                 stdout=subprocess.PIPE, check=True)
         states = dict(zip(stems, result.stdout.decode("ascii").splitlines(), strict=True))
+    hold_protection = {}
     for row, rounds, thread_meta in registrations:
-        unverifiable = any(pid_unverifiable(path) for path in row.pop("_hold_pids"))
+        hold_pids = row.pop("_hold_pids")
+        if hold_pids not in hold_protection:
+            hold_protection[hold_pids] = any(pid_unverifiable(path) for path in hold_pids)
+        unverifiable = hold_protection[hold_pids]
         latest = {}
         for prefix, name, _ in rounds:
             state = states[prefix]

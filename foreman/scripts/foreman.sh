@@ -1939,7 +1939,14 @@ call_state() {
     case "$(cat "$f.rc")" in 4) printf 'ENGINE_DOWN' ;; 5) printf 'THREAD_BUSY' ;; *) printf 'DONE' ;; esac
     return 0
   fi
-  if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
+  if [ -f "$f.pid" ]; then
+    if [ "${2:-}" = index ]; then
+      # 让索引复核 .pid 的读取错误，避免单条坏记录终止整个状态批次。
+      pid="$(cat "$f.pid" 2>/dev/null)" || { printf 'DEAD'; return 0; }
+    else
+      pid="$(cat "$f.pid")"
+    fi
+  fi
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
     if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
@@ -2775,7 +2782,7 @@ print(Decimal(str(time.time())) - Decimal(idle) * 3600)' "$idle")"
 list_round_states() {
   local stem
   while IFS= read -r -d '' stem; do
-    call_state "$stem"
+    call_state "$stem" index
     printf '\n'
   done
 }
