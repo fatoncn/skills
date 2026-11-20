@@ -1,5 +1,11 @@
 # foreman 版本记录
 
+## 1.5.32 — 2026-11-20
+
+- codex 二进制查找顺序改为跟随桌面端：`FOREMAN_CODEX_BIN` → 桌面端自带 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` → 旧位置 `…/Resources/codex` → PATH 上的 `codex`。原顺序 PATH 优先，且桌面端路径已过时，本机实际用的是 npm 装的 0.159.2，看不到桌面端（0.171.0-alpha.13）已支持的 gpt-6.2 系列。
+- 推荐模型升到 6.2：旗舰 gpt-6-astra → gpt-6.2-astra（review / research），次旗舰 gpt-6.1-sol → gpt-6.2-sol（implement / accept），档位不变；mechanical 推荐改为 gpt-6.1-terra / medium（Claude 仍 low）。编排指导角色表、`setup` 生成的角色模板、`project-config.md` 示例与分发快照同步。已有本机配置不受影响，按需自己改。
+- 依据 cookie 2026-11-20 口径「把foreman的推荐模型astra和sol提到6.2」「desktop已经支持了，我记得codex-server是跟着desktop的」，并按用户确认并入 11-19 未提交的 mechanical 推荐改动。
+
 ## 1.5.31 — 2026-11-20
 
 - codex 并发上限的默认值由 5 提到 20：本机 `config.toml` 首次生成的默认、读取兜底、`init` 生成的项目骨架、`foreman.toml.example` 与文档同步改；已存在的本机 / 项目配置不受影响，按需自己改。

@@ -26,9 +26,11 @@ die() { printf 'foreman: %s\n' "$*" >&2; exit 1; }
 # 它会去 ~/.local/bin 找兄弟程序而找不到（实测：Code Mode is unavailable … fail closed，模型一条命令都跑不了）。
 resolve_codex_bin() {
   local bin=""
+  # 跟随桌面端：执行者与桌面端共用 ~/.codex（shared 模式），版本一致才能用上桌面端已支持的模型；PATH 上的独立 CLI 只作兜底
   if [ -n "${FOREMAN_CODEX_BIN:-}" ]; then bin="$FOREMAN_CODEX_BIN"
-  elif command -v codex >/dev/null 2>&1; then bin="$(command -v codex)"
+  elif [ -x /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex ]; then bin=/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex
   elif [ -x /Applications/ChatGPT.app/Contents/Resources/codex ]; then bin=/Applications/ChatGPT.app/Contents/Resources/codex
+  elif command -v codex >/dev/null 2>&1; then bin="$(command -v codex)"
   fi
   [ -n "$bin" ] || { printf ''; return; }
   python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$bin"
@@ -148,10 +150,10 @@ concurrency = 3
 # 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
 #   implement  = 旗舰或次旗舰 + medium
 #   review     = 旗舰 + high
-#   mechanical = 次旗舰 + low（便宜但精准）
+#   mechanical = Codex 用 medium；Claude 用 low
 #   research   = 旗舰 + medium；只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research
 #   accept     = 旗舰或次旗舰 + high（比实现者高一档）；验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept
-# 下面的 model 是 2026-09-30 的对应：旗舰 gpt-6-astra、次旗舰 gpt-6.1-sol。
+# 下面的 model 是 2026-11-20 的对应：旗舰 gpt-6.2-astra、次旗舰 gpt-6.2-sol；mechanical 用 gpt-6.1-terra。
 # 收尾不是角色：PR 收尾由实现者带着原口径续同一线程做（foreman run --closeout），skill 会把收尾阶段契约放进那一轮的 prompt。
 # 项目文件里写同名 [roles.<名>] 可以覆盖。可用模型与推理档用 foreman doctor 看。
 # 每个角色还有一份「角色文件」= 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律），
@@ -160,7 +162,7 @@ concurrency = 3
 [roles.implement]
 # 实现 + 测试等一切写码活；foreman run 的默认角色。档位：旗舰或次旗舰 + medium
 engine = "codex"
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 
@@ -171,7 +173,7 @@ effort = "medium"
 [roles.review]
 # 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
 engine = "codex"
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 effort = "high"
 
 [roles.review.claude]
@@ -179,10 +181,10 @@ model = "claude-opus-5-5"
 effort = "xhigh"
 
 [roles.mechanical]
-# 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：次旗舰 + low（便宜但精准）
+# 轻活：补测试 / 按既定契约接线 / 改文案 / 批量重命名，不做设计取舍；foreman run --role mechanical 用。档位：Codex 用 medium；Claude 用 low
 engine = "codex"
-model = "gpt-6.1-sol"
-effort = "low"
+model = "gpt-6.1-terra"
+effort = "medium"
 
 [roles.mechanical.claude]
 model = "claude-sonnet-5-5"
@@ -191,7 +193,7 @@ effort = "low"
 [roles.research]
 # 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + medium
 engine = "codex"
-model = "gpt-6-astra"
+model = "gpt-6.2-astra"
 effort = "medium"
 
 [roles.research.claude]
@@ -201,7 +203,7 @@ effort = "high"
 [roles.accept]
 # 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high（比实现者高一档）
 engine = "codex"
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 effort = "high"
 
 [roles.accept.claude]
