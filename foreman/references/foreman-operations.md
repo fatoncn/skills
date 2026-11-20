@@ -152,7 +152,7 @@ $FOREMAN list --json --all-projects
 
 `gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因。末行汇总预览、已回收、跳过和部分回收的数量。查询网络或认证失败记为 `gh_query_failed`，跳过该条。遇到账本读取或写入等内部错误时退出非 0。worktree 已删除但账本写入失败会以原登记身份报告 `部分回收 ledger_update_failed`。
 
-候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。PID 探测无权限时，轮次和自动 check 会尝试用 `ps` 的进程启动时间核对 PID 是否被复用。只有进程晚于该轮开始和 PID 写入时刻才视为已退出，无法核实时按存活处理。hold 同样保守判活，发送信号失败时停止释放并报错。以下时间都计入最后活动时间，取其中最晚的一项。
+候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。GC 和 `list --json` 会额外保护 PID 探测权限不足的登记。轮次被判为 `DEAD` 且有 PID、无退出码时，或该 PR 是一个 hold 最后服务的登记时，额外用 `os.kill(pid, 0)` 只读复核。遇到 `EPERM`，索引标记 `active: true`，GC 按 `pid_unverifiable` 跳过。轮次状态字段沿用原有判定。以下时间都计入最后活动时间，取其中最晚的一项。
 
 - PR 登记时间。旧登记缺时间时取票创建时间，再缺则取 `meta.json` 的 mtime。
 - 该 PR 的 run/review 开始时间与轮次记录文件的最新 mtime，含结束、取消和自动 check 产物。旧轮次缺少 `.pr` 时归到默认 PR。
@@ -174,11 +174,16 @@ $FOREMAN list --json --all-projects
 | `worktree` / `exists` | 登记路径，以及扫描时路径是否指向目录 |
 | `branch` / `base` | 登记分支与基线，缺项为空字符串 |
 | `gh_pr` | 账本记录的 GitHub PR 号码，未登记为 `null` |
-| `here` / `active` | 是否为 here 登记，以及该 PR 是否有任意一个活跃轮次 |
+| `here` / `active` | 是否为 here 登记，以及该 PR 是否有活跃轮次或无法验证的轮次、hold PID |
 | `last_activity` | 以上述规则计算的 UTC ISO 8601 时间 |
 | `threads` | 该 PR 有轮次记录的线程。每项含 `name`、`engine`、`role`、最近一轮的 `round`（如 `run-3`）及 `state` |
 
 索引是读取时的快照。`active` 覆盖该 PR 的所有轮次，线程内较早的轮次仍活跃时，最近一轮也可能显示为终态。外部清理工具可用 `exists` 与 `worktree` 判断目录是否仍在账本中。
+
+## 已知限制
+
+- `status`、`wait` 等命令仍沿用原有 PID 探测规则，在沙箱中遇到 `EPERM` 时可能把轮次显示为 `DEAD`。全局判活另开票处理。
+- 手动验收命令的输出先写临时文件，命令结束才追加到日志。长命令运行期间，手动 check 日志的 mtime 不更新。
 
 ## 已知降级
 

@@ -974,11 +974,11 @@ def repo_ledgers(projects, project="", repo=""):
                 yield ledger
 
 
-def read_marker(path):
+def read_marker(path, default=""):
     try:
         return path.read_text(encoding="utf-8").rstrip("\n")
     except FileNotFoundError:
-        return ""
+        return default
 
 
 def activity_time(value):
@@ -1025,13 +1025,15 @@ def read_registrations(meta_path):
     thread_by_round = {stem: name for name, thread in thread_meta.items()
                        for stem in thread.get("runs") or []}
     issue_dir = meta_path.parent
-    rounds = {}
+    rounds, holds = {}, {}
     manual_check_time = 0
     for path in issue_dir.iterdir():
         stem, _, suffix = path.name.partition(".")
         is_round = bool(suffix and ROUND_NAME.fullmatch(stem))
         is_manual_check = path.name.startswith("check-") and path.suffix == ".log"
         if not (is_round or is_manual_check):
+            if path.name.startswith("hold-") and path.is_dir():
+                holds[path.name.removeprefix("hold-")] = path / "bridge.pid"
             continue
         info = optional_stat(path)
         if info is None:
@@ -1041,17 +1043,29 @@ def read_registrations(meta_path):
         elif stat.S_ISREG(info.st_mode):
             manual_check_time = max(manual_check_time, info.st_mtime)
     grouped = {name: [] for name in prs}
+    last_round_by_hold = {}
     for stem, times in rounds.items():
         prefix = issue_dir / stem
-        name = read_marker(prefix.with_suffix(".pr")) or default_pr
+        pr_marker = read_marker(prefix.with_suffix(".pr"), default_pr)
+        thread_marker = read_marker(prefix.with_suffix(".thread"), None)
+        name = pr_marker or default_pr
+        hold_thread = thread_marker.strip() if thread_marker is not None else "implement"
+        if stem.startswith("run-") and hold_thread in holds:
+            number = int(stem.split("-", 1)[1])
+            if number > last_round_by_hold.get(hold_thread, (-1, ""))[0]:
+                last_round_by_hold[hold_thread] = number, pr_marker.strip()
         if name not in prs:
             continue
         started = read_marker(prefix.with_suffix(".started"))
         if re.fullmatch(r"[0-9]{1,11}", started.strip()):
             times.append(int(started))
-        thread = (read_marker(prefix.with_suffix(".thread")) or thread_by_round.get(stem)
+        thread = (thread_marker or thread_by_round.get(stem)
                   or (stem if stem.startswith("review-") else "implement"))
         grouped[name].append((prefix, thread, max(times)))
+    holds_by_pr = {name: [] for name in prs}
+    for thread, (_, name) in last_round_by_hold.items():
+        if name in holds_by_pr:
+            holds_by_pr[name].append(holds[thread])
     rows = []
     for name, pr in prs.items():
         worktree = pr.get("worktree") or ""
@@ -1070,10 +1084,26 @@ def read_registrations(meta_path):
             "exists": identity is not None, "_identity": identity, "branch": pr.get("branch") or "",
             "base": pr.get("base") or "", "gh_pr": pr.get("gh_pr") or None,
             "here": bool(pr.get("registered_here")) or name == "here",
-            "active": False, "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
+            "active": False, "_hold_pids": holds_by_pr[name], "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
             "threads": [],
         }, grouped[name], thread_meta))
     return rows
+
+
+def pid_unverifiable(pid_path):
+    try:
+        pid = int(read_marker(pid_path))
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OverflowError):
+        pass
+    return False
 
 
 def with_round_states(registrations):
@@ -1085,12 +1115,17 @@ def with_round_states(registrations):
                                 stdout=subprocess.PIPE, check=True)
         states = dict(zip(stems, result.stdout.decode("ascii").splitlines(), strict=True))
     for row, rounds, thread_meta in registrations:
+        unverifiable = any(pid_unverifiable(path) for path in row.pop("_hold_pids"))
         latest = {}
         for prefix, name, _ in rounds:
             state = states[prefix]
             row["active"] |= state in ACTIVE_ROUND_STATES
+            if state == "DEAD" and not prefix.with_suffix(".rc").exists():
+                unverifiable |= pid_unverifiable(prefix.with_suffix(".pid"))
             if name not in latest or int(prefix.name.rsplit("-", 1)[1]) > int(latest[name].name.rsplit("-", 1)[1]):
                 latest[name] = prefix
+        row["_pid_unverifiable"] = unverifiable
+        row["active"] |= unverifiable
         for name, prefix in sorted(latest.items()):
             thread = thread_meta.get(name, {})
             row["threads"].append({
@@ -1111,7 +1146,7 @@ def worktree_index(projects, project="", repo=""):
             registrations.extend(read_registrations(meta_path))
     rows = with_round_states(registrations)
     for row in rows:
-        del row["_identity"]
+        del row["_identity"], row["_pid_unverifiable"]
     return rows
 
 
@@ -1120,6 +1155,8 @@ def gc_ledger_reason(row, cutoff):
         return "non_git"
     if row["here"]:
         return "here"
+    if row["_pid_unverifiable"]:
+        return "pid_unverifiable"
     if row["active"]:
         return "active"
     if not row["exists"]:

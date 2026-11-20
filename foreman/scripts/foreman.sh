@@ -350,15 +350,6 @@ require_required_roles() {
   done
 }
 
-pid_alive() {
-  [[ "$1" =~ ^[0-9]+$ && "$1" =~ [1-9] ]] || return 1
-  # kill 的退出码不区分 ESRCH 和 EPERM；失败时用共享探测读取 errno。
-  local rc=0
-  if kill -0 "$1" 2>/dev/null; then return 0; fi
-  python3 "$SKILL_DIR/scripts/check_state.py" "$@" || rc=$?
-  # 只有探测器明确确认退出才放行。启动失败等未知结果继续保护。
-  [ "$rc" -ne 3 ]
-}
 
 # 本机所有项目里仍在跑的 codex 线程数（run + review）
 active_codex_runs() {
@@ -372,7 +363,7 @@ active_codex_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || echo codex)"
       case "$eng" in codex) ;; *) continue ;; esac
       [ -f "${f%.pid}.rc" ] && continue
-      pid_alive "$(cat "$f")" "${f%.pid}.started" "$f" && seen="$seen $(cat "$f")"
+      kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -389,7 +380,7 @@ active_claude_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || true)"
       [ "$eng" = "claude" ] || continue
       [ -f "${f%.pid}.rc" ] && continue
-      pid_alive "$(cat "$f")" "${f%.pid}.started" "$f" && seen="$seen $(cat "$f")"
+      kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -808,7 +799,7 @@ os.execvp(sys.argv[1], sys.argv[1:])' python3 "$PY_APPSERVER" serve "$hd" </dev/
 }
 
 hold_dir() { printf '%s/hold-%s' "$1" "$2"; }   # <票目录> <线程名>
-hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; pid_alive "$pid"; }
+hold_alive() { local pid; pid="$(cat "$1/bridge.pid" 2>/dev/null || true)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
 hold_cancel_queued() {  # <票目录> <hold 目录>
   local dir="$1" hd="$2" q base n
   lock_runs "$dir"
@@ -822,30 +813,14 @@ hold_cancel_queued() {  # <票目录> <hold 目录>
   done
   unlock_runs
 }
-hold_signal() { # <PID> <信号>
-  local pid="$1" sig="$2"
-  if kill "-$sig" "$pid" 2>/dev/null || ! pid_alive "$pid"; then return 0; fi
-  printf 'foreman: 无法向常驻执行体 PID %s 发送 %s，停止释放\n' "$pid" "$sig" >&2
-  return 1
-}
 hold_release_wait() {  # <hold 目录> [秒]
-  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i name
-  pid="$(cat "$hd/bridge.pid" 2>/dev/null || true)"
-  pid_alive "$pid" || return 0
-  name="${hd##*/hold-}"
-  : > "$hd/release" || return 1
-  hold_signal "$pid" TERM || return 1
-  for i in $(seq 1 "$secs"); do
-    pid_alive "$pid" || { echo "  已释放线程（${name}，TERM）"; return 0; }
-    sleep 1
-  done
-  hold_signal "$pid" KILL || return 1
-  for i in $(seq 1 50); do
-    pid_alive "$pid" || { echo "  已释放线程（${name}，TERM 超时后 KILL）"; return 0; }
-    sleep 0.1
-  done
-  printf 'foreman: 常驻执行体 PID %s 仍未退出，停止释放\n' "$pid" >&2
-  return 1
+  local hd="$1" secs="${2:-$HOLD_TERM_GRACE}" pid i
+  hold_alive "$hd" || return 0
+  pid="$(cat "$hd/bridge.pid")"; : > "$hd/release"; kill -TERM "$pid" 2>/dev/null || true
+  for i in $(seq 1 "$secs"); do hold_alive "$hd" || { echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM）"; return 0; }; sleep 1; done
+  kill -KILL "$pid" 2>/dev/null || true
+  while hold_alive "$hd"; do sleep 0.1; kill -KILL "$pid" 2>/dev/null || true; done
+  echo "  已释放线程（$(basename "$hd" | sed 's/^hold-//')，TERM 超时后 KILL）"
 }
 hold_dispatch() {  # <issue> <票目录> <n> <线程名> <detach> <timeout>
   local issue="$1" dir="$2" n="$3" tname="$4" detach="$5" timeout="$6"
@@ -1930,7 +1905,7 @@ check_state() { # <stem>: TERMINAL / PENDING_RUN / CHECKING / WORKER_GONE
   [ "$rc" = 0 ] || { printf TERMINAL; return; }
   pid="$(cat "$f.check.pid" 2>/dev/null || true)"
   pid="$(printf '%s' "$pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  if pid_alive "$pid" "$f.check.started" "$f.check.pid"; then printf CHECKING; else printf WORKER_GONE; fi
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then printf CHECKING; else printf WORKER_GONE; fi
 }
 check_result() {
   local f="$1" status phase check_rc; phase="$(check_state "$f")"
@@ -1965,7 +1940,7 @@ call_state() {
     return 0
   fi
   if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
-  if pid_alive "$pid" "$f.started" "$f.pid"; then
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
     if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
     if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
@@ -2089,18 +2064,17 @@ round_pr() { # <票目录> <run-N|review-N>
   if [ -s "$1/$2.pr" ]; then cat "$1/$2.pr"; else default_pr_of_dir "$1"; fi
 }
 hold_active_run() { # <票目录> <hold 目录>；兼容没有 active.json 的旧执行体
-  python3 - "$1" "$2" "$SKILL_DIR/scripts" <<'PY2'
-import json,pathlib,re,sys
-sys.path.insert(0, sys.argv[3])
-from check_state import pid_alive
-d,hd=map(pathlib.Path,sys.argv[1:3]); active=hd/"active.json"
+  python3 - "$1" "$2" <<'PY2'
+import json,os,pathlib,re,sys
+d,hd=map(pathlib.Path,sys.argv[1:]); active=hd/"active.json"
 try:
     run=json.load(open(active)).get("run","")
     if re.fullmatch(r"(?:run|review)-\d+",run): print(run); raise SystemExit
 except (OSError,ValueError): pass
 try: bridge=int((hd/"bridge.pid").read_text())
 except (OSError,ValueError): raise SystemExit
-if not pid_alive(bridge): raise SystemExit
+try: os.kill(bridge,0)
+except OSError: raise SystemExit
 thread=hd.name[5:]; found=[]
 for tf in d.glob("run-*.thread"):
     m=re.fullmatch(r"run-(\d+)\.thread",tf.name)
@@ -2125,15 +2099,13 @@ cleanup_require_pr_idle() { # <票目录> <PR>；调用者已持 runs lock
   return 0
 }
 cleanup_release_idle_holds() { # <票目录> <PR>；调用者已持 runs lock
-  local dir="$1" pr="$2" mode="${3:-}" hd="" ht="" active="" q=""
+  local dir="$1" pr="$2" hd="" ht="" active="" q=""
   for hd in "$dir"/hold-*; do
     [ -d "$hd" ] && hold_alive "$hd" || continue; ht="${hd##*/hold-}"
     active="$(hold_active_run "$dir" "$hd")"
     if [ -z "$active" ]; then
       q="$(find "$hd/queue" -type f -name 'run-*.request.json' -print -quit 2>/dev/null || true)"
-      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then
-        hold_release_wait "$hd" || cleanup_reject "$mode" hold_release_failed "cleanup: 无法释放空闲线程「${ht}」"
-      fi
+      if [ -z "$q" ] && [ "$(thread_last_pr "$dir" "$ht")" = "$pr" ]; then hold_release_wait "$hd"; fi
     fi
   done
   return 0
@@ -2550,7 +2522,7 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
   local dir wt="$PR_WT" branch="$PR_BRANCH" branch_kept=""
   dir="$(issue_dir "$issue")"
   cleanup_require_pr_idle "$dir" "$PR_NAME" "$mode"
-  cleanup_release_idle_holds "$dir" "$PR_NAME" "$mode"
+  cleanup_release_idle_holds "$dir" "$PR_NAME"
   if [ "$IN_GIT" -eq 0 ]; then
     local hd
     for hd in "$dir"/hold-*; do

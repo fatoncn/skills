@@ -2,28 +2,19 @@
 gc_selftest() {
   local FOREMAN_HOME="$T/gc-home" GC_PROJECT="$T/gc project" GC_RACE_LOG
   export FOREMAN_HOME GC_PROJECT GC_RACE_LOG
-  local GC_REAL_GIT GC_REAL_PS GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
-  GC_REAL_GIT="$(command -v git)"; GC_REAL_PS="$(command -v ps)"
+  local GC_REAL_GIT GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
+  GC_REAL_GIT="$(command -v git)"
   GC_LATE_ALIAS="$FOREMAN_HOME/projects/gc-nogit/issues/_nogit/late-alias/meta.json"
   GC_REOPEN_SEEN="$T/gc-reopen-seen"
-  export GC_REAL_GIT GC_REAL_PS GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
+  export GC_REAL_GIT GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
   local PATH="$T/gc-tools:$PATH" PYTHONPATH="$T/gc-tools${PYTHONPATH:+:$PYTHONPATH}"
   export PATH PYTHONPATH
   mkdir -p "$GC_PROJECT" "$T/gc-outside" "$T/gc-nogit" "$T/gc-tools" "$T/gc-snapshot"
-  cat > "$T/gc-tools/ps" <<'SH'
-#!/usr/bin/env bash
-case "${4:-}" in
-  88888811) printf 'Wed Jan  1 00:00:00 2025\n' ;;
-  88888812) exit 1 ;;
-  *) exec "$GC_REAL_PS" "$@" ;;
-esac
-SH
-  chmod +x "$T/gc-tools/ps"
   cat > "$T/gc-tools/sitecustomize.py" <<'PY'
 import os
 kill = os.kill
 def kill_with_eperm(pid, sig):
-    if sig == 0 and pid in (88888801, 88888802, 88888804, 88888811, 88888812):
+    if sig == 0 and pid in (88888801, 88888802, 88888804):
         raise PermissionError(1, "fixture EPERM")
     return kill(pid, sig)
 os.kill = kill_with_eperm
@@ -78,6 +69,11 @@ if [ "${1:-}" = -C ]; then
       fi
       if [ "${GC_INJECT:-}" = 1 ]; then
         case "${2##*/}" in
+          foreman-late-hold)
+            "$GC_REAL_GIT" "$@"
+            mkdir -p "$(dirname "$GC_LATE_HOLD")"
+            printf '88888804\n' > "$GC_LATE_HOLD"
+            exit 0 ;;
           foreman-late-check)
             "$GC_REAL_GIT" "$@"
             printf 'check started\n' > "$GC_CHECK_LOG_DIR/check-late-fixture.log"
@@ -160,7 +156,7 @@ SH
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
-    late-check push-snapshot check-lock held reused; do
+    late-check push-snapshot check-lock held gone late-hold; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -178,6 +174,7 @@ SH
     esac
   done
   "$F" bootstrap manual --pr second --branch feat/gc-manual-second --no-install >/dev/null 2>&1 &&
+    "$F" bootstrap held --pr previous --branch feat/gc-held-previous --no-install >/dev/null 2>&1 &&
     git -C "$GC_PROJECT" config status.showUntrackedFiles no ||
     { bad "gc 手动 check 或 dirty 配置夹具"; return; }
   "$F" here current >/dev/null && (cd "$T/gc-nogit" && "$F" init >/dev/null && "$F" here notes >/dev/null) ||
@@ -212,17 +209,15 @@ for d in ledger.iterdir():
                       "run-2.rc": "0", "run-2.check.pending": "", "run-2.check.pid": "88888802",
                       "run-2.thread": "check-locked"},
         "manual": {"check-2000-fixture.log": "recent manual check"},
-        "held": {"run-1.thread": "blocked", "run-1.rc": "0"},
-        "reused": {"run-1.argv": "", "run-1.started": str(old), "run-1.pid": "88888811",
-                   "run-1.thread": "reused-pid", "run-2.argv": "", "run-2.started": str(old),
-                   "run-2.pid": "88888812", "run-2.thread": "unreadable-start",
-                   "run-3.argv": "", "run-3.started": str(old), "run-3.pid": "88888811",
-                   "run-3.thread": "late-pid-publication"},
+        "held": {"run-1.thread": "blocked", "run-1.pr": "previous", "run-1.rc": "0",
+                 "run-2.thread": "blocked", "run-2.pr": "work", "run-2.rc": "0"},
+        "gone": {"run-1.argv": "", "run-1.pid": "88888803", "run-1.thread": "exited"},
+        "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
         f.write_text(value)
-        if d.name not in ("recent", "manual") and (d.name, name) != ("reused", "run-3.pid"):
+        if d.name not in ("recent", "manual"):
             os.utime(f, (old, old))
 PY
   wt="$GC_PROJECT/.claude/worktrees/foreman-recreated"
@@ -241,8 +236,9 @@ assert os.path.samefile(original, alias) and original != alias
 target.parent.mkdir(parents=True)
 target.write_text(json.dumps({"prs":{"here":{"registered_here":True, "worktree":str(alias)}}}))
 PY
-  mkdir -p "$ledger/held/hold-blocked"
+  mkdir -p "$ledger/held/hold-blocked" "$ledger/gone/hold-exited"
   printf '88888804' > "$ledger/held/hold-blocked/bridge.pid"
+  printf '88888803' > "$ledger/gone/hold-exited/bridge.pid"
   export GC_RACE_LOG="$ledger/race/run-1.jsonl"
   cd "$T/gc-outside" || { bad "gc 外部目录夹具"; return; }
   local json_rc text_rc preview_rc force_rc
@@ -268,9 +264,11 @@ assert rows["active"]["active"] is True and rows["active"]["threads"][0]["round"
 assert rows["active"]["threads"][0]["state"] == "DONE", rows["active"]
 assert rows["missing"]["exists"] is False and rows["missing"]["gh_pr"] is None, rows["missing"]
 assert rows["current"]["here"] is True and rows["notes"]["repo"] == "_nogit", rows
-assert {t["name"]: t["state"] for t in rows["reused"]["threads"]} == {
-    "reused-pid": "DEAD", "unreadable-start": "RUNNING", "late-pid-publication": "RUNNING"}, rows["reused"]
-assert rows["protected"]["active"] and {t["state"] for t in rows["protected"]["threads"]} == {"RUNNING", "CHECKING"}, rows["protected"]
+assert rows["protected"]["active"] and {t["state"] for t in rows["protected"]["threads"]} == {"DEAD", "DONE"}, rows["protected"]
+held = {row["pr"]: row["active"] for row in all_rows if row["ticket"] == "held"}
+assert held == {"work": True, "previous": False}, held
+assert not rows["gone"]["active"] and rows["gone"]["threads"][0]["state"] == "DEAD", rows["gone"]
+assert not any(k.startswith("_") for row in all_rows for k in row), all_rows
 manual = [row["last_activity"] for row in all_rows if row["ticket"] == "manual"]
 assert len(manual) == 2 and len(set(manual)) == 1 and manual[0] > m["last_activity"], manual
 assert rows["recreated"]["last_activity"] > m["last_activity"], rows["recreated"]
@@ -300,7 +298,9 @@ PY
   gc_check "$T/gc-preview" missing '跳过 missing_worktree'
   gc_check "$T/gc-preview" dirty '跳过 dirty'
   gc_check "$T/gc-preview" closed '预览 pr_closed'
-  gc_check "$T/gc-preview" protected '跳过 active'
+  gc_check "$T/gc-preview" protected '跳过 pid_unverifiable'
+  gc_check "$T/gc-preview" held '跳过 pid_unverifiable'
+  gc_check "$T/gc-preview" gone '预览 no_commits'
   gc_check "$T/gc-preview" shared '跳过 shared_worktree'
   gc_check "$T/gc-preview" ambiguous '跳过 pr_ambiguous'
   gc_check "$T/gc-preview" recreated '跳过 recent_activity'
@@ -321,17 +321,10 @@ PY
   gc_check "$T/gc-wrong-base" closed '跳过 pr_base_mismatch'
   gc_check "$T/gc-wrong-base" merged '预览 pr_merged'
 
-  local check_state
-  check_state="$(FOREMAN_SELFTEST=1 "$F" __call_state "$ledger/protected/run-2")"
-  if [ "$check_state" = CHECKING ] &&
-    PYTHONPATH="${F%/*}:$PYTHONPATH" python3 -c '
-import sys
-from check_state import check_state, pid_alive
-assert check_state(sys.argv[1]) == "CHECKING"
-assert pid_alive("88888802") and not pid_alive("88888803")
-' "$ledger/protected/run-2"; then
-    ok "共享 PID 探测区分 EPERM 与 ESRCH"
-  else bad "共享 PID 探测区分 EPERM 与 ESRCH" "$check_state"; fi
+  if [ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$ledger/protected/run-1")" = DEAD ] &&
+    [ "$(FOREMAN_SELFTEST=1 "$F" __call_state "$ledger/protected/run-2")" = DONE ]; then
+    ok "轮次和自动 check 保留上游 kill -0 语义"
+  else bad "轮次或自动 check 判活扩出了 GC 与索引范围"; fi
 
   # 预览只读本地引用，可用同一裸仓夹具替换 origin 拼法来检验 gh 参数。
   local origin_url expected_repo expected_host
@@ -357,15 +350,21 @@ assert pid_alive("88888802") and not pid_alive("88888803")
   else bad "项目根校验误收导入诊断"; fi
 
   if (cd "$GC_PROJECT" && "$F" status held) > "$T/gc-hold-status" &&
-    grep -q 'HOLD.*blocked' "$T/gc-hold-status"; then
-    ok "hold 探测无权限时仍显示存活"
-  else bad "hold 无权限时漏掉存活进程" "$(cat "$T/gc-hold-status")"; fi
-  (cd "$GC_PROJECT" && "$F" release held --thread blocked) > "$T/gc-hold-release" 2>&1
-  force_rc=$?
-  if [ "$force_rc" -eq 1 ] && grep -q '发送 TERM，停止释放' "$T/gc-hold-release" &&
-    [ "$(cat "$ledger/held/hold-blocked/bridge.pid")" = 88888804 ]; then
-    ok "hold 发信号失败即报错停止"
-  else bad "hold 发信号失败后未停止" "rc=$force_rc $(cat "$T/gc-hold-release")"; fi
+    ! grep -q 'HOLD.*blocked' "$T/gc-hold-status"; then
+    ok "status 保留上游 hold 判活"
+  else bad "status 的 hold 判活偏离上游" "$(cat "$T/gc-hold-status")"; fi
+
+  local config="$T/gc-invalid-config.toml" format expected
+  for format in 'repos = "invalid"' $'[repos]\nfixture = "invalid"'; do
+    expected='get: repos 必须是表'
+    if [[ "$format" == *fixture* ]]; then expected="get: repos.'fixture' 必须是表"; fi
+    printf '%s\n' "$format" > "$config"
+    if ! python3 "${F%/*}/project_config.py" get --path "$config" --repo fixture project.root --default "" \
+      > "$T/gc-config-out" 2> "$T/gc-config-err" &&
+      [ ! -s "$T/gc-config-out" ] && [ "$(cat "$T/gc-config-err")" = "$expected" ]; then
+      ok "结构错误输出单行字段诊断 $expected"
+    else bad "结构错误的诊断" "$(cat "$T/gc-config-err")"; fi
+  done
 
   local check_cmd check_pid
   check_cmd="$(cat <<'SH'
@@ -429,7 +428,8 @@ SH
     ok "cleanup 不接受 Git 配置隐藏的未跟踪文件"
   else bad "cleanup 隐藏的未跟踪文件守卫"; fi
 
-  GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
+  GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" \
+    GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
@@ -442,7 +442,13 @@ SH
   gc_check "$T/gc-force" late-dirty '跳过 worktree_remove_failed'
   gc_check "$T/gc-force" reopened '跳过 pr_changed'
   gc_check "$T/gc-force" late-check '跳过 recent_activity'
-  gc_check "$T/gc-force" held '跳过 hold_release_failed'
+  gc_check "$T/gc-force" held '跳过 pid_unverifiable'
+  gc_check "$T/gc-force" late-hold '跳过 pid_unverifiable'
+  gc_check "$T/gc-force" gone '已回收 no_commits'
+  if grep -q ' ticket=held pr=previous .* 已回收 no_commits$' "$T/gc-force" &&
+    [ ! -e "$ledger/held/hold-blocked/release" ] && [ ! -e "$ledger/late-hold/hold-blocked/release" ]; then
+    ok "只保护 hold 最后服务的 PR，初扫和复核均不释放权限不明的 hold"
+  else bad "hold 归属或无信号守卫" "$(cat "$T/gc-force")"; fi
   if gc_has "$T/gc-force" push-snapshot '跳过 unpushed' &&
     [ -f "$T/gc-snapshot/foreman-push-snapshot.checked" ] &&
     [ "$(git -C "$GC_PROJECT/.claude/worktrees/foreman-push-snapshot" symbolic-ref --short HEAD)" = feat/gc-push-snapshot ]; then
@@ -459,12 +465,9 @@ SH
     python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["threads"]["implement"]["runs"] == ["run-1"]' "$ledger/merged/meta.json"; then
     ok "gc 保留票、线程和轮次日志"
   else bad "gc 保留票、线程和轮次日志"; fi
-  for id in active unpushed recent gh-fail race dirty shared late-shared head-change late-dirty reopened; do
+  for id in active unpushed recent gh-fail race dirty shared late-shared head-change late-dirty reopened protected held late-hold; do
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 跳过后保留 worktree" || bad "gc $id 跳过后目录丢失"
   done
-
-  rm -f "$ledger/held/hold-blocked/bridge.pid"
-  touch "$GC_PROJECT/.claude/worktrees/foreman-held/.git"
 
   touch -t 202001010000 "$GC_PROJECT/.claude/worktrees/foreman-partial/.git"
   GC_BREAK_DELETE="$ledger/partial/meta.json" "$F" gc --project 'gc project' --force > "$T/gc-partial"; force_rc=$?

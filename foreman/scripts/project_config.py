@@ -231,9 +231,17 @@ def cmd_get(argv: list[str]) -> int:
     except (OSError, ValueError) as exc:
         print(str(exc).splitlines()[-1], file=sys.stderr)
         return 1
+    repos = cfg.get("repos", {})
+    if not isinstance(repos, dict):
+        print("get: repos 必须是表", file=sys.stderr)
+        return 1
+    for name, override in repos.items():
+        if not isinstance(override, dict):
+            print(f"get: repos.{name!r} 必须是表", file=sys.stderr)
+            return 1
     value = None
     if repo:
-        value = lookup((cfg.get("repos") or {}).get(repo) or {}, key)
+        value = lookup(repos.get(repo, {}), key)
     if value is None:
         value = lookup(cfg, key)
     if value is None:
