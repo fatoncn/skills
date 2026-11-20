@@ -58,12 +58,23 @@ elif args and args[0] == "app-server":
                 "codex": snapshot, "other-models": {"limitId": "other-models", "normalModelSlug": "fixture-model", "primary": secondary}}}
             if case == "empty":
                 result = {"rateLimits": {}}
-            elif case == "partial":
+            elif case in ("name-only", "conflict", "no-id"):
+                default = {"limitId": "codex", "limitName": "default name", "primary": dict(primary, usedPercent=13)}
+                mapped = dict(default, limitName="mapped name")
+                if case == "conflict":
+                    mapped["primary"] = dict(primary, usedPercent=14)
+                elif case == "no-id":
+                    default.pop("limitId")
+                result = {"rateLimits": default, "rateLimitsByLimitId": {"codex": mapped}}
+            elif case in ("partial", "large"):
                 result = {"rateLimits": {"primary": {"usedPercent": 0, "windowDurationMins": 60}}}
             elif case == "invalid":
                 result = {"rateLimits": {"primary": {"usedPercent": "bad", "windowDurationMins": None, "resetsAt": 1e100}}}
         elif method == "model/list":
             result = {"data": []}
+            if os.environ.get("FOREMAN_DOCTOR_QUOTA_CASE") == "large":
+                result["data"] = [{"id": "large-output", "defaultReasoningEffort": "low",
+                                   "description": "x" * 65536}]
         else:
             result = {}
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
@@ -160,12 +171,45 @@ assert out.count("quota [") == 3
 assert out.count("normalModelSlug=fixture-model") == 1
 assert not any(word in out.lower() for word in ("用完", "告急", "exhausted", "depleted"))
 '; then ok "doctor 列出所有额度桶、去重且不推断耗尽"; else bad "doctor 多额度桶展示"; fi
-for quota_case in error empty partial invalid; do
+for quota_case in error empty partial invalid large; do
   quota_out="$(FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_DOCTOR_QUOTA_CASE="$quota_case" python3 "$SKILL_DIR/scripts/codex_appserver.py" probe --home "$T/doctor-home" --codex "$T/fake-codex" 2>&1)"; quota_rc=$?
-  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | grep -q '额度未知（' && printf '%s\n' "$quota_out" | grep -q '^models:' && ! printf '%s\n' "$quota_out" | grep -q 'private-error-sentinel'; then
+  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -c '
+import sys
+out=sys.stdin.read()
+assert "额度未知（" in out
+assert "models:" in out.splitlines()
+assert "private-error-sentinel" not in out
+if sys.argv[1] == "large": assert len(out) > 65536
+' "$quota_case"; then
     ok "doctor 额度 ${quota_case} 降级并继续模型检查"
   else
     bad "doctor 额度 ${quota_case} 降级" "rc=${quota_rc}，输出: $quota_out"
+  fi
+done
+for quota_case in name-only conflict no-id; do
+  quota_out="$(FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_DOCTOR_QUOTA_CASE="$quota_case" python3 "$SKILL_DIR/scripts/codex_appserver.py" probe --home "$T/doctor-home" --codex "$T/fake-codex" 2>&1)"; quota_rc=$?
+  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -c '
+import sys
+out=sys.stdin.read()
+lines=[line for line in out.splitlines() if line.startswith("quota [")]
+case=sys.argv[1]
+if case == "name-only":
+    assert len(lines) == 1 and "[codex/primary]: used 13%" in lines[0]
+    assert "source=" not in lines[0]
+else:
+    assert len(lines) == 2
+    assert lines[0].endswith("; source=rateLimits")
+    assert lines[1].endswith("; source=rateLimitsByLimitId")
+    if case == "conflict":
+        assert "[codex/primary]: used 13%" in lines[0]
+        assert "[codex/primary]: used 14%" in lines[1]
+    else:
+        assert "[rateLimits/primary]: used 13%" in lines[0]
+        assert "[codex/primary]: used 13%" in lines[1]
+' "$quota_case"; then
+    ok "doctor 额度 ${quota_case} 按展示消重并区分来源"
+  else
+    bad "doctor 额度 ${quota_case} 边界" "rc=${quota_rc}，输出: $quota_out"
   fi
 done
 expect_grep "init 生成骨架" "骨架已生成" "$F" init

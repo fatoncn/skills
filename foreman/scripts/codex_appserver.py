@@ -1235,20 +1235,22 @@ def print_quota(result):
     default = result.get("rateLimits")
     by_id = result.get("rateLimitsByLimitId")
     if isinstance(default, dict) and default:
-        snapshots.append((default.get("limitId") or "rateLimits", default))
+        snapshots.append(("rateLimits", default.get("limitId") or "rateLimits", default))
     if isinstance(by_id, dict):
         for limit_id, snapshot in by_id.items():
-            if not any(limit_id == key and snapshot == value for key, value in snapshots):
-                snapshots.append((limit_id, snapshot))
+            snapshots.append(("rateLimitsByLimitId", limit_id, snapshot))
     if not snapshots:
         print("quota: 额度未知（缺少额度桶）")
-    for limit_id, snapshot in snapshots:
+    # 缺少默认 limit id 时不猜它对应哪个具名桶，两边都保留并注明来源。
+    ambiguous_default = isinstance(default, dict) and bool(default) and not default.get("limitId") and bool(by_id)
+    rows = []
+    for source, limit_id, snapshot in snapshots:
         model = snapshot.get("normalModelSlug") if isinstance(snapshot, dict) else None
         model_label = f"; normalModelSlug={model}" if model else ""
         windows = [(key, snapshot.get(key)) for key in ("primary", "secondary")
                    if isinstance(snapshot, dict) and snapshot.get(key) is not None]
         if not windows:
-            print(f"quota [{limit_id}]: 额度未知（缺少 primary/secondary 窗口）")
+            rows.append((str(limit_id), f"quota [{limit_id}]: 额度未知（缺少 primary/secondary 窗口）", source))
         for name, window in windows:
             window = window if isinstance(window, dict) else {}
             missing = []
@@ -1267,8 +1269,20 @@ def print_quota(result):
                 except (ValueError, OverflowError, OSError):
                     missing.append("resetsAt")
             suffix = f"; 额度未知（字段缺失或无效: {', '.join(missing)}）" if missing else ""
-            print(f"quota [{limit_id}/{name}]: used {used if used is not None else '未知'}% "
-                  f"of {str(minutes) + 'min' if minutes is not None else '未知'} window, resets {reset}{model_label}{suffix}")
+            line = (f"quota [{limit_id}/{name}]: used {used if used is not None else '未知'}% "
+                    f"of {str(minutes) + 'min' if minutes is not None else '未知'} window, resets {reset}{model_label}{suffix}")
+            rows.append((f"{limit_id}/{name}", line, source))
+    variants = {}
+    for identity, line, source in rows:
+        variants.setdefault(identity, set()).add(line)
+    seen = set()
+    for identity, line, source in rows:
+        key = (line, source if ambiguous_default else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        origin = f"; source={source}" if ambiguous_default or len(variants[identity]) > 1 else ""
+        print(line + origin)
 
 
 def probe(argv: list[str]) -> int:
