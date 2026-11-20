@@ -2998,7 +2998,6 @@ foreman <command>            执行器: codex（默认，app-server）| claude�
   diff <id> [-- path]      相对 base 的完整改动
   check <id> [cmd...]      在 worktree 里跑验收命令（默认 foreman.toml 的 verify.commands，空则取仓库 package.json 的 type-check / lint）
   pr <id> --title t --body-file f [--base b] [--draft|--ready] [--yes]   打印 push + gh pr create 命令；--yes 才执行
-  list                     本仓库所有 issue 的状态与用量
   list [--all-projects] [--json]    查看票与工作树索引
   gc [--project <名>] [--idle-hours N] [--force]    批量预览或回收闲置 worktree
   cleanup <id> --force [--keep-branch] [--discard-unpushed]   删 worktree 与分支（未提交 / 未推送都会拒绝）

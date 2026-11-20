@@ -1,5 +1,10 @@
 # 由 selftest.sh 调用，使用独立的账本、假 gh 和本地裸仓。
 gc_selftest() {
+  local list_help
+  list_help="$("$F" help | grep '^  list ')"
+  if [[ "$list_help" != *$'\n'* && "$list_help" == '  list [--all-projects] [--json]'* ]]; then
+    ok "help 只列出一条带索引参数的 list 用法"
+  else bad "help 的 list 用法" "$list_help"; fi
   local FOREMAN_HOME="$T/gc-home" GC_PROJECT="$T/gc project" GC_RACE_LOG
   export FOREMAN_HOME GC_PROJECT GC_RACE_LOG
   local GC_REAL_GIT GC_TEST_ORIGIN GC_LATE_ALIAS GC_REOPEN_SEEN
