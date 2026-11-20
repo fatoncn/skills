@@ -438,10 +438,12 @@ SH
 
   local broken="$FOREMAN_HOME/projects/gc-nogit/issues/_nogit/corrupted/meta.json"
   mkdir -p "$(dirname "$broken")"; printf '{' > "$broken"
-  "$F" gc > "$T/gc-broken-preview"; preview_rc=$?
+  "$F" gc --project 'gc project' > "$T/gc-broken-preview"; preview_rc=$?
   "$F" gc --project 'gc project' --force > "$T/gc-broken-force"; force_rc=$?
   if [ "$preview_rc" -ne 0 ] && [ "$force_rc" -ne 0 ] &&
     gc_has "$T/gc-broken-preview" merged '预览 pr_merged' &&
+    gc_has "$T/gc-broken-preview" corrupted '跳过 ledger_error' &&
+    ! gc_has "$T/gc-broken-preview" notes '跳过 non_git' &&
     gc_has "$T/gc-broken-force" corrupted '跳过 ledger_error' &&
     gc_has "$T/gc-broken-force" merged '跳过 ledger_incomplete' &&
     ! grep -q ' 已回收 ' "$T/gc-broken-force" &&

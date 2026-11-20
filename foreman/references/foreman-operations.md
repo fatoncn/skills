@@ -161,7 +161,7 @@ $FOREMAN list --json --all-projects
 
 没有超出 `origin/<base>` 的提交且已有 run 或 review 轮次时可作为候选。尚无轮次的登记按 `never_dispatched` 跳过。执行时用显式源、目标 refspec 刷新登记的 base。祖先与未推送检查都使用首次记录的 HEAD OID，删除前再核对检出仍指向该 OID。其他候选使用项目或仓库配置的 `github.gh`，并从 origin 固定 `GH_HOST`。无法确定主机、origin 是文件 URL 或 HTTP(S) 地址带显式端口时，按 `unknown_host` 跳过。优先查账本记录的 PR 号码，允许该 PR 更换 base。没有号码时按同仓库 head 和登记 base 查至多两条，多于一条按 `pr_ambiguous` 跳过。两种查询都要求 `MERGED` 或 `CLOSED`，并与本地 head 分支及首次记录的 HEAD OID 一致。执行时在票的轮次锁内重查 PR，结果变化时跳过。
 
-非 Git、`here`、多条登记共用的目录以及已经不存在的目录都会跳过。共用判断采用目录的设备号和 inode。初次全局扫描发现账本读取失败时，仍可预览可读登记。执行模式下所有登记停止回收，退出码非 0。执行时先扫描所有项目的登记，核对目录是否仍独占并重新计算最后活动时间，闲置不足时按 `recent_activity` 跳过。复核通过后释放空闲 hold，并在删除前再次比较目录身份、common gitdir、完整 symbolic HEAD 和 HEAD OID。最终扫描发现新的读取错误时会保留当前和后续目录。
+非 Git、`here`、多条登记共用的目录以及已经不存在的目录都会跳过。共用判断采用目录的设备号和 inode。初次全局扫描发现账本读取失败时，仍可预览可读登记。即使指定了 `--project`，其他项目的账本错误也会显示。执行模式下所有登记停止回收，退出码非 0。执行时先扫描所有项目的登记，核对目录是否仍独占并重新计算最后活动时间，闲置不足时按 `recent_activity` 跳过。复核通过后释放空闲 hold，并在删除前再次比较目录身份、common gitdir、完整 symbolic HEAD 和 HEAD OID。最终扫描发现新的读取错误时会保留当前和后续目录。
 
 执行沿用 `cleanup` 的未提交、未推送、活跃轮次和空闲 hold 检查，显式启用未跟踪文件检查。回收移除 worktree，保留票、线程和日志。关闭但未合并的 PR 保留本地分支，结果带 `branch_kept`。其余候选尝试普通删除分支，Git 拒绝时也标记 `branch_kept`。最后的所有权和身份检查与实际删除之间仍有极短的并发窗口，Foreman 不对人工 Git 操作加锁。远端分支已删且本地引用无法证明提交已推送时，已合并的 PR 也按 `unpushed` 跳过。
 

@@ -1222,9 +1222,8 @@ def gc_index(projects, project, cutoff, force):
                                for value in [*values, str(identity or ""), str(int(has_rounds)), reason]))
 
     for location, error in errors:
-        if force or not project or not location or location[0] == project:
-            report_ledger_error("gc", location, error)
-            emit([*location, *([""] * (len(fields) - len(location)))], None, False, "ledger_error")
+        report_ledger_error("gc", location, error)
+        emit([*location, *([""] * (len(fields) - len(location)))], None, False, "ledger_error")
     for row in rows:
         identity = row["_identity"]
         reason = "ledger_incomplete" if force and errors else gc_ledger_reason(row, cutoff)
