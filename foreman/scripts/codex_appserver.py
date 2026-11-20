@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import math
 import fcntl
 from functools import lru_cache
 from contextlib import contextmanager
@@ -1225,6 +1226,66 @@ class Holder:
 
 # ---------- probe ----------
 
+def print_quota(result):
+    """展示服务端全部额度窗口；limit id 本身不证明其适用于哪个模型。"""
+    if not isinstance(result, dict):
+        print("quota: 额度未知（响应不是对象）")
+        return
+    snapshots = []
+    default = result.get("rateLimits")
+    by_id = result.get("rateLimitsByLimitId")
+    if isinstance(default, dict) and default:
+        snapshots.append(("rateLimits", default.get("limitId") or "rateLimits", default))
+    if isinstance(by_id, dict):
+        for limit_id, snapshot in by_id.items():
+            snapshots.append(("rateLimitsByLimitId", limit_id, snapshot))
+    if not snapshots:
+        print("quota: 额度未知（缺少额度桶）")
+    # 缺少默认 limit id 时不猜它对应哪个具名桶，两边都保留并注明来源。
+    ambiguous_default = (isinstance(default, dict) and bool(default) and not default.get("limitId")
+                         and isinstance(by_id, dict) and bool(by_id))
+    rows = []
+    for source, limit_id, snapshot in snapshots:
+        model = snapshot.get("normalModelSlug") if isinstance(snapshot, dict) else None
+        model_label = f"; normalModelSlug={model}" if model else ""
+        windows = [(key, snapshot.get(key)) for key in ("primary", "secondary")
+                   if isinstance(snapshot, dict) and snapshot.get(key) is not None]
+        if not windows:
+            rows.append((str(limit_id), f"quota [{limit_id}]: 额度未知（缺少 primary/secondary 窗口）", source))
+        for name, window in windows:
+            window = window if isinstance(window, dict) else {}
+            missing = []
+            values = []
+            for field in ("usedPercent", "windowDurationMins", "resetsAt"):
+                value = window.get(field)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    missing.append(field)
+                    value = None
+                values.append(value)
+            used, minutes, reset_at = values
+            reset = "未知"
+            if reset_at is not None:
+                try:
+                    reset = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(reset_at))
+                except (ValueError, OverflowError, OSError):
+                    missing.append("resetsAt")
+            suffix = f"; 额度未知（字段缺失或无效: {', '.join(missing)}）" if missing else ""
+            line = (f"quota [{limit_id}/{name}]: used {used if used is not None else '未知'}% "
+                    f"of {str(minutes) + 'min' if minutes is not None else '未知'} window, resets {reset}{model_label}{suffix}")
+            rows.append((f"{limit_id}/{name}", line, source))
+    variants = {}
+    for identity, line, source in rows:
+        variants.setdefault(identity, set()).add(line)
+    seen = set()
+    for identity, line, source in rows:
+        key = (line, source if ambiguous_default else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        origin = f"; source={source}" if ambiguous_default or len(variants[identity]) > 1 else ""
+        print(line + origin)
+
+
 def probe(argv: list[str]) -> int:
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
     codex_bin = "codex"
@@ -1259,11 +1320,11 @@ def probe(argv: list[str]) -> int:
         print(f"app-server ok  codexHome={init.get('codexHome')}  userAgent={init.get('userAgent')}")
         acct = srv.request("account/read", {}, timeout=60).get("account") or {}
         print(f"account: type={acct.get('type')} plan={acct.get('planType')}")
-        limits = srv.request("account/rateLimits/read", None, timeout=60).get("rateLimits") or {}
-        primary = limits.get("primary") or {}
-        if primary:
-            reset = time.strftime("%m-%d %H:%M", time.localtime(primary.get("resetsAt", 0)))
-            print(f"quota: used {primary.get('usedPercent')}% of {primary.get('windowDurationMins', 0) // 1440}d window, resets {reset}")
+        try:
+            print_quota(srv.request("account/rateLimits/read", None, timeout=60))
+        except ProtocolError:
+            # 不打印可能夹带账号信息的服务端错误正文；额度读取失败不阻断其余诊断。
+            print("quota: 额度未知（account/rateLimits/read 读取失败：app-server 协议错误）")
         models = srv.request("model/list", {}, timeout=60).get("data") or []
         print("models:")
         for m in models:

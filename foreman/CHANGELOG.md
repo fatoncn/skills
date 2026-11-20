@@ -1,5 +1,11 @@
 # foreman 版本记录
 
+## 1.5.33 — 2026-11-20
+
+- doctor 列出 `rateLimits` 与 `rateLimitsByLimitId` 的全部额度窗口，按展示内容消重，同一额度桶同一窗口的展示内容不一致、或默认快照缺 id 且同时返回具名桶时标明来源；读取失败或字段缺失时降级为「额度未知」，不阻断其余诊断。
+- 起因：#35 第 3 条，只读 primary 窗口导致额度误报，按「额度告急就改道」的编排指导差点改错执行通道。
+- 依据 cookie 2026-11-20「按这个开工」。
+
 ## 1.5.32 — 2026-11-20
 
 - codex 二进制查找顺序改为跟随桌面端：`FOREMAN_CODEX_BIN` → 桌面端自带 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` → 旧位置 `…/Resources/codex` → PATH 上的 `codex`。原顺序 PATH 优先，且桌面端路径已过时，本机实际用的是 npm 装的 0.159.2，看不到桌面端（0.171.0-alpha.13）已支持的 gpt-6.2 系列。
