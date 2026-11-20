@@ -1135,10 +1135,9 @@ def with_round_states(registrations):
 
 
 def worktree_index(projects, project="", repo=""):
-    registrations = []
-    for ledger in repo_ledgers(projects, project, repo):
-        for meta_path in sorted(ledger.glob("*/meta.json")):
-            registrations.extend(read_registrations(meta_path))
+    registrations, errors = scan_ledgers(projects, read_registrations, project, repo)
+    for location, error in errors:
+        report_ledger_error("list --json", location, error)
     rows = with_round_states(registrations)
     for row in rows:
         del row["_identity"], row["_pid_unverifiable"]
@@ -1164,11 +1163,11 @@ def gc_ledger_reason(row, cutoff):
 LEDGER_READ_ERRORS = (OSError, ValueError, TypeError, AttributeError)
 
 
-def scan_gc_ledgers(projects, read):
-    """Walk every ownership ledger, including projects outside a --project filter."""
+def scan_ledgers(projects, read, project_filter="", repo_filter=""):
+    """Collect readable ticket ledgers and errors without aborting the scan."""
     result, errors = [], []
 
-    def directories(parent, location):
+    def directories(parent, location, selected=""):
         try:
             paths = sorted(parent.iterdir())
         except FileNotFoundError:
@@ -1177,6 +1176,8 @@ def scan_gc_ledgers(projects, read):
             errors.append((location, type(exc).__name__))
             return
         for path in paths:
+            if selected and path.name != selected:
+                continue
             try:
                 is_dir = directory_id(optional_stat(path)) is not None
             except OSError as exc:
@@ -1185,8 +1186,8 @@ def scan_gc_ledgers(projects, read):
             if is_dir:
                 yield path
 
-    for project in directories(projects, ()):
-        for repo in directories(project / "issues", (project.name,)):
+    for project in directories(projects, (), project_filter):
+        for repo in directories(project / "issues", (project.name,), repo_filter):
             for ticket in directories(repo, (project.name, repo.name)):
                 meta_path = ticket / "meta.json"
                 try:
@@ -1209,7 +1210,7 @@ def report_ledger_error(command, location, error):
 
 
 def gc_index(projects, project, cutoff, force):
-    registrations, errors = scan_gc_ledgers(projects, read_registrations)
+    registrations, errors = scan_ledgers(projects, read_registrations)
     paths = Counter(row["_identity"] for row, _, _ in registrations if row["exists"])
     selected = [entry for entry in registrations if not project or entry[0]["project"] == project]
     rows = with_round_states(selected)
@@ -1239,7 +1240,7 @@ def gc_owners(projects, target, name, identity, worktree, branch, base, gh_pr):
         return [(meta_path, pr_name, pr, directory_id(optional_stat(pr.get("worktree") or "")))
                 for pr_name, pr in prs.items()]
 
-    owners, errors = scan_gc_ledgers(projects, read)
+    owners, errors = scan_ledgers(projects, read)
     if errors:
         report_ledger_error("gc", *errors[0])
         return "ledger_error"

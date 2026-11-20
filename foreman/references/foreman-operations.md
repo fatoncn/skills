@@ -165,7 +165,7 @@ $FOREMAN list --json --all-projects
 
 执行沿用 `cleanup` 的未提交、未推送、活跃轮次和空闲 hold 检查，显式启用未跟踪文件检查。回收移除 worktree，保留票、线程和日志。关闭但未合并的 PR 保留本地分支，结果带 `branch_kept`。其余候选尝试普通删除分支，Git 拒绝时也标记 `branch_kept`。最后的所有权和身份检查与实际删除之间仍有极短的并发窗口，Foreman 不对人工 Git 操作加锁。远端分支已删且本地引用无法证明提交已推送时，已合并的 PR 也按 `unpushed` 跳过。
 
-`list --all-projects` 按项目和仓库分组显示文本。`list --json` 默认只显示当前项目的当前仓库，加 `--all-projects` 可从任意目录读取全局索引。当前项目的文本和 JSON 模式都核对项目根，发现同名项目撞车时拒绝。JSON 数组中每项对应一条 PR 登记。
+`list --all-projects` 按项目和仓库分组显示文本。`list --json` 默认只显示当前项目的当前仓库，加 `--all-projects` 可从任意目录读取全局索引。当前项目的文本和 JSON 模式都核对项目根，发现同名项目撞车时拒绝。JSON 数组中每项对应一条 PR 登记。票的账本读取失败时，JSON 跳过该票，在 stderr 输出一行 `ledger_error` 警告，继续列出可读登记。
 
 | 字段 | 含义 |
 |------|------|

@@ -450,6 +450,20 @@ SH
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-merged" ]; then
     ok "其他项目账本损坏时全局禁止回收，预览仍列候选"
   else bad "账本损坏全局守卫" "$(cat "$T/gc-broken-force")"; fi
+  printf '{"prs":{"invalid":null}}\n' > "$broken"
+  "$F" list --json --all-projects > "$T/gc-broken-index.json" 2> "$T/gc-broken-index-errors"
+  json_rc=$?
+  if [ "$json_rc" -eq 0 ] &&
+    [ "$(wc -l < "$T/gc-broken-index-errors" | tr -d ' ')" -eq 1 ] &&
+    grep -Eq 'list --json: ledger_error .*corrupted.*AttributeError' "$T/gc-broken-index-errors" &&
+    python3 - "$T/gc-broken-index.json" <<'PY2'
+import json, sys
+with open(sys.argv[1]) as handle:
+    rows = {row["ticket"] for row in json.load(handle)}
+assert {"merged", "notes"} <= rows and "corrupted" not in rows, rows
+PY2
+  then ok "list --json 跳过坏票、警告一行，其余项目仍可解析"
+  else bad "list --json 坏账本容错" "rc=$json_rc $(cat "$T/gc-broken-index-errors")"; fi
   rm -f "$broken"
 
   wt="$GC_PROJECT/.claude/worktrees/foreman-merged"
