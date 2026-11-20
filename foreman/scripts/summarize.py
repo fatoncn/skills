@@ -1212,19 +1212,19 @@ def gc_index(projects, project, cutoff, force):
 
     payload = bytearray()
 
-    def emit(values, identity, reason):
+    def emit(values, identity, has_rounds, reason):
         payload.extend(b"".join(os.fsencode(value) + b"\0"
-                               for value in [*values, str(identity or ""), reason]))
+                               for value in [*values, str(identity or ""), str(int(has_rounds)), reason]))
 
     for location in errors:
         if force or not project or not location or location[0] == project:
-            emit([*location, *([""] * (len(fields) - len(location)))], None, "ledger_error")
+            emit([*location, *([""] * (len(fields) - len(location)))], None, False, "ledger_error")
     for row in rows:
         identity = row["_identity"]
         reason = "ledger_incomplete" if force and errors else gc_ledger_reason(row, cutoff)
         if not reason and paths[identity] > 1:
             reason = "shared_worktree"
-        emit([str(row[key] or "") for key in fields], identity, reason)
+        emit([str(row[key] or "") for key in fields], identity, bool(row["threads"]), reason)
     sys.stdout.buffer.write(payload)
 
 
@@ -1250,7 +1250,7 @@ def gc_owners(projects, target, name, identity, worktree, branch, base, gh_pr):
     return ""
 
 
-def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr):
+def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr, proof):
     try:
         registrations = read_registrations(meta_path)
     except FileNotFoundError:
@@ -1261,7 +1261,10 @@ def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr):
     row = rows[0]
     if (row["worktree"], row["branch"], row["base"], str(row["gh_pr"] or "")) != (worktree, branch, base, gh_pr):
         return "registration_changed"
-    return gc_ledger_reason(row, cutoff)
+    reason = gc_ledger_reason(row, cutoff)
+    if not reason and proof == "no_commits" and not row["threads"]:
+        return "never_dispatched"
+    return reason
 
 
 def listing(issues_home: str) -> int:

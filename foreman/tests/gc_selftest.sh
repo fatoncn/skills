@@ -169,7 +169,7 @@ SH
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
-    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round; do
+    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -232,6 +232,9 @@ for d in ledger.iterdir():
         "gone": {"run-1.argv": "", "run-1.pid": "88888803", "run-1.thread": "exited"},
         "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
+    if d.name in {"research", "narrow", "zz-following", "partial", "late-ledger",
+                  "late-shared", "head-change", "late-dirty", "late-check"}:
+        fixtures[d.name] = {"run-1.rc": "0"}
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
         f.write_text(value)
@@ -315,6 +318,7 @@ PY
   gc_check "$T/gc-preview" unpushed '跳过 unpushed'
   gc_check "$T/gc-preview" recent '跳过 recent_activity'
   gc_check "$T/gc-preview" research '预览 no_commits'
+  gc_check "$T/gc-preview" never '跳过 never_dispatched'
   gc_check "$T/gc-preview" gh-fail '跳过 gh_query_failed'
   gc_check "$T/gc-preview" current '跳过 here'
   gc_check "$T/gc-preview" notes '跳过 non_git'
@@ -474,6 +478,11 @@ SH
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
+  gc_check "$T/gc-force" never '跳过 never_dispatched'
+  if [ -d "$GC_PROJECT/.claude/worktrees/foreman-never" ] &&
+    python3 -c 'import json,sys; assert "work" in json.load(open(sys.argv[1]))["prs"]' "$ledger/never/meta.json"; then
+    ok "gc 保留从未派发的 worktree 和登记"
+  else bad "gc 从未派发的目录或登记丢失"; fi
   gc_check "$T/gc-force" closed '已回收 pr_closed\+branch_kept'
   if [ ! -d "$closed_wt" ] &&
     [ "$(git -C "$GC_PROJECT" rev-parse refs/heads/feat/gc-closed)" = "$closed_head" ]; then
