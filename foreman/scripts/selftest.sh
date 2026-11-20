@@ -47,7 +47,21 @@ elif args and args[0] == "app-server":
         elif method == "account/read":
             result = {"account": {"type": "chatgpt", "planType": "test"}}
         elif method == "account/rateLimits/read":
-            result = {"rateLimits": {}}
+            case = os.environ.get("FOREMAN_DOCTOR_QUOTA_CASE", "multi")
+            if case == "error":
+                print(json.dumps({"id": message["id"], "error": {"code": -1, "message": "private-error-sentinel"}}), flush=True)
+                continue
+            primary = {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1800000000}
+            secondary = {"usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1800000300}
+            snapshot = {"limitId": "codex", "primary": primary, "secondary": secondary}
+            result = {"rateLimits": snapshot, "rateLimitsByLimitId": {
+                "codex": snapshot, "other-models": {"limitId": "other-models", "normalModelSlug": "fixture-model", "primary": secondary}}}
+            if case == "empty":
+                result = {"rateLimits": {}}
+            elif case == "partial":
+                result = {"rateLimits": {"primary": {"usedPercent": 0, "windowDurationMins": 60}}}
+            elif case == "invalid":
+                result = {"rateLimits": {"primary": {"usedPercent": "bad", "windowDurationMins": None, "resetsAt": 1e100}}}
         elif method == "model/list":
             result = {"data": []}
         else:
@@ -136,6 +150,24 @@ if [ "$doctor_nogit_rc" -eq 0 ] && ! printf '%s\n' "$doctor_nogit_out" | grep -q
 else
   bad "非 git 目录 doctor" "rc=${doctor_nogit_rc}，输出尾行: $(printf '%s\n' "$doctor_nogit_out" | tail -1)"
 fi
+if printf '%s\n' "$doctor_nogit_out" | python3 -c '
+import sys
+out=sys.stdin.read()
+assert "quota [codex/primary]: used 100% of 300min window, resets " in out
+assert "quota [codex/secondary]: used 20% of 10080min window, resets " in out
+assert "quota [other-models/primary]: used 20%" in out
+assert out.count("quota [") == 3
+assert out.count("normalModelSlug=fixture-model") == 1
+assert not any(word in out.lower() for word in ("用完", "告急", "exhausted", "depleted"))
+'; then ok "doctor 列出所有额度桶、去重且不推断耗尽"; else bad "doctor 多额度桶展示"; fi
+for quota_case in error empty partial invalid; do
+  quota_out="$(FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_DOCTOR_QUOTA_CASE="$quota_case" python3 "$SKILL_DIR/scripts/codex_appserver.py" probe --home "$T/doctor-home" --codex "$T/fake-codex" 2>&1)"; quota_rc=$?
+  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | grep -q '额度未知（' && printf '%s\n' "$quota_out" | grep -q '^models:' && ! printf '%s\n' "$quota_out" | grep -q 'private-error-sentinel'; then
+    ok "doctor 额度 ${quota_case} 降级并继续模型检查"
+  else
+    bad "doctor 额度 ${quota_case} 降级" "rc=${quota_rc}，输出: $quota_out"
+  fi
+done
 expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1

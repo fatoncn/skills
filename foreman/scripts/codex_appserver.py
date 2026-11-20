@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import math
 import fcntl
 from functools import lru_cache
 from contextlib import contextmanager
@@ -1225,6 +1226,51 @@ class Holder:
 
 # ---------- probe ----------
 
+def print_quota(result):
+    """展示服务端全部额度窗口；limit id 本身不证明其适用于哪个模型。"""
+    if not isinstance(result, dict):
+        print("quota: 额度未知（响应不是对象）")
+        return
+    snapshots = []
+    default = result.get("rateLimits")
+    by_id = result.get("rateLimitsByLimitId")
+    if isinstance(default, dict) and default:
+        snapshots.append((default.get("limitId") or "rateLimits", default))
+    if isinstance(by_id, dict):
+        for limit_id, snapshot in by_id.items():
+            if not any(limit_id == key and snapshot == value for key, value in snapshots):
+                snapshots.append((limit_id, snapshot))
+    if not snapshots:
+        print("quota: 额度未知（缺少额度桶）")
+    for limit_id, snapshot in snapshots:
+        model = snapshot.get("normalModelSlug") if isinstance(snapshot, dict) else None
+        model_label = f"; normalModelSlug={model}" if model else ""
+        windows = [(key, snapshot.get(key)) for key in ("primary", "secondary")
+                   if isinstance(snapshot, dict) and snapshot.get(key) is not None]
+        if not windows:
+            print(f"quota [{limit_id}]: 额度未知（缺少 primary/secondary 窗口）")
+        for name, window in windows:
+            window = window if isinstance(window, dict) else {}
+            missing = []
+            values = []
+            for field in ("usedPercent", "windowDurationMins", "resetsAt"):
+                value = window.get(field)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    missing.append(field)
+                    value = None
+                values.append(value)
+            used, minutes, reset_at = values
+            reset = "未知"
+            if reset_at is not None:
+                try:
+                    reset = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(reset_at))
+                except (ValueError, OverflowError, OSError):
+                    missing.append("resetsAt")
+            suffix = f"; 额度未知（字段缺失或无效: {', '.join(missing)}）" if missing else ""
+            print(f"quota [{limit_id}/{name}]: used {used if used is not None else '未知'}% "
+                  f"of {str(minutes) + 'min' if minutes is not None else '未知'} window, resets {reset}{model_label}{suffix}")
+
+
 def probe(argv: list[str]) -> int:
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
     codex_bin = "codex"
@@ -1259,11 +1305,11 @@ def probe(argv: list[str]) -> int:
         print(f"app-server ok  codexHome={init.get('codexHome')}  userAgent={init.get('userAgent')}")
         acct = srv.request("account/read", {}, timeout=60).get("account") or {}
         print(f"account: type={acct.get('type')} plan={acct.get('planType')}")
-        limits = srv.request("account/rateLimits/read", None, timeout=60).get("rateLimits") or {}
-        primary = limits.get("primary") or {}
-        if primary:
-            reset = time.strftime("%m-%d %H:%M", time.localtime(primary.get("resetsAt", 0)))
-            print(f"quota: used {primary.get('usedPercent')}% of {primary.get('windowDurationMins', 0) // 1440}d window, resets {reset}")
+        try:
+            print_quota(srv.request("account/rateLimits/read", None, timeout=60))
+        except ProtocolError:
+            # 不打印可能夹带账号信息的服务端错误正文；额度读取失败不阻断其余诊断。
+            print("quota: 额度未知（account/rateLimits/read 读取失败：app-server 协议错误）")
         models = srv.request("model/list", {}, timeout=60).get("data") or []
         print("models:")
         for m in models:
