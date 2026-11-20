@@ -222,6 +222,7 @@ for d in ledger.iterdir():
                    "run-2.rc": "0"},
         "recent": {"run-1.jsonl": "recent activity"},
         "race": {"run-1.jsonl": "idle before gh lookup"},
+        "reopened": {"run-1.thread": "reopened-idle", "run-1.rc": "0"},
         "protected": {"run-1.argv": "", "run-1.pid": "88888801", "run-1.thread": "run-locked",
                       "run-2.rc": "0", "run-2.check.pending": "", "run-2.check.pid": "88888802",
                       "run-2.thread": "check-locked"},
@@ -473,6 +474,11 @@ SH
     ok "gc 关闭未合并 PR 的远端 head 已删且本地跟踪引用仍指向 HEAD"
   else bad "gc 关闭 PR 的旧跟踪引用夹具"; fi
 
+  local reopened_hold="$ledger/reopened/hold-reopened-idle" reopened_pid
+  mkdir -p "$reopened_hold/queue"
+  sleep 300 &
+  reopened_pid=$!
+  printf '%s\n' "$reopened_pid" > "$reopened_hold/bridge.pid"
   GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" \
     GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
@@ -495,6 +501,11 @@ SH
   gc_check "$T/gc-force" head-change '跳过 worktree_changed'
   gc_check "$T/gc-force" late-dirty '跳过 worktree_remove_failed'
   gc_check "$T/gc-force" reopened '跳过 pr_changed'
+  if kill -0 "$reopened_pid" 2>/dev/null && [ ! -e "$reopened_hold/release" ]; then
+    ok "gc 持锁后发现 PR 重开时保留空闲 hold"
+  else bad "gc 跳过重开的 PR 前释放了 hold"; fi
+  kill "$reopened_pid" 2>/dev/null || true
+  wait "$reopened_pid" 2>/dev/null || true
   gc_check "$T/gc-force" late-check '跳过 recent_activity'
   gc_check "$T/gc-force" held '跳过 pid_unverifiable'
   gc_check "$T/gc-force" late-hold '跳过 pid_unverifiable'

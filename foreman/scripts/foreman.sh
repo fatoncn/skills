@@ -2529,6 +2529,7 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
   local dir wt="$PR_WT" branch="$PR_BRANCH" branch_kept=""
   dir="$(issue_dir "$issue")"
   cleanup_require_pr_idle "$dir" "$PR_NAME" "$mode"
+  if [ "$mode" = gc ]; then gc_pre_release_guard; fi
   cleanup_release_idle_holds "$dir" "$PR_NAME"
   if [ "$IN_GIT" -eq 0 ]; then
     local hd
@@ -2664,8 +2665,8 @@ gc_check_registration() {
   [ -z "$reason" ] || gc_skip "$reason"
 }
 
-gc_final_guard() {
-  # 持锁并释放空闲 hold 后，先重查远端；本地归属与身份复核紧贴删除。
+gc_pre_release_guard() {
+  # 先完成可能拒绝回收的复核，避免跳过时释放空闲 hold。
   local reason
   if [ "$proof" != no_commits ]; then
     [ "$(gc_github_state "$gh" "$gh_pr" "$head")" = "$query" ] || gc_skip pr_changed
@@ -2674,6 +2675,9 @@ gc_final_guard() {
     "$pr" "$identity" "$wt" "$branch" "$base" "$gh_pr")" || gc_skip ledger_error
   [ -z "$reason" ] || gc_skip "$reason"
   gc_check_registration
+}
+
+gc_final_guard() {
   [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] &&
     [ "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)" = "$expected_common" ] &&
     [ "$(git -C "$wt" symbolic-ref --quiet HEAD)" = "refs/heads/$branch" ] &&
