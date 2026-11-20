@@ -66,6 +66,9 @@ elif args and args[0] == "app-server":
                 elif case == "no-id":
                     default.pop("limitId")
                 result = {"rateLimits": default, "rateLimitsByLimitId": {"codex": mapped}}
+            elif case == "non-dict":
+                result = {"rateLimits": {"primary": primary},
+                          "rateLimitsByLimitId": [{"limitId": "codex", "primary": primary}]}
             elif case in ("partial", "large"):
                 result = {"rateLimits": {"primary": {"usedPercent": 0, "windowDurationMins": 60}}}
             elif case == "invalid":
@@ -161,7 +164,7 @@ if [ "$doctor_nogit_rc" -eq 0 ] && ! printf '%s\n' "$doctor_nogit_out" | grep -q
 else
   bad "非 git 目录 doctor" "rc=${doctor_nogit_rc}，输出尾行: $(printf '%s\n' "$doctor_nogit_out" | tail -1)"
 fi
-if printf '%s\n' "$doctor_nogit_out" | python3 -c '
+if printf '%s\n' "$doctor_nogit_out" | python3 -E -c '
 import sys
 out=sys.stdin.read()
 assert "quota [codex/primary]: used 100% of 300min window, resets " in out
@@ -173,7 +176,7 @@ assert not any(word in out.lower() for word in ("用完", "告急", "exhausted",
 '; then ok "doctor 列出所有额度桶、去重且不推断耗尽"; else bad "doctor 多额度桶展示"; fi
 for quota_case in error empty partial invalid large; do
   quota_out="$(FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_DOCTOR_QUOTA_CASE="$quota_case" python3 "$SKILL_DIR/scripts/codex_appserver.py" probe --home "$T/doctor-home" --codex "$T/fake-codex" 2>&1)"; quota_rc=$?
-  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -c '
+  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -E -c '
 import sys
 out=sys.stdin.read()
 assert "额度未知（" in out
@@ -186,15 +189,18 @@ if sys.argv[1] == "large": assert len(out) > 65536
     bad "doctor 额度 ${quota_case} 降级" "rc=${quota_rc}，输出: $quota_out"
   fi
 done
-for quota_case in name-only conflict no-id; do
+for quota_case in name-only conflict no-id non-dict; do
   quota_out="$(FOREMAN_DOCTOR_FAKE=1 FOREMAN_DOCTOR_ARGV_LOG="$T/doctor.argv" FOREMAN_DOCTOR_QUOTA_CASE="$quota_case" python3 "$SKILL_DIR/scripts/codex_appserver.py" probe --home "$T/doctor-home" --codex "$T/fake-codex" 2>&1)"; quota_rc=$?
-  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -c '
+  if [ "$quota_rc" -eq 0 ] && printf '%s\n' "$quota_out" | python3 -E -c '
 import sys
 out=sys.stdin.read()
 lines=[line for line in out.splitlines() if line.startswith("quota [")]
 case=sys.argv[1]
 if case == "name-only":
     assert len(lines) == 1 and "[codex/primary]: used 13%" in lines[0]
+    assert "source=" not in lines[0]
+elif case == "non-dict":
+    assert len(lines) == 1 and "[rateLimits/primary]: used 100%" in lines[0]
     assert "source=" not in lines[0]
 else:
     assert len(lines) == 2

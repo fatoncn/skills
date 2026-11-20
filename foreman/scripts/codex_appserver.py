@@ -1242,7 +1242,8 @@ def print_quota(result):
     if not snapshots:
         print("quota: 额度未知（缺少额度桶）")
     # 缺少默认 limit id 时不猜它对应哪个具名桶，两边都保留并注明来源。
-    ambiguous_default = isinstance(default, dict) and bool(default) and not default.get("limitId") and bool(by_id)
+    ambiguous_default = (isinstance(default, dict) and bool(default) and not default.get("limitId")
+                         and isinstance(by_id, dict) and bool(by_id))
     rows = []
     for source, limit_id, snapshot in snapshots:
         model = snapshot.get("normalModelSlug") if isinstance(snapshot, dict) else None
