@@ -150,13 +150,22 @@ $FOREMAN gc --project my-project --force # 按默认 24 小时阈值执行
 $FOREMAN list --json --all-projects
 ```
 
-`gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因，末行汇总预览、已回收和跳过的数量。网络或认证失败以 `gh_query_failed` 跳过该条，正常完成退出 0。遇到账本损坏等内部错误退出非 0。
+`gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因。末行汇总预览、已回收、跳过和部分回收的数量。查询网络或认证失败记为 `gh_query_failed`，跳过该条。遇到账本读取或写入等内部错误时退出非 0。worktree 已删除但账本写入失败会以原登记身份报告 `部分回收 ledger_update_failed`。
 
-候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。最后活动时间取 PR 登记时间、该 PR 的 run/review 开始时间及对应记录文件最新 mtime 中最晚的一项。结束、取消和自动 check 的产物都计入 mtime。旧登记缺少时间时取票创建时间，再缺则取 `meta.json` 的 mtime。旧轮次缺少 `.pr` 时归到默认 PR。这个时间描述 Foreman 账本活动。
+候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。PID 探测无权限时按存活处理，自动 check 的 worker 同样适用。以下时间都计入最后活动时间，取其中最晚的一项。
 
-没有超出 `origin/<base>` 的提交时可作为候选，否则使用项目或仓库配置的 `github.gh` 查询。优先用账本记录的 PR 号码，没有则按同仓库 head 分支查询。只有 head 与本地提交一致的 `MERGED` 或 `CLOSED` PR 才可作为依据。预览用本地引用判断是否有未推送提交。执行前在票的轮次锁内复核登记、闲置、分支和提交，沿用 `cleanup` 的 fetch、未提交、未推送、活跃轮次和空闲 hold 检查。非 Git、`here`、多条登记共用的路径以及目录已不存在的登记都会跳过。回收会移除 worktree，尝试普通删除分支，并保留票、线程和日志。Git 拒绝删除分支时，`branch_kept` 表示 worktree 已回收而分支仍在。
+- PR 登记时间。旧登记缺时间时取票创建时间，再缺则取 `meta.json` 的 mtime。
+- 该 PR 的 run/review 开始时间与轮次记录文件的最新 mtime，含结束、取消和自动 check 产物。旧轮次缺少 `.pr` 时归到默认 PR。
+- worktree 根目录下 Git 创建的 `.git` 指针文件的 mtime。旧登记重建 worktree 时据此重新计闲置期。
+- 票目录内手动 `foreman check` 的 `check-*.log` 最新 mtime，对该票所有 PR 生效。
 
-`list --all-projects` 按项目和仓库分组显示文本。`list --json` 默认只显示当前项目的当前仓库，加 `--all-projects` 可从任意目录读取全局索引。JSON 是每条 PR 登记一项的数组：
+没有超出 `origin/<base>` 的提交时可作为候选。执行时用显式源、目标 refspec 刷新登记的 base，再复核祖先关系。其他候选使用项目或仓库配置的 `github.gh`，并从 origin 固定 `GH_HOST`。无法确定主机时按 `unknown_host` 跳过。优先查账本记录的 PR 号码，没有则按同仓库 head 和登记 base 查至多两条，多于一条按 `pr_ambiguous` 跳过。只有与登记 base、head 分支和本地 HEAD 提交一致的 `MERGED` 或 `CLOSED` PR 才可作为依据。执行时在票的轮次锁内释放空闲 hold，再重查 PR，结果变化时跳过。
+
+非 Git、`here`、多条登记共用的目录以及已经不存在的目录都会跳过。共用判断采用目录的设备号和 inode。初次全局扫描发现账本读取失败时，仍可预览可读登记。执行模式下所有登记停止回收，退出码非 0。执行时释放空闲 hold 后再扫描所有项目的登记，核对目录是否仍独占，并在删除前比较目录身份、common gitdir、完整 symbolic HEAD 和 HEAD OID。最终扫描发现新的读取错误时会保留当前和后续目录。
+
+执行沿用 `cleanup` 的未提交、未推送、活跃轮次和空闲 hold 检查，显式启用未跟踪文件检查。回收移除 worktree、尝试普通删除分支，保留票、线程和日志。Git 拒绝删除分支时用 `branch_kept` 标记。最后的所有权和身份检查与实际删除之间仍有极短的并发窗口，Foreman 不对人工 Git 操作加锁。远端分支已删且本地引用无法证明提交已推送时，已合并的 PR 也按 `unpushed` 跳过。
+
+`list --all-projects` 按项目和仓库分组显示文本。`list --json` 默认只显示当前项目的当前仓库，加 `--all-projects` 可从任意目录读取全局索引。当前项目的文本和 JSON 模式都核对项目根，发现同名项目撞车时拒绝。JSON 数组中每项对应一条 PR 登记。
 
 | 字段 | 含义 |
 |------|------|

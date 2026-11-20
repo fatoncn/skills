@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import subprocess
 import time
@@ -987,11 +988,36 @@ def activity_time(value):
         return None
 
 
-def read_registrations(meta_path):
+def optional_stat(path):
+    try:
+        return os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def directory_id(info):
+    return (info.st_dev, info.st_ino) if info and stat.S_ISDIR(info.st_mode) else None
+
+
+def read_prs(meta_path):
     with meta_path.open(encoding="utf-8") as handle:
         meta = json.load(handle)
         fallback_time = os.fstat(handle.fileno()).st_mtime
-    prs = meta.get("prs") or ({"default": meta} if meta.get("worktree") else {})
+    prs = meta.get("prs")
+    if prs is not None and not isinstance(prs, dict):
+        raise ValueError("invalid PR ledger")
+    prs = prs or ({"default": meta} if meta.get("worktree") else {})
+    for name, pr in prs.items():
+        if pr.get("worktree") is not None and not isinstance(pr["worktree"], str):
+            raise ValueError("invalid worktree path")
+        for value in (name, pr.get("worktree"), pr.get("branch"), pr.get("base"), pr.get("gh_pr")):
+            if "\0" in str(value):
+                raise ValueError("invalid ledger field")
+    return meta, prs, fallback_time
+
+
+def read_registrations(meta_path):
+    meta, prs, fallback_time = read_prs(meta_path)
     if not prs:
         return []
     default_pr = meta.get("default_pr") or next(iter(prs))
@@ -1000,16 +1026,20 @@ def read_registrations(meta_path):
                        for stem in thread.get("runs") or []}
     issue_dir = meta_path.parent
     rounds = {}
+    manual_check_time = 0
     for path in issue_dir.iterdir():
         stem, _, suffix = path.name.partition(".")
-        match = ROUND_NAME.fullmatch(stem)
-        if not match or not suffix:
+        is_round = bool(suffix and ROUND_NAME.fullmatch(stem))
+        is_manual_check = path.name.startswith("check-") and path.suffix == ".log"
+        if not (is_round or is_manual_check):
             continue
-        try:
-            modified = path.stat().st_mtime
-        except FileNotFoundError:
+        info = optional_stat(path)
+        if info is None:
             continue
-        rounds.setdefault(stem, []).append(modified)
+        if is_round:
+            rounds.setdefault(stem, []).append(info.st_mtime)
+        elif stat.S_ISREG(info.st_mode):
+            manual_check_time = max(manual_check_time, info.st_mtime)
     grouped = {name: [] for name in prs}
     for stem, times in rounds.items():
         prefix = issue_dir / stem
@@ -1028,12 +1058,16 @@ def read_registrations(meta_path):
         created = activity_time(pr.get("created"))
         if created is None:
             created = activity_time(meta.get("created"))
-        last_activity = max([created if created is not None else fallback_time]
-                            + [last for _, _, last in grouped[name]])
+        identity = directory_id(optional_stat(worktree))
+        # git worktree add 创建 .git 指针；旧登记重建时它比 meta.created 更晚。
+        marker = optional_stat(Path(worktree) / ".git") if identity else None
+        created_worktree = marker.st_mtime if marker and stat.S_ISREG(marker.st_mode) else 0
+        last_activity = max([created if created is not None else fallback_time,
+                             manual_check_time, created_worktree] + [last for _, _, last in grouped[name]])
         rows.append(({
             "project": issue_dir.parents[2].name, "repo": issue_dir.parent.name,
             "ticket": issue_dir.name, "pr": name, "worktree": worktree,
-            "exists": os.path.isdir(worktree), "branch": pr.get("branch") or "",
+            "exists": identity is not None, "_identity": identity, "branch": pr.get("branch") or "",
             "base": pr.get("base") or "", "gh_pr": pr.get("gh_pr") or None,
             "here": bool(pr.get("registered_here")) or name == "here",
             "active": False, "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
@@ -1075,7 +1109,10 @@ def worktree_index(projects, project="", repo=""):
     for ledger in repo_ledgers(projects, project, repo):
         for meta_path in sorted(ledger.glob("*/meta.json")):
             registrations.extend(read_registrations(meta_path))
-    return with_round_states(registrations)
+    rows = with_round_states(registrations)
+    for row in rows:
+        del row["_identity"]
+    return rows
 
 
 def gc_ledger_reason(row, cutoff):
@@ -1092,28 +1129,93 @@ def gc_ledger_reason(row, cutoff):
     return ""
 
 
-def gc_index(projects, project, cutoff):
-    registrations = []
-    errors = []
-    for ledger in repo_ledgers(projects):
-        for meta_path in sorted(ledger.glob("*/meta.json")):
+LEDGER_READ_ERRORS = (OSError, ValueError, TypeError, AttributeError)
+
+
+def scan_gc_ledgers(projects, read):
+    """Walk every ownership ledger, including projects outside a --project filter."""
+    result, errors = [], []
+
+    def directories(parent, location):
+        try:
+            paths = sorted(parent.iterdir())
+        except FileNotFoundError:
+            return
+        except OSError:
+            errors.append(location)
+            return
+        for path in paths:
             try:
-                registrations.extend(read_registrations(meta_path))
-            except (OSError, ValueError, TypeError, AttributeError):
-                errors.append([ledger.parents[1].name, ledger.name, meta_path.parent.name,
-                               "", "", "", "", "", "ledger_error"])
-    paths = Counter(os.path.realpath(row["worktree"]) for row, _, _ in registrations if row["exists"])
+                is_dir = directory_id(optional_stat(path)) is not None
+            except OSError:
+                errors.append((*location, path.name))
+                continue
+            if is_dir:
+                yield path
+
+    for project in directories(projects, ()):
+        for repo in directories(project / "issues", (project.name,)):
+            for ticket in directories(repo, (project.name, repo.name)):
+                meta_path = ticket / "meta.json"
+                try:
+                    meta_path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    errors.append((project.name, repo.name, ticket.name))
+                    continue
+                try:
+                    result.extend(read(meta_path))
+                except LEDGER_READ_ERRORS:
+                    errors.append((project.name, repo.name, ticket.name))
+    return result, errors
+
+
+def gc_index(projects, project, cutoff, force):
+    registrations, errors = scan_gc_ledgers(projects, read_registrations)
+    paths = Counter(row["_identity"] for row, _, _ in registrations if row["exists"])
     selected = [entry for entry in registrations if not project or entry[0]["project"] == project]
-    for row in with_round_states(selected):
-        reason = gc_ledger_reason(row, cutoff)
-        if not reason and paths[os.path.realpath(row["worktree"])] > 1:
+    rows = with_round_states(selected)
+    fields = ("project", "repo", "ticket", "pr", "worktree", "branch", "base", "gh_pr")
+
+    payload = bytearray()
+
+    def emit(values, identity, reason):
+        payload.extend(b"".join(os.fsencode(value) + b"\0"
+                               for value in [*values, str(identity or ""), reason]))
+
+    for location in errors:
+        if force or not project or not location or location[0] == project:
+            emit([*location, *([""] * (len(fields) - len(location)))], None, "ledger_error")
+    for row in rows:
+        identity = row["_identity"]
+        reason = "ledger_incomplete" if force and errors else gc_ledger_reason(row, cutoff)
+        if not reason and paths[identity] > 1:
             reason = "shared_worktree"
-        fields = ("project", "repo", "ticket", "pr", "worktree", "branch", "base", "gh_pr")
-        values = [str(row[key] or "") for key in fields]
-        sys.stdout.buffer.write(b"".join(os.fsencode(value) + b"\0" for value in [*values, reason]))
-    for values in errors:
-        if not project or values[0] == project:
-            sys.stdout.buffer.write(b"".join(os.fsencode(value) + b"\0" for value in values))
+        emit([str(row[key] or "") for key in fields], identity, reason)
+    sys.stdout.buffer.write(payload)
+
+
+def gc_owners(projects, target, name, identity, worktree, branch, base, gh_pr):
+    def read(meta_path):
+        _, prs, _ = read_prs(meta_path)
+        return [(meta_path, pr_name, pr, directory_id(optional_stat(pr.get("worktree") or "")))
+                for pr_name, pr in prs.items()]
+
+    owners, errors = scan_gc_ledgers(projects, read)
+    if errors:
+        return "ledger_error"
+    matches = [owner for owner in owners if str(owner[3]) == identity]
+    if len(matches) > 1:
+        return "shared_worktree"
+    if not matches:
+        return "worktree_changed"
+    meta_path, pr_name, pr, _ = matches[0]
+    actual = (meta_path, pr_name, pr.get("worktree"), pr.get("branch") or "",
+              pr.get("base") or "", str(pr.get("gh_pr") or ""))
+    if actual != (target, name, worktree, branch, base, gh_pr) or pr.get("registered_here"):
+        return "registration_changed"
+    return ""
 
 
 def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr):
@@ -1225,7 +1327,15 @@ if __name__ == "__main__":
         print(json.dumps(worktree_index(Path(argv[1]), *argv[2:]), ensure_ascii=False))
         sys.exit(0)
     if argv and argv[0] == "--gc-index":
-        gc_index(Path(argv[1]), argv[2], float(argv[3]))
+        gc_index(Path(argv[1]), argv[2], float(argv[3]), argv[4] == "1")
+        sys.exit(0)
+    if argv and argv[0] == "--gc-owners":
+        print(gc_owners(Path(argv[1]), Path(argv[2]), *argv[3:]))
+        sys.exit(0)
+    if argv and argv[0] == "--directory-id":
+        identity = directory_id(optional_stat(argv[1]))
+        if identity:
+            print(identity)
         sys.exit(0)
     if argv and argv[0] == "--gc-recheck":
         print(gc_recheck(Path(argv[1]), argv[2], float(argv[3]), *argv[4:]))

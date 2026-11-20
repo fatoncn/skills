@@ -16,6 +16,21 @@ def _read(path: Path) -> str:
         return ""
 
 
+def pid_alive(value) -> bool:
+    """Treat a PID that cannot be probed as live unless it is known to be absent."""
+    try:
+        pid = int(value)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError, TypeError, OverflowError):
+        return False
+    except OSError:
+        # Includes EPERM, which says nothing about whether the process has exited.
+        pass
+    return True
+
+
 def check_state(prefix) -> str:
     prefix = Path(prefix)
     pending = Path(str(prefix) + ".check.pending")
@@ -30,12 +45,7 @@ def check_state(prefix) -> str:
         return "PENDING_RUN"
     if rc != "0":
         return "TERMINAL"
-    try:
-        pid = int(_read(Path(str(prefix) + ".check.pid")))
-        os.kill(pid, 0)
-    except (OSError, ValueError):
-        return "WORKER_GONE"
-    return "CHECKING"
+    return "CHECKING" if pid_alive(_read(Path(str(prefix) + ".check.pid"))) else "WORKER_GONE"
 
 
 def check_result(prefix) -> str:
@@ -56,3 +66,9 @@ def check_result(prefix) -> str:
     if status == "FAILED" or status.startswith("FAILED:"):
         return "FAIL"
     return "跳过" if Path(str(prefix) + ".rc").exists() else "—"
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(0 if pid_alive(sys.argv[1]) else 1)

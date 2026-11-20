@@ -39,7 +39,7 @@ _SCRIPT_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 from appserver_identity import TurnIdentity
-from check_state import check_state
+from check_state import check_state, pid_alive
 
 CLIENT_NAME = "foreman"
 CLIENT_VERSION = "1.0.0"
@@ -426,8 +426,10 @@ def enqueue_steer(directory, tname, message):
         if other == tname:
             continue
         try:
-            os.kill(int(Path(prefix + ".pid").read_text()), 0)
-        except (OSError, ValueError):
+            pid = Path(prefix + ".pid").read_text()
+        except OSError:
+            continue
+        if not pid_alive(pid):
             continue
         raise ValueError(f"PR「{pr}」上线程 '{other}' 仍在跑：同一 PR 同时只准一条线程；引导保留，请等它结束再重发")
     n = max(run_numbers(directory), default=0) + 1

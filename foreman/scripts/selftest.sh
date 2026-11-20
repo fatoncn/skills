@@ -711,6 +711,7 @@ expect_grep "项目 toml 语法错误被拦" "语法错误" "$F" status
 python3 -c 'import sys; p=sys.argv[1]; s=open(p).read().replace("\n[broken\n",""); open(p,"w").write(s)' "$ptoml"
 mkdir -p "$T/other/proj/r"; echo "# rules" > "$T/other/proj/AGENTS.md"; git -C "$T/other/proj/r" init -q -b main; git -C "$T/other/proj/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 expect_grep "同名项目目录撞车被拒" "撞车" bash -c "cd '$T/other/proj/r' && '$F' here 9"
+expect_grep "list --json 同名项目目录撞车被拒" "撞车" bash -c "cd '$T/other/proj/r' && '$F' list --json"
 echo "== 摘要器探针 =="
 cat > "$T/probe.jsonl" <<EOF2
 {"_fleet":"thread","threadId":"t1","model":"m","reasoningEffort":"low","cwd":"/workspace/proj","workDir":"/workspace/proj/app"}

@@ -91,9 +91,10 @@ expand_path_tpl() { local s="$1"; s="${s//\{repo\}/$MAIN_REPO}"; s="${s//\{proje
 
 require_project() {
   [ -f "$PROJECT_TOML" ] || die "项目 ${PROJECT_SLUG}（${PROJECT_ROOT}）还没初始化。先跑: foreman init   （然后和用户过一遍 ${PROJECT_TOML}）"
-  python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))' "$PROJECT_TOML" 2>"$FOREMAN_ROOT/.toml-err" || die "项目配置有语法错误（cfg 会静默回落到默认值，所以先拦）: ${PROJECT_TOML}
-$(tail -1 "$FOREMAN_ROOT/.toml-err")"
-  local root; root="$(cfg_opt project.root)"
+  local root
+  root="$(python3 "$PY_CONFIG" get --path "$PROJECT_TOML" --repo "$REPO_SLUG" project.root --default "" 2>&1)" ||
+    die "项目配置有语法错误（cfg 会静默回落到默认值，所以先拦）: ${PROJECT_TOML}
+${root##*$'\n'}"
   if [ -n "$root" ] && ! same_path "$root" "$PROJECT_ROOT"; then
     die "项目目录名撞车：${PROJECT_TOML} 属于 ${root}，当前项目根却是 ${PROJECT_ROOT}。给其中一个项目换个目录名，或用 FOREMAN_HOME 分开。"
   fi
@@ -350,6 +351,12 @@ require_required_roles() {
   done
 }
 
+pid_alive() {
+  [[ "$1" =~ ^[0-9]+$ && "$1" =~ [1-9] ]] || return 1
+  # kill 的退出码不区分 ESRCH 和 EPERM；失败时用共享探测读取 errno。
+  kill -0 "$1" 2>/dev/null || python3 "$SKILL_DIR/scripts/check_state.py" "$1"
+}
+
 # 本机所有项目里仍在跑的 codex 线程数（run + review）
 active_codex_runs() {
   local n=0 d f eng seen=""
@@ -362,7 +369,7 @@ active_codex_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || echo codex)"
       case "$eng" in codex) ;; *) continue ;; esac
       [ -f "${f%.pid}.rc" ] && continue
-      kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
+      pid_alive "$(cat "$f")" && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -379,7 +386,7 @@ active_claude_runs() {
       eng="$(cat "${f%.pid}.engine" 2>/dev/null || true)"
       [ "$eng" = "claude" ] || continue
       [ -f "${f%.pid}.rc" ] && continue
-      kill -0 "$(cat "$f")" 2>/dev/null && seen="$seen $(cat "$f")"
+      pid_alive "$(cat "$f")" && seen="$seen $(cat "$f")"
     done
   done
   printf '%s' "$(printf '%s
@@ -1893,7 +1900,7 @@ check_state() { # <stem>: TERMINAL / PENDING_RUN / CHECKING / WORKER_GONE
   [ "$rc" = 0 ] || { printf TERMINAL; return; }
   pid="$(cat "$f.check.pid" 2>/dev/null || true)"
   pid="$(printf '%s' "$pid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then printf CHECKING; else printf WORKER_GONE; fi
+  if pid_alive "$pid"; then printf CHECKING; else printf WORKER_GONE; fi
 }
 check_result() {
   local f="$1" status phase check_rc; phase="$(check_state "$f")"
@@ -1928,7 +1935,7 @@ call_state() {
     return 0
   fi
   if [ -f "$f.pid" ]; then pid="$(cat "$f.pid")"; fi
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if pid_alive "$pid"; then
     local tn hd active; tn="$(cat "$f.thread" 2>/dev/null || true)"; hd="$(dirname "$f")/hold-$tn"
     if [ -n "$tn" ] && [ -f "$hd/queue/$(basename "$f").request.json" ]; then printf 'QUEUED'; return 0; fi
     if [ -n "$tn" ] && [ -f "$hd/bridge.pid" ] && [ "$(cat "$hd/bridge.pid" 2>/dev/null)" = "$pid" ]; then
@@ -2383,12 +2390,10 @@ cmd_list() {
     else python3 "$PY_SUMMARIZE" --list-all "$FOREMAN_ROOT/projects"; fi
     return
   fi
-  init_repo_context
+  init_repo_context; require_project
   if [ "$json" -eq 1 ]; then
-    [ -f "$PROJECT_TOML" ] || die "项目 ${PROJECT_SLUG} 还没初始化"
     python3 "$PY_SUMMARIZE" --worktree-index "$FOREMAN_ROOT/projects" "$PROJECT_SLUG" "$REPO_SLUG"
   else
-    require_project
     [ -d "$ISSUES_DIR" ] || { echo "（$REPO_SLUG 还没有任何 foreman 票）"; return 0; }
     python3 "$PY_SUMMARIZE" --list "$ISSUES_DIR"
   fi
@@ -2452,7 +2457,7 @@ cmd_cleanup() {
   fi
   if [ "$IN_GIT" -eq 1 ] && [ -z "$PR_HERE" ] && [ -d "$wt" ]; then
     cleanup_require_clean
-    [ "$discard" -eq 1 ] || cleanup_require_pushed
+    if [ "$discard" -eq 0 ]; then cleanup_require_pushed; fi
   fi
   local dir; dir="$(issue_dir "$issue")"; lock_runs "$dir"
   cleanup_apply "$issue" "$keep_branch" "$discard"
@@ -2466,7 +2471,7 @@ cleanup_reject() {
 
 cleanup_require_clean() {
   local mode="${1:-}" status
-  if ! status="$(git -C "$PR_WT" status --porcelain 2>/dev/null)" && [ "$mode" = gc ]; then
+  if ! status="$(git -C "$PR_WT" status --porcelain --untracked-files=all 2>/dev/null)" && [ "$mode" = gc ]; then
     cleanup_reject "$mode" git_status_failed "git status 失败: $PR_WT"
   fi
   [ -z "$status" ] || cleanup_reject "$mode" dirty "worktree 有未提交改动，拒绝删除: $PR_WT"
@@ -2490,15 +2495,19 @@ cleanup_require_pushed() {
 try:
     sys.exit(subprocess.run(sys.argv[1:], timeout=60).returncode)
 except (OSError, subprocess.TimeoutExpired):
-    sys.exit(1)' "${fetch[@]}")
+    sys.exit(1)' git -C "$PR_WT" fetch --prune origin --quiet "+refs/heads/$PR_BASE:refs/remotes/origin/$PR_BASE")
   fi
   "${fetch[@]}" || cleanup_reject "$mode" fetch_failed "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
   if [ "$proof" = no_commits ]; then
     git -C "$PR_WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$PR_BASE" ||
       cleanup_reject "$mode" base_changed "更新后无法确认分支没有超出基线的提交"
   fi
-  unpushed="$(cleanup_unpushed_count "$mode")" ||
-    cleanup_reject "$mode" git_refs_unavailable "cleanup: 无法判断是否已推送"
+  if [ "$mode" = gc ]; then
+    unpushed="$(cleanup_unpushed_count gc)" ||
+      cleanup_reject "$mode" git_refs_unavailable "cleanup: 无法判断是否已推送"
+  else
+    unpushed="$(cleanup_unpushed_count)"
+  fi
   [ "$unpushed" = "0" ] ||
     cleanup_reject "$mode" unpushed "分支 $PR_BRANCH 有 $unpushed 个未推送的提交（git -C '$PR_WT' log --oneline -${unpushed}）。先 push，或确认丢弃后加 --discard-unpushed"
 }
@@ -2523,8 +2532,10 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
     pr_del "$issue" "$PR_NAME" || die "cleanup: 删除 PR 登记失败"
     unlock_runs; echo "已删登记（线程与日志保留）"; return 0
   fi
-  if [ -d "$wt" ]; then
-    git -C "$MAIN_REPO" worktree remove "$wt" || cleanup_reject "$mode" worktree_remove_failed "cleanup: 删除 worktree 失败: $wt"
+  if [ "$mode" = gc ]; then gc_final_guard; fi
+  if [ "$mode" = gc ] || [ -d "$wt" ]; then
+    git -C "$MAIN_REPO" -c status.showUntrackedFiles=all worktree remove "$wt" ||
+      cleanup_reject "$mode" worktree_remove_failed "cleanup: 删除 worktree 失败: $wt"
   fi
   if [ "$keep_branch" -ne 1 ]; then
     if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch" || die "cleanup: 强制删除分支失败: $branch"
@@ -2546,7 +2557,7 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
 gc_skip() { printf '%s\n' "$1"; exit 1; }
 
 gc_git_context() {
-  local top git_dir common
+  local top git_dir
   [ -n "$PR_BRANCH" ] && [ -n "$PR_BASE" ] && [[ "$PR_WT" = /* ]] && [ -f "$PR_WT/.git" ] ||
     gc_skip invalid_worktree
   top="$(git -C "$PR_WT" rev-parse --show-toplevel)" &&
@@ -2560,24 +2571,25 @@ gc_git_context() {
   origin="$(git -C "$MAIN_REPO" remote get-url origin)" || gc_skip repo_mismatch
   [ "$(slug_of_origin "$origin")" = "$REPO_SLUG" ] && under_project_root "$PR_WT" &&
     under_project_root "$MAIN_REPO" || gc_skip repo_mismatch
-  git -C "$PR_WT" check-ref-format --branch "$PR_BASE" >/dev/null || gc_skip invalid_base
+  git -C "$PR_WT" check-ref-format "refs/heads/$PR_BASE" &&
+    [[ "$PR_BASE" != -* ]] || gc_skip invalid_base
   [ "$PR_BRANCH" != "$PR_BASE" ] || gc_skip worktree_mismatch
 }
 
 gc_github_state() { # 查询项目配置的 gh，已登记号码优先，否则按同仓库 head 分支查最新 PR
-  python3 - "$1" "$PR_WT" "$PR_BRANCH" "$2" "$3" "$origin" <<'PY2'
-import json, re, subprocess, sys
+  python3 - "$1" "$PR_WT" "$PR_BRANCH" "$PR_BASE" "$2" "$3" "$origin" <<'PY2'
+import json, os, re, subprocess, sys
 from urllib.parse import urlsplit
 
-gh, cwd, branch, number, head, origin = sys.argv[1:]
-fields = "state,headRefName,headRefOid,isCrossRepository"
+gh, cwd, branch, base, number, head, origin = sys.argv[1:]
+fields = "number,state,baseRefName,headRefName,headRefOid,isCrossRepository"
 if number:
     if not re.fullmatch(r"[1-9][0-9]*", number):
         print("invalid_pr_number")
         sys.exit()
     args = ["pr", "view", number, "--json", fields]
 else:
-    args = ["pr", "list", "--state", "all", "--head", branch, "--limit", "1", "--json", fields]
+    args = ["pr", "list", "--state", "all", "--head", branch, "--base", base, "--limit", "2", "--json", fields]
 
 try:
     # 明确使用 origin，以免 gh 的默认远端或外层 shell 的 GH_REPO 指向其他仓库。
@@ -2587,20 +2599,29 @@ try:
         host, path = remote.hostname, remote.path
     elif match := re.fullmatch(r"(?:[^/@:]+@)?([^/:]+):([^:]+)", origin):
         host, path = match.groups()
-    if host:
-        repo = path.strip("/").removesuffix(".git")
-        # github.com 的项目包装脚本可能只接受 OWNER/REPO。
-        args.extend(["--repo", repo if host.lower() == "github.com" else host + "/" + repo])
-    output = subprocess.check_output([gh, *args], cwd=cwd, stderr=subprocess.DEVNULL, timeout=15)
+    if not host:
+        print("unknown_host")
+        sys.exit()
+    host = host.lower()
+    repo = path.strip("/").removesuffix(".git")
+    # github.com 的项目包装脚本可能只接受 OWNER/REPO。
+    args.extend(["--repo", repo if host == "github.com" else host + "/" + repo])
+    output = subprocess.check_output([gh, *args], cwd=cwd, stderr=subprocess.DEVNULL, timeout=15,
+                                     env={**os.environ, "GH_HOST": host})
     pr = json.loads(output)
     if not number:
         if not isinstance(pr, list):
             raise ValueError()
+        if len(pr) > 1:
+            print("pr_ambiguous")
+            sys.exit()
         pr = pr[0] if pr else None
     if pr is None and not number:
         print("no_pr")
     elif pr["state"] not in ("CLOSED", "MERGED", "OPEN"):
         raise ValueError()
+    elif pr["baseRefName"] != base:
+        print("pr_base_mismatch")
     elif pr["headRefName"] != branch or pr["isCrossRepository"] is not False:
         print("pr_head_mismatch")
     elif pr["state"] == "OPEN":
@@ -2608,15 +2629,34 @@ try:
     elif pr["headRefOid"] != head:
         print("pr_head_mismatch")
     else:
-        print("pr_" + pr["state"].lower())
+        pr_number = pr["number"]
+        if type(pr_number) is not int or pr_number <= 0 or (number and str(pr_number) != number):
+            raise ValueError()
+        print(f"pr_{pr['state'].lower()} {pr_number}")
 except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
     print("gh_query_failed")
 PY2
 }
 
+gc_final_guard() {
+  # 持锁并释放空闲 hold 后，先重查远端；本地归属与身份复核紧贴删除。
+  local reason
+  if [ "$proof" != no_commits ]; then
+    [ "$(gc_github_state "$gh" "$gh_pr" "$head")" = "$query" ] || gc_skip pr_changed
+  fi
+  reason="$(python3 "$PY_SUMMARIZE" --gc-owners "$FOREMAN_ROOT/projects" "$dir/meta.json" \
+    "$pr" "$identity" "$wt" "$branch" "$base" "$gh_pr")" || gc_skip ledger_error
+  [ -z "$reason" ] || gc_skip "$reason"
+  [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] &&
+    [ "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir)" = "$expected_common" ] &&
+    [ "$(git -C "$wt" symbolic-ref --quiet HEAD)" = "refs/heads/$branch" ] &&
+    [ "$(git -C "$wt" rev-parse --verify HEAD)" = "$head" ] || gc_skip worktree_changed
+}
+
 gc_registration() {
   local project="$1" repo="$2" ticket="$3" pr="$4" wt="$5" branch="$6" base="$7" gh_pr="$8"
-  local force="$9" cutoff="${10}" origin gh head proof unpushed reason dir
+  local identity="$9" force="${10}" cutoff="${11}" origin common expected_origin expected_common
+  local gh head proof query unpushed reason dir
   # 从账本和现存 git 检出恢复项目上下文，与调用者所在目录无关。
   PROJECT_DIR="$FOREMAN_ROOT/projects/$project"; PROJECT_TOML="$PROJECT_DIR/foreman.toml"
   REPO_SLUG="$repo"; ISSUES_DIR="$PROJECT_DIR/issues/$repo"
@@ -2626,7 +2666,9 @@ gc_registration() {
   [ -f "$PROJECT_TOML" ] || gc_skip missing_project_config
   PROJECT_ROOT="$(cfg project.root "")" || gc_skip project_config_error
   [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT" ] || gc_skip project_root_unavailable
+  [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] || gc_skip worktree_changed
   gc_git_context
+  expected_common="$common"; expected_origin="$origin"
   cleanup_require_clean gc
   head="$(git -C "$wt" rev-parse --verify HEAD)" || gc_skip invalid_worktree
   unpushed="$(cleanup_unpushed_count gc)" || gc_skip git_refs_unavailable
@@ -2635,7 +2677,8 @@ gc_registration() {
     proof=no_commits
   else
     gh="$(cfg github.gh gh)" || gc_skip project_config_error
-    proof="$(gc_github_state "$gh" "$gh_pr" "$head")"
+    query="$(gc_github_state "$gh" "$gh_pr" "$head")"
+    proof="${query%% *}"
     case "$proof" in pr_closed|pr_merged) ;; *) gc_skip "$proof" ;; esac
   fi
   if [ "$force" -eq 0 ]; then
@@ -2650,24 +2693,25 @@ gc_registration() {
     gc_skip ledger_error
   [ -z "$reason" ] || gc_skip "$reason"
   gc_git_context
+  [ "$common" = "$expected_common" ] && [ "$origin" = "$expected_origin" ] || gc_skip repo_changed
   cleanup_require_clean gc
   cleanup_require_pushed gc "$proof"
-  [ "$(git -C "$wt" rev-parse --verify HEAD)" = "$head" ] || gc_skip head_changed
   cleanup_apply "$ticket" 0 0 gc "$proof"
 }
 
 gc_scan() {
-  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr reason result rc verdict
-  local skipped=0 previews=0 reclaimed=0 internal=0
+  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr identity reason result rc verdict
+  local skipped=0 previews=0 reclaimed=0 partial=0 internal=0 blocked=0
   while IFS= read -r -d '' project; do
     IFS= read -r -d '' repo && IFS= read -r -d '' ticket && IFS= read -r -d '' pr &&
       IFS= read -r -d '' wt && IFS= read -r -d '' branch && IFS= read -r -d '' base &&
-      IFS= read -r -d '' gh_pr && IFS= read -r -d '' reason || die "gc: 账本扫描结果不完整"
+      IFS= read -r -d '' gh_pr && IFS= read -r -d '' identity && IFS= read -r -d '' reason || die "gc: 账本扫描结果不完整"
     verdict=跳过
+    if [ "$blocked" -eq 1 ] && [ -z "$reason" ]; then reason=ledger_incomplete; fi
     if [ -z "$reason" ]; then
       # 不把子任务放进 if 的条件，否则 Bash 会禁用整个子任务的 errexit。
       set +e
-      result="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$force" "$cutoff") </dev/null 2>/dev/null )"
+      result="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$identity" "$force" "$cutoff") </dev/null 2>/dev/null )"
       rc=$?
       set -e
       reason="${result##*$'\n'}"
@@ -2678,11 +2722,14 @@ gc_scan() {
         reason=internal_error; internal=1
       fi
     fi
-    case "$reason" in ledger_error|ledger_update_failed) internal=1 ;; esac
+    case "$reason" in
+      ledger_error) internal=1; [ "$force" -eq 0 ] || blocked=1 ;;
+      ledger_update_failed) internal=1; verdict=部分回收; partial=$((partial+1)) ;;
+    esac
     [ "$verdict" != 跳过 ] || skipped=$((skipped+1))
     printf 'project=%q repo=%q ticket=%q pr=%q worktree=%q %s %s\n' "$project" "$repo" "$ticket" "$pr" "$wt" "$verdict" "$reason"
   done
-  printf '汇总 预览=%s 已回收=%s 跳过=%s\n' "$previews" "$reclaimed" "$skipped"
+  printf '汇总 预览=%s 已回收=%s 跳过=%s 部分回收=%s\n' "$previews" "$reclaimed" "$skipped" "$partial"
   return "$internal"
 }
 
@@ -2706,7 +2753,7 @@ idle = sys.argv[1]
 if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", idle) or len(idle) > 20:
     sys.exit("foreman: gc: --idle-hours 需要非负数")
 print(Decimal(str(time.time())) - Decimal(idle) * 3600)' "$idle")"
-  python3 "$PY_SUMMARIZE" --gc-index "$FOREMAN_ROOT/projects" "$project" "$cutoff" | gc_scan "$force" "$cutoff"
+  python3 "$PY_SUMMARIZE" --gc-index "$FOREMAN_ROOT/projects" "$project" "$cutoff" "$force" | gc_scan "$force" "$cutoff"
 }
 
 list_round_states() {
