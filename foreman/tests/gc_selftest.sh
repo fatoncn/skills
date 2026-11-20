@@ -181,11 +181,15 @@ SH
     esac
     case "$id" in
       merged|gh-fail|race|ambiguous|reopened|push-snapshot) git -C "$wt" push -qu origin HEAD || { bad "gc push $id"; return; } ;;
-      closed) git -C "$wt" push -q origin HEAD || { bad "gc push $id"; return; } ;;
+      closed) git -C "$wt" push -qu origin HEAD || { bad "gc push $id"; return; } ;;
       missing) git -C "$GC_PROJECT" worktree remove "$wt" || { bad "gc missing 夹具"; return; } ;;
       dirty) printf dirty > "$wt/untracked" ;;
     esac
   done
+  # 从另一个克隆删除远端 head，保留待回收检出里的旧跟踪引用。
+  git clone -q "$T/gc-origin.git" "$T/gc-remote-editor" &&
+    git -C "$T/gc-remote-editor" push -q origin --delete feat/gc-closed ||
+    { bad "gc 已关闭 PR 远端删分支夹具"; return; }
   "$F" bootstrap manual --pr second --branch feat/gc-manual-second --no-install >/dev/null 2>&1 &&
     "$F" bootstrap held --pr previous --branch feat/gc-held-previous --no-install >/dev/null 2>&1 &&
     git -C "$GC_PROJECT" config status.showUntrackedFiles no ||
@@ -455,12 +459,26 @@ SH
     ok "cleanup 不接受 Git 配置隐藏的未跟踪文件"
   else bad "cleanup 隐藏的未跟踪文件守卫"; fi
 
+  local closed_wt="$GC_PROJECT/.claude/worktrees/foreman-closed" closed_head closed_remote_rc
+  closed_head="$(git -C "$closed_wt" rev-parse HEAD)"
+  git -C "$closed_wt" ls-remote --exit-code origin refs/heads/feat/gc-closed >/dev/null
+  closed_remote_rc=$?
+  if [ "$closed_remote_rc" -eq 2 ] &&
+    [ "$(git -C "$closed_wt" rev-parse '@{upstream}')" = "$closed_head" ] &&
+    ! git -C "$closed_wt" merge-base --is-ancestor "$closed_head" origin/main; then
+    ok "gc 关闭未合并 PR 的远端 head 已删且本地跟踪引用仍指向 HEAD"
+  else bad "gc 关闭 PR 的旧跟踪引用夹具"; fi
+
   GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" \
     GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
   gc_check "$T/gc-force" closed '已回收 pr_closed\+branch_kept'
+  if [ ! -d "$closed_wt" ] &&
+    [ "$(git -C "$GC_PROJECT" rev-parse refs/heads/feat/gc-closed)" = "$closed_head" ]; then
+    ok "gc 关闭未合并 PR 只回收 worktree 并保留原分支"
+  else bad "gc 关闭未合并 PR 分支丢失或目录未回收"; fi
   gc_check "$T/gc-force" race '跳过 recent_activity'
   gc_check "$T/gc-force" gh-fail '跳过 gh_query_failed'
   gc_check "$T/gc-force" unpushed '跳过 unpushed'

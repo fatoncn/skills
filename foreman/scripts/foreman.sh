@@ -2549,7 +2549,9 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
     git -C "$MAIN_REPO" -c status.showUntrackedFiles=all worktree remove "$wt" ||
       cleanup_reject "$mode" worktree_remove_failed "cleanup: 删除 worktree 失败: $wt"
   fi
-  if [ "$keep_branch" -ne 1 ]; then
+  if [ "$mode" = gc ] && [ "$proof" = pr_closed ]; then
+    branch_kept=+branch_kept
+  elif [ "$keep_branch" -ne 1 ]; then
     if [ "$discard" -eq 1 ]; then git -C "$MAIN_REPO" branch -D "$branch" || die "cleanup: 强制删除分支失败: $branch"
     else
       git -C "$MAIN_REPO" branch -d -- "$branch" || {
