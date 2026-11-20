@@ -64,6 +64,9 @@ if [ "${1:-}" = -C ]; then
         with_base_checkout "$@"
       fi ;;
     fetch)
+      if [ "${2##*/}" = foreman-base-fetch-fail ] && [ "${GC_INJECT:-}" = 1 ]; then
+        exit 128
+      fi
       if [ -n "${GC_SNAPSHOT:-}" ]; then
         case "${2##*/}" in
           foreman-narrow|foreman-push-snapshot)
@@ -169,7 +172,7 @@ SH
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
-    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error; do
+    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error base-fetch-fail; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -190,6 +193,10 @@ SH
   git clone -q "$T/gc-origin.git" "$T/gc-remote-editor" &&
     git -C "$T/gc-remote-editor" push -q origin --delete feat/gc-closed ||
     { bad "gc 已关闭 PR 远端删分支夹具"; return; }
+  git -C "$GC_PROJECT" push -q origin HEAD:refs/heads/feat/gc-stacked-base &&
+    "$F" bootstrap base-gone --pr work --branch feat/gc-base-gone --base feat/gc-stacked-base --no-install >/dev/null 2>&1 &&
+    git -C "$T/gc-remote-editor" push -q origin --delete feat/gc-stacked-base ||
+    { bad "gc 远端基线已删除夹具"; return; }
   "$F" bootstrap manual --pr second --branch feat/gc-manual-second --no-install >/dev/null 2>&1 &&
     "$F" bootstrap held --pr previous --branch feat/gc-held-previous --no-install >/dev/null 2>&1 &&
     git -C "$GC_PROJECT" config status.showUntrackedFiles no ||
@@ -234,7 +241,8 @@ for d in ledger.iterdir():
         "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
     if d.name in {"research", "narrow", "zz-following", "partial", "late-ledger",
-                  "late-shared", "head-change", "late-dirty", "late-check", "internal-error"}:
+                  "late-shared", "head-change", "late-dirty", "late-check", "internal-error", "base-gone",
+                  "base-fetch-fail"}:
         fixtures[d.name] = {"run-1.rc": "0"}
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
@@ -318,6 +326,7 @@ PY
   gc_check "$T/gc-preview" active '跳过 active'
   gc_check "$T/gc-preview" unpushed '跳过 unpushed'
   gc_check "$T/gc-preview" recent '跳过 recent_activity'
+  gc_check "$T/gc-preview" base-gone '预览 no_commits'
   gc_check "$T/gc-preview" research '预览 no_commits'
   gc_check "$T/gc-preview" never '跳过 never_dispatched'
   gc_check "$T/gc-preview" gh-fail '跳过 gh_query_failed'
@@ -508,6 +517,12 @@ PY2
   touch "$GC_PROJECT/.claude/worktrees/foreman-internal-error/.git"
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
+  gc_check "$T/gc-force" base-gone '跳过 base_missing'
+  gc_check "$T/gc-force" base-fetch-fail '跳过 fetch_failed'
+  for id in base-gone base-fetch-fail; do
+    [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 保留 worktree" || bad "gc $id 目录丢失"
+    touch "$GC_PROJECT/.claude/worktrees/foreman-$id/.git"
+  done
   gc_check "$T/gc-force" never '跳过 never_dispatched'
   if [ -d "$GC_PROJECT/.claude/worktrees/foreman-never" ] &&
     python3 -c 'import json,sys; assert "work" in json.load(open(sys.argv[1]))["prs"]' "$ledger/never/meta.json"; then

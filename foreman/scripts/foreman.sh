@@ -2498,18 +2498,28 @@ cleanup_unpushed_count() {
   else git -C "$PR_WT" rev-list --count "origin/$PR_BASE..HEAD" 2>/dev/null || echo 0; fi
 }
 
+gc_git_with_timeout() {
+  python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(["git", *sys.argv[2:]], timeout=int(sys.argv[1])).returncode)
+except (OSError, subprocess.TimeoutExpired):
+    sys.exit(1)' "$@"
+}
+
 cleanup_require_pushed() {
   local mode="${1:-}" proof="${2:-}" commit="${3:-}" unpushed
+  local fetch_error="cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
   # 已合并的 PR 也可能有后续本地提交，仍按 cleanup 的规则检查推送状态。
-  local -a fetch=(git -C "$PR_WT" fetch --prune origin "$PR_BASE" --quiet)
   if [ "$mode" = gc ]; then
-    fetch=(python3 -c 'import subprocess, sys
-try:
-    sys.exit(subprocess.run(sys.argv[1:], timeout=60).returncode)
-except (OSError, subprocess.TimeoutExpired):
-    sys.exit(1)' git -C "$PR_WT" fetch --prune origin --quiet "+refs/heads/$PR_BASE:refs/remotes/origin/$PR_BASE")
+    local base_ref="refs/heads/$PR_BASE" probe_rc=0
+    if ! gc_git_with_timeout 60 -C "$PR_WT" fetch --prune origin --quiet "+$base_ref:refs/remotes/origin/$PR_BASE"; then
+      gc_git_with_timeout 15 -C "$PR_WT" ls-remote --exit-code origin "$base_ref" >/dev/null 2>&1 || probe_rc=$?
+      [ "$probe_rc" -ne 2 ] || cleanup_reject "$mode" base_missing "远端基线分支已不存在"
+      cleanup_reject "$mode" fetch_failed "$fetch_error"
+    fi
+  else
+    git -C "$PR_WT" fetch --prune origin "$PR_BASE" --quiet || cleanup_reject "$mode" fetch_failed "$fetch_error"
   fi
-  "${fetch[@]}" || cleanup_reject "$mode" fetch_failed "cleanup: 无法 fetch origin ${PR_BASE}，未能可靠判断是否已推送"
   if [ "$proof" = no_commits ]; then
     git -C "$PR_WT" merge-base --is-ancestor "$commit" "refs/remotes/origin/$PR_BASE" ||
       cleanup_reject "$mode" base_changed "更新后无法确认分支没有超出基线的提交"
