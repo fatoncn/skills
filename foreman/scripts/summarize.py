@@ -18,8 +18,11 @@ import json
 import os
 import re
 import sys
+import subprocess
 import time
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 
 from appserver_identity import TurnIdentity
 from check_state import check_result
@@ -955,8 +958,181 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None, en
     return [_one_line(line, 500) for line in lines]
 
 
+ACTIVE_ROUND_STATES = {"RUNNING", "QUEUED", "WAITING", "CHECKING"}
+ROUND_NAME = re.compile(r"(run|review)-(\d+)")
+FOREMAN_SCRIPT = Path(__file__).with_name("foreman.sh")
+
+
+def repo_ledgers(projects, project="", repo=""):
+    for project_dir in sorted(projects.iterdir()) if projects.is_dir() else []:
+        if project and project_dir.name != project:
+            continue
+        issues = project_dir / "issues"
+        for ledger in sorted(issues.iterdir()) if issues.is_dir() else []:
+            if ledger.is_dir() and (not repo or ledger.name == repo):
+                yield ledger
+
+
+def read_marker(path):
+    try:
+        return path.read_text(encoding="utf-8").rstrip("\n")
+    except FileNotFoundError:
+        return ""
+
+
+def activity_time(value):
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def read_registrations(meta_path):
+    with meta_path.open(encoding="utf-8") as handle:
+        meta = json.load(handle)
+        fallback_time = os.fstat(handle.fileno()).st_mtime
+    prs = meta.get("prs") or ({"default": meta} if meta.get("worktree") else {})
+    if not prs:
+        return []
+    default_pr = meta.get("default_pr") or next(iter(prs))
+    thread_meta = meta.get("threads") or {}
+    thread_by_round = {stem: name for name, thread in thread_meta.items()
+                       for stem in thread.get("runs") or []}
+    issue_dir = meta_path.parent
+    rounds = {}
+    for path in issue_dir.iterdir():
+        stem, _, suffix = path.name.partition(".")
+        match = ROUND_NAME.fullmatch(stem)
+        if not match or not suffix:
+            continue
+        try:
+            modified = path.stat().st_mtime
+        except FileNotFoundError:
+            continue
+        rounds.setdefault(stem, []).append(modified)
+    grouped = {name: [] for name in prs}
+    for stem, times in rounds.items():
+        prefix = issue_dir / stem
+        name = read_marker(prefix.with_suffix(".pr")) or default_pr
+        if name not in prs:
+            continue
+        started = read_marker(prefix.with_suffix(".started"))
+        if re.fullmatch(r"[0-9]{1,11}", started.strip()):
+            times.append(int(started))
+        thread = (read_marker(prefix.with_suffix(".thread")) or thread_by_round.get(stem)
+                  or (stem if stem.startswith("review-") else "implement"))
+        grouped[name].append((prefix, thread, max(times)))
+    rows = []
+    for name, pr in prs.items():
+        worktree = pr.get("worktree") or ""
+        created = activity_time(pr.get("created"))
+        if created is None:
+            created = activity_time(meta.get("created"))
+        last_activity = max([created if created is not None else fallback_time]
+                            + [last for _, _, last in grouped[name]])
+        rows.append(({
+            "project": issue_dir.parents[2].name, "repo": issue_dir.parent.name,
+            "ticket": issue_dir.name, "pr": name, "worktree": worktree,
+            "exists": os.path.isdir(worktree), "branch": pr.get("branch") or "",
+            "base": pr.get("base") or "", "gh_pr": pr.get("gh_pr") or None,
+            "here": bool(pr.get("registered_here")) or name == "here",
+            "active": False, "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
+            "threads": [],
+        }, grouped[name], thread_meta))
+    return rows
+
+
+def with_round_states(registrations):
+    stems = [prefix for _, rounds, _ in registrations for prefix, _, _ in rounds]
+    states = {}
+    if stems:
+        result = subprocess.run(["bash", str(FOREMAN_SCRIPT), "__list_round_states"],
+                                input=b"".join(os.fsencode(prefix) + b"\0" for prefix in stems),
+                                stdout=subprocess.PIPE, check=True)
+        states = dict(zip(stems, result.stdout.decode("ascii").splitlines(), strict=True))
+    for row, rounds, thread_meta in registrations:
+        latest = {}
+        for prefix, name, _ in rounds:
+            state = states[prefix]
+            row["active"] |= state in ACTIVE_ROUND_STATES
+            if name not in latest or int(prefix.name.rsplit("-", 1)[1]) > int(latest[name].name.rsplit("-", 1)[1]):
+                latest[name] = prefix
+        for name, prefix in sorted(latest.items()):
+            thread = thread_meta.get(name, {})
+            row["threads"].append({
+                "name": name,
+                "engine": thread.get("engine") or read_marker(prefix.with_suffix(".engine")) or "codex",
+                "role": thread.get("role") or read_marker(prefix.with_suffix(".role")) or (
+                    "review" if prefix.name.startswith("review-") else "implement"),
+                "round": prefix.name,
+                "state": states[prefix],
+            })
+    return [row for row, _, _ in registrations]
+
+
+def worktree_index(projects, project="", repo=""):
+    registrations = []
+    for ledger in repo_ledgers(projects, project, repo):
+        for meta_path in sorted(ledger.glob("*/meta.json")):
+            registrations.extend(read_registrations(meta_path))
+    return with_round_states(registrations)
+
+
+def gc_ledger_reason(row, cutoff):
+    if row["repo"] == "_nogit":
+        return "non_git"
+    if row["here"]:
+        return "here"
+    if row["active"]:
+        return "active"
+    if not row["exists"]:
+        return "missing_worktree"
+    if activity_time(row["last_activity"]) > cutoff:
+        return "recent_activity"
+    return ""
+
+
+def gc_index(projects, project, cutoff):
+    registrations = []
+    errors = []
+    for ledger in repo_ledgers(projects):
+        for meta_path in sorted(ledger.glob("*/meta.json")):
+            try:
+                registrations.extend(read_registrations(meta_path))
+            except (OSError, ValueError, TypeError, AttributeError):
+                errors.append([ledger.parents[1].name, ledger.name, meta_path.parent.name,
+                               "", "", "", "", "", "ledger_error"])
+    paths = Counter(os.path.realpath(row["worktree"]) for row, _, _ in registrations if row["exists"])
+    selected = [entry for entry in registrations if not project or entry[0]["project"] == project]
+    for row in with_round_states(selected):
+        reason = gc_ledger_reason(row, cutoff)
+        if not reason and paths[os.path.realpath(row["worktree"])] > 1:
+            reason = "shared_worktree"
+        fields = ("project", "repo", "ticket", "pr", "worktree", "branch", "base", "gh_pr")
+        values = [str(row[key] or "") for key in fields]
+        sys.stdout.buffer.write(b"".join(os.fsencode(value) + b"\0" for value in [*values, reason]))
+    for values in errors:
+        if not project or values[0] == project:
+            sys.stdout.buffer.write(b"".join(os.fsencode(value) + b"\0" for value in values))
+
+
+def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr):
+    try:
+        registrations = read_registrations(meta_path)
+    except FileNotFoundError:
+        return "registration_changed"
+    rows = with_round_states([entry for entry in registrations if entry[0]["pr"] == pr])
+    if not rows:
+        return "registration_changed"
+    row = rows[0]
+    if (row["worktree"], row["branch"], row["base"], str(row["gh_pr"] or "")) != (worktree, branch, base, gh_pr):
+        return "registration_changed"
+    return gc_ledger_reason(row, cutoff)
+
+
 def listing(issues_home: str) -> int:
     rows = []
+    thread_rows = []
     for name in sorted(os.listdir(issues_home)):
         issue_dir = os.path.join(issues_home, name)
         meta_path = os.path.join(issue_dir, "meta.json")
@@ -1014,6 +1190,10 @@ def listing(issues_home: str) -> int:
             spend += (" +" if spend else "") + f"{claude_tokens // 1000}k claude tok"
         rows.append((name, branch, base, meta.get("gh_issue", "—"), "".join(engines) or "—",
                      spend or "—", check, last, "有" if os.path.isdir(worktree) else "已清理"))
+        threads = meta.get("threads") or {}
+        parts = [f"{name}[{t.get('role', '?')}/{t.get('engine', '?')}×{len(t.get('runs') or [])}]"
+                 for name, t in threads.items()]
+        thread_rows.append(f"  {name:16} 分支 {branch:40} 线程: {' '.join(parts) or '（无）'}")
     if not rows:
         print("（没有登记的 issue）")
         return 0
@@ -1026,11 +1206,30 @@ def listing(issues_home: str) -> int:
         print(line(row))
     print("\nruns 列每字符代表一轮: a=codex app-server, p=pi, l=claude, ?=未知（按轮次顺序）")
     print("codex 走 ChatGPT 订阅额度，没有美元成本，只计 token。")
+    print("\n--- 票 → 线程（角色 / 引擎 / 轮次）---")
+    print("\n".join(thread_rows))
     return 0
 
 
 if __name__ == "__main__":
     argv = sys.argv[1:]
+    if argv and argv[0] == "--list-all":
+        ledgers = list(repo_ledgers(Path(argv[1])))
+        if not ledgers:
+            print("（没有登记的 issue）")
+        for ledger in ledgers:
+            print(f"\n=== {ledger.parents[1].name} / {ledger.name} ===")
+            listing(str(ledger))
+        sys.exit(0)
+    if argv and argv[0] == "--worktree-index":
+        print(json.dumps(worktree_index(Path(argv[1]), *argv[2:]), ensure_ascii=False))
+        sys.exit(0)
+    if argv and argv[0] == "--gc-index":
+        gc_index(Path(argv[1]), argv[2], float(argv[3]))
+        sys.exit(0)
+    if argv and argv[0] == "--gc-recheck":
+        print(gc_recheck(Path(argv[1]), argv[2], float(argv[3]), *argv[4:]))
+        sys.exit(0)
     engine = None
     role = None
     for flag in ("--engine", "--role"):

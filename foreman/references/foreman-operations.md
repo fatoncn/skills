@@ -141,6 +141,36 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 
 `report` 里这些信号出现就是**没通过**：turn 没正常完成；模型 / 协议错误；命中越界探针（push / gh 写 / 部署 / 关掉 lint 规则 / skip 测试 / 破坏性 git）；请求过沙箱外权限（看它有没有绕路）；报告贴不出真实命令输出。
 
+### 批量回收与 worktree 索引
+
+```bash
+$FOREMAN gc                              # 预览所有项目
+$FOREMAN gc --project my-project --idle-hours 72
+$FOREMAN gc --project my-project --force # 按默认 24 小时阈值执行
+$FOREMAN list --json --all-projects
+```
+
+`gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因，末行汇总预览、已回收和跳过的数量。网络或认证失败以 `gh_query_failed` 跳过该条，正常完成退出 0。遇到账本损坏等内部错误退出非 0。
+
+候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。最后活动时间取 PR 登记时间、该 PR 的 run/review 开始时间及对应记录文件最新 mtime 中最晚的一项。结束、取消和自动 check 的产物都计入 mtime。旧登记缺少时间时取票创建时间，再缺则取 `meta.json` 的 mtime。旧轮次缺少 `.pr` 时归到默认 PR。这个时间描述 Foreman 账本活动。
+
+没有超出 `origin/<base>` 的提交时可作为候选，否则使用项目或仓库配置的 `github.gh` 查询。优先用账本记录的 PR 号码，没有则按同仓库 head 分支查询。只有 head 与本地提交一致的 `MERGED` 或 `CLOSED` PR 才可作为依据。预览用本地引用判断是否有未推送提交。执行前在票的轮次锁内复核登记、闲置、分支和提交，沿用 `cleanup` 的 fetch、未提交、未推送、活跃轮次和空闲 hold 检查。非 Git、`here`、多条登记共用的路径以及目录已不存在的登记都会跳过。回收会移除 worktree，尝试普通删除分支，并保留票、线程和日志。Git 拒绝删除分支时，`branch_kept` 表示 worktree 已回收而分支仍在。
+
+`list --all-projects` 按项目和仓库分组显示文本。`list --json` 默认只显示当前项目的当前仓库，加 `--all-projects` 可从任意目录读取全局索引。JSON 是每条 PR 登记一项的数组：
+
+| 字段 | 含义 |
+|------|------|
+| `project` / `repo` | 项目目录名与仓库 slug，非 Git 仓库标记为 `_nogit` |
+| `ticket` / `pr` | 票 ID 与 PR 登记名 |
+| `worktree` / `exists` | 登记路径，以及扫描时路径是否指向目录 |
+| `branch` / `base` | 登记分支与基线，缺项为空字符串 |
+| `gh_pr` | 账本记录的 GitHub PR 号码，未登记为 `null` |
+| `here` / `active` | 是否为 here 登记，以及该 PR 是否有任意一个活跃轮次 |
+| `last_activity` | 以上述规则计算的 UTC ISO 8601 时间 |
+| `threads` | 该 PR 有轮次记录的线程。每项含 `name`、`engine`、`role`、最近一轮的 `round`（如 `run-3`）及 `state` |
+
+索引是读取时的快照。`active` 覆盖该 PR 的所有轮次，线程内较早的轮次仍活跃时，最近一轮也可能显示为终态。外部清理工具可用 `exists` 与 `worktree` 判断目录是否仍在账本中。
+
 ## 已知降级
 
 - claude 引擎整体 beta，**用户没有明确要求就不派**（例外：高风险票的 Claude `/code-review` 那一轮，见 [通用编排指导](orchestration-guide.md) 阶段 4）：只跑过一张真实票。其沙箱内跑 `pnpm` 脚本会触发依赖校验重装并损坏 `node_modules`（仓库 issue #26 待修；根子是 Claude Code 沙箱把 pnpm store 指到临时目录、且禁写 `.idea` / `.vscode`），修好前 claude 线程只派不跑包管理器脚本的活。
@@ -175,7 +205,9 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 | `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
 | `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
 | `$FOREMAN release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
-| `$FOREMAN list` / `cleanup <id> [--pr 名] --force` | 全批状态（票 → 线程）；删一个 PR 的 worktree；目标 PR 有在跑 / 排队轮次时拒绝，先 `release`；未提交 / 未推送也会拒绝，票、线程与日志保留 |
+| `$FOREMAN list [--all-projects] [--json]` | 票与线程状态，或每条 PR 登记一项的机器可读索引 |
+| `$FOREMAN cleanup <id> [--pr 名] --force` | 清理一个 PR 的 worktree，未提交、未推送或目标 PR 有活跃轮次时拒绝 |
+| `$FOREMAN gc [--project 名] [--idle-hours N] [--force]` | 批量预览或回收符合条件的闲置 worktree，详见「批量回收与 worktree 索引」 |
 
 ## 参考
 
