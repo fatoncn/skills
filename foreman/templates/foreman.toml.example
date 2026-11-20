@@ -24,7 +24,7 @@ pr_draft = true
 
 [engines]
 default = "codex"
-concurrency = 5      # 覆盖本机默认；计数是本机所有项目合计在跑的 codex 线程
+concurrency = 20     # 覆盖本机默认；计数是本机所有项目合计在跑的 codex 线程
 
 [engines.claude]
 concurrency = 3       # Claude Code 独立池；同样按本机所有项目的活进程计数

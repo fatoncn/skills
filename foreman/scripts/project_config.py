@@ -91,7 +91,7 @@ def detect_project(project_root: str, main_repo: str) -> dict:
         },
         "verify": {"commands": []},
         "github": {"gh": "gh", "pr_draft": True},
-        "engines": {"default": "codex", "concurrency": 5},
+        "engines": {"default": "codex", "concurrency": 20},
         "codex": {"sandbox_network": True, "web_search": True,
                   "approval_policy": "on-request", "approvals_reviewer": "auto_review", "approvals": "decline", "question_timeout": 600, "hold_idle_minutes": 360},
         "claude": {"max_turns": 80, "max_budget_usd": 5, "question_timeout": 1800},

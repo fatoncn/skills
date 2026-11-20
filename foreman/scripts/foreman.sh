@@ -137,7 +137,7 @@ roles_confirmed = false
 [engines]
 # 同时在跑的 codex 线程上限（run / review 都算，计数是本机所有项目合计）。codex 走 ChatGPT 订阅额度，
 # 和你自己开的 Codex 抢同一份配额。这里是本机默认；项目 foreman.toml 的 [engines] concurrency 可覆盖。到上限拒绝派发。
-concurrency = 5
+concurrency = 20
 
 [engines.claude]
 # Claude Code 使用独立订阅池；按本机所有项目的 claude 活进程计数。
@@ -277,7 +277,7 @@ PY2
     return 0
   fi
   echo "全局配置: $GLOBAL_TOML   （roles_confirmed = $(gcfg roles_confirmed false)）"
-  echo "本机并发上限默认: $(gcfg engines.concurrency 5)（项目 foreman.toml 的 engines.concurrency 可覆盖）"
+  echo "本机并发上限默认: $(gcfg engines.concurrency 20)（项目 foreman.toml 的 engines.concurrency 可覆盖）"
   echo "线程命名模板: $(gcfg codex.thread_name 'foreman {ids}: {title}')（本机 config.toml 的 codex.thread_name，须含 {ids} 与 {title}）"
   local cur; cur="$(gcfg codex.home "")"
   if [ -n "$cur" ]; then echo "codex home 模式: ${cur}（$([ "$cur" = shared ] && echo "共用 ~/.codex，桌面端能看到线程、执行者继承桌面端配置" || echo "独立 ~/.foreman/codex-home，只共用登录态")）"
@@ -383,7 +383,7 @@ active_claude_runs() {
   printf '%s' "$(printf '%s
 ' $seen | sort -u | grep -c .)"
 }
-concurrency_limit() { local l; l="$(cfg_opt engines.concurrency)"; [ -n "$l" ] || l="$(gcfg engines.concurrency 5)"; printf '%s' "$l"; }  # 项目覆盖 > 本机默认
+concurrency_limit() { local l; l="$(cfg_opt engines.concurrency)"; [ -n "$l" ] || l="$(gcfg engines.concurrency 20)"; printf '%s' "$l"; }  # 项目覆盖 > 本机默认
 claude_concurrency_limit() { local l; l="$(cfg_opt engines.claude.concurrency)"; [ -n "$l" ] || l="$(gcfg engines.claude.concurrency 3)"; printf '%s' "$l"; }
 require_concurrency_slot() {  # 派发前调用；只对 codex 系执行器
   local limit running; limit="$(concurrency_limit)"; running="$(active_codex_runs)"
@@ -2550,7 +2550,7 @@ cmd_doctor() {
     if [ -f "$PROJECT_TOML" ]; then
       echo "配置:      $PROJECT_TOML"
       echo "  base=$(base_of_repo)  worktrees=$(expand_path_tpl "$(cfg repo.worktree_root '{repo}/.claude/worktrees')")  gh=$(cfg_opt github.gh)  copy_env=[$(cfg_opt repo.copy_env | tr '\n' ' ')] verify=[$(verify_of_repo | tr '\n' ';')]"
-      echo "  角色: implement=$(role_cfg implement model)/$(role_cfg implement effort)  review=$(role_cfg review model)/$(role_cfg review effort)$(role_defined mechanical && echo "  mechanical=$(role_cfg mechanical model)/$(role_cfg mechanical effort)")  本项目派发上限=$(concurrency_limit)（本机默认 $(gcfg engines.concurrency 5)）"
+      echo "  角色: implement=$(role_cfg implement model)/$(role_cfg implement effort)  review=$(role_cfg review model)/$(role_cfg review effort)$(role_defined mechanical && echo "  mechanical=$(role_cfg mechanical model)/$(role_cfg mechanical effort)")  本项目派发上限=$(concurrency_limit)（本机默认 $(gcfg engines.concurrency 20)）"
       local ghbin; ghbin="$(cfg_opt github.gh)"
       if [ -n "$ghbin" ] && [ "$ghbin" != "gh" ]; then
         (cd "$MAIN_REPO" && "$ghbin" api rate_limit --jq .rate.limit >/dev/null 2>&1) && echo "  gh 入口可用: $ghbin" || echo "  !! gh 入口不可用: $ghbin"

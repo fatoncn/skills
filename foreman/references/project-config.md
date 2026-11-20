@@ -54,7 +54,7 @@
 | `codex.home` | 执行者的 CODEX_HOME 模式，**初始化时必须显式选**，不设 `run` / `review` / `setup --confirm` 拒绝：`shared` 共用桌面端 `~/.codex`（桌面端能看到线程；执行者继承桌面端 MCP / 插件 / notify / 全局 AGENTS.md）；`isolated` 独立 `~/.foreman/codex-home`（只共用登录态）。`foreman setup --codex-home <模式>` 写入；环境变量 `FOREMAN_CODEX_HOME=<路径>` 可绕过 | 无默认 |
 | `roles_confirmed` | 角色分工是否已由使用者过目确认；false 时 `run` / `review` 拒绝派活 | false |
 | `codex.thread_name` | 线程命名模板，须含 `{ids}`（相关 issue / PR 号）与 `{title}`（工作内容） | `foreman {ids}: {title}` |
-| `engines.concurrency` | 在跑 codex 线程上限的本机默认（run + review，计数是所有项目合计）；项目 foreman.toml 同名键覆盖 | 5 |
+| `engines.concurrency` | 在跑 codex 线程上限的本机默认（run + review，计数是所有项目合计）；项目 foreman.toml 同名键覆盖 | 20 |
 | `engines.claude.concurrency` | 在跑 Claude 轮次上限，独立计数 | 3 |
 | `roles.<名>` | 角色 = `engine` / `model` / `effort` + 角色文件；implement / review / mechanical 三个都必需，再多的自定 | Codex 档位 |
 | `roles.<名>.claude` | 该角色在 Claude 引擎下的 `model` / `effort`；缺失则 `--engine claude` 直接拒绝 | 参考角色见模板 |
