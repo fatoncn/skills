@@ -1173,14 +1173,14 @@ def scan_gc_ledgers(projects, read):
             paths = sorted(parent.iterdir())
         except FileNotFoundError:
             return
-        except OSError:
-            errors.append(location)
+        except OSError as exc:
+            errors.append((location, type(exc).__name__))
             return
         for path in paths:
             try:
                 is_dir = directory_id(optional_stat(path)) is not None
-            except OSError:
-                errors.append((*location, path.name))
+            except OSError as exc:
+                errors.append(((*location, path.name), type(exc).__name__))
                 continue
             if is_dir:
                 yield path
@@ -1193,14 +1193,19 @@ def scan_gc_ledgers(projects, read):
                     meta_path.lstat()
                 except FileNotFoundError:
                     continue
-                except OSError:
-                    errors.append((project.name, repo.name, ticket.name))
+                except OSError as exc:
+                    errors.append(((project.name, repo.name, ticket.name), type(exc).__name__))
                     continue
                 try:
                     result.extend(read(meta_path))
-                except LEDGER_READ_ERRORS:
-                    errors.append((project.name, repo.name, ticket.name))
+                except LEDGER_READ_ERRORS as exc:
+                    errors.append(((project.name, repo.name, ticket.name), type(exc).__name__))
     return result, errors
+
+
+def report_ledger_error(command, location, error):
+    ledger = "/".join(location) or "projects"
+    print(f"{command}: ledger_error {ascii(ledger)} ({error})", file=sys.stderr)
 
 
 def gc_index(projects, project, cutoff, force):
@@ -1216,8 +1221,9 @@ def gc_index(projects, project, cutoff, force):
         payload.extend(b"".join(os.fsencode(value) + b"\0"
                                for value in [*values, str(identity or ""), str(int(has_rounds)), reason]))
 
-    for location in errors:
+    for location, error in errors:
         if force or not project or not location or location[0] == project:
+            report_ledger_error("gc", location, error)
             emit([*location, *([""] * (len(fields) - len(location)))], None, False, "ledger_error")
     for row in rows:
         identity = row["_identity"]
@@ -1236,6 +1242,7 @@ def gc_owners(projects, target, name, identity, worktree, branch, base, gh_pr):
 
     owners, errors = scan_gc_ledgers(projects, read)
     if errors:
+        report_ledger_error("gc", *errors[0])
         return "ledger_error"
     matches = [owner for owner in owners if str(owner[3]) == identity]
     if len(matches) > 1:

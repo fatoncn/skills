@@ -141,7 +141,7 @@ case "$2" in
       [ "$7" = --base ] && [ "$8" = main ] && [ "$9" = --limit ] && [ "${10}" = 2 ] || exit 1
     number=42; base=main
     case "$6" in
-      feat/gc-gh-fail) exit 1 ;;
+      feat/gc-gh-fail) echo "Authorization: Bearer mock-gh-value" >&2; exit 1 ;;
       feat/gc-race) state=MERGED; if [ "${GC_RACE:-}" = 1 ]; then touch "$GC_RACE_LOG"; fi ;;
       feat/gc-closed|feat/gc-ambiguous|feat/gc-push-snapshot) state=CLOSED ;;
       feat/gc-reopened)
@@ -169,7 +169,7 @@ SH
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
-    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never; do
+    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -234,7 +234,7 @@ for d in ledger.iterdir():
         "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
     if d.name in {"research", "narrow", "zz-following", "partial", "late-ledger",
-                  "late-shared", "head-change", "late-dirty", "late-check"}:
+                  "late-shared", "head-change", "late-dirty", "late-check", "internal-error"}:
         fixtures[d.name] = {"run-1.rc": "0"}
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
@@ -479,9 +479,17 @@ SH
   sleep 300 &
   reopened_pid=$!
   printf '%s\n' "$reopened_pid" > "$reopened_hold/bridge.pid"
+  mkdir "$ledger/internal-error/.runs.lock"
   GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" \
-    GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
-  if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi
+    GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force" 2> "$T/gc-force-errors"; force_rc=$?
+  if [ "$force_rc" -eq 1 ] && ! grep -q 'project=gc-nogit' "$T/gc-force" &&
+    gc_has "$T/gc-force" internal-error '跳过 internal_error' &&
+    grep -Eq 'ticket=internal-error .* internal_error: .*\.runs\.lock: Is a directory' "$T/gc-force-errors" &&
+    ! grep -q 'mock-gh-value' "$T/gc-force-errors" "$T/gc-force"; then
+    ok "gc 按项目执行，报告单条锁错误诊断与非零退出，隐藏 gh 诊断"
+  else bad "gc 内部诊断或项目过滤" "rc=$force_rc $(cat "$T/gc-force-errors")"; fi
+  rmdir "$ledger/internal-error/.runs.lock"
+  touch "$GC_PROJECT/.claude/worktrees/foreman-internal-error/.git"
   gc_check "$T/gc-force" merged '已回收 pr_merged'
   gc_check "$T/gc-force" research '已回收 no_commits'
   gc_check "$T/gc-force" never '跳过 never_dispatched'

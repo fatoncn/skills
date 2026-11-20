@@ -2729,8 +2729,21 @@ gc_registration() {
   cleanup_apply "$ticket" 0 0 gc "$proof"
 }
 
+gc_diagnostic() {
+  python3 -c 'import re, sys
+
+line = "".join(ch for ch in sys.stdin.read() if ch.isprintable()).strip()
+credential_field = (r"(?i)(?<![a-z0-9])(?:authorization|bearer|token|password|passphrase|"
+                    r"credentials?|secret|private[ _-]?key|cookie|api[ _-]?key)(?![a-z0-9])")
+credential_value = r"gh[pousr]_|github_pat_|AKIA[A-Z0-9]{16}"
+if re.search(credential_field, line) or re.search(credential_value, line):
+    line = "[诊断含凭证标记，已省略]"
+line = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|[^\s/]+@[^\s/:]+:\S+", "[远端地址已省略]", line)
+print(line[:400])'
+}
+
 gc_scan() {
-  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr identity has_rounds reason result rc verdict
+  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr identity has_rounds reason result rc verdict diagnostic
   local skipped=0 previews=0 reclaimed=0 partial=0 internal=0 blocked=0
   while IFS= read -r -d '' project; do
     IFS= read -r -d '' repo && IFS= read -r -d '' ticket && IFS= read -r -d '' pr &&
@@ -2742,16 +2755,34 @@ gc_scan() {
     if [ -z "$reason" ]; then
       # 不把子任务放进 if 的条件，否则 Bash 会禁用整个子任务的 errexit。
       set +e
-      result="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$identity" "$force" "$cutoff" "$has_rounds") </dev/null 2>/dev/null )"
-      rc=$?
+      # fd 3 保留子任务的 stdout，stderr 只取最后一行，禁止混入逐条输出。
+      result="$(
+        exec 3>&1
+        diagnostic="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$identity" "$force" "$cutoff" "$has_rounds") </dev/null 2>&1 >&3 )"
+        rc=$?
+        diagnostic="${diagnostic##*$'\n'}"
+        printf '\037%s\037%s' "$rc" "${diagnostic//$'\037'/}"
+      )"
       set -e
+      diagnostic="${result##*$'\037'}"
+      result="${result%$'\037'*}"
+      rc="${result##*$'\037'}"
+      result="${result%$'\037'*}"
+      result="${result%$'\n'}"
       reason="${result##*$'\n'}"
       if [ "$rc" -eq 0 ]; then
         if [ "$force" -eq 0 ]; then verdict=预览; previews=$((previews+1))
         else verdict=已回收; reclaimed=$((reclaimed+1)); fi
-      elif ! [[ "$reason" =~ ^[a-z_]+$ ]]; then
+      elif [ "$rc" -ne 1 ] || ! [[ "$reason" =~ ^[a-z_]+$ ]]; then
         reason=internal_error; internal=1
       fi
+      case "$reason" in
+        internal_error|ledger_error|ledger_update_failed|project_config_error|git_refs_unavailable|worktree_remove_failed)
+          if [ -n "$diagnostic" ]; then
+            printf 'gc: project=%q repo=%q ticket=%q pr=%q %s: %s\n' "$project" "$repo" "$ticket" "$pr" "$reason" \
+              "$(printf '%s' "$diagnostic" | gc_diagnostic)" >&2
+          fi ;;
+      esac
     fi
     case "$reason" in
       ledger_error) internal=1; [ "$force" -eq 0 ] || blocked=1 ;;
