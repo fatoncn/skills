@@ -14,6 +14,9 @@ gc_selftest() {
 #!/usr/bin/env bash
 set -euo pipefail
 [ "$1" = pr ]
+if [ -n "${GC_EXPECT_REPO:-}" ]; then
+  [ "${@: -2:1}" = --repo ] && [ "${@: -1}" = "$GC_EXPECT_REPO" ] || exit 1
+fi
 case "$2" in
   view) [ "$3" = 41 ]; state=MERGED; begin=""; end="" ;;
   list)
@@ -133,6 +136,23 @@ PY
   gc_check "$T/gc-preview" missing '跳过 missing_worktree'
   gc_check "$T/gc-preview" dirty '跳过 dirty'
   gc_check "$T/gc-preview" closed '预览 pr_closed'
+
+  # 预览只读本地引用，可用同一裸仓夹具替换 origin 拼法来检验 gh 参数。
+  local repo="${T##*/}/gc-origin" origin_url expected_repo
+  for origin_url in "git@github.com:$repo.git" "ssh://git@github.com/$repo.git" "https://github.com/$repo.git" \
+    "git@ghe.example.invalid:$repo.git" "https://ghe.example.invalid/$repo.git"; do
+    expected_repo="$repo"
+    case "$origin_url" in
+      git@ghe.example.invalid:*|https://ghe.example.invalid/*) expected_repo="ghe.example.invalid/$repo" ;;
+    esac
+    if git -C "$GC_PROJECT" remote set-url origin "$origin_url" &&
+      GC_EXPECT_REPO="$expected_repo" "$F" gc --project 'gc project' > "$T/gc-repo-preview" &&
+      gc_has "$T/gc-repo-preview" merged '预览 pr_merged' &&
+      gc_has "$T/gc-repo-preview" closed '预览 pr_closed'; then
+      ok "gc origin $origin_url 用正确的 --repo 查到 MERGED 和 CLOSED"
+    else bad "gc origin $origin_url 的 --repo" "$(cat "$T/gc-repo-preview")"; fi
+  done
+  git -C "$GC_PROJECT" remote set-url origin "$T/gc-origin.git" || { bad "gc 恢复裸仓夹具 origin"; return; }
 
   GC_RACE=1 "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force"; force_rc=$?
   if [ "$force_rc" -eq 0 ] && ! grep -q 'project=gc-nogit' "$T/gc-force"; then ok "gc 执行退出 0 且按项目过滤"; else bad "gc 执行 / 项目过滤" "rc=$force_rc"; fi

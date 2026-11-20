@@ -2582,11 +2582,15 @@ else:
 try:
     # 明确使用 origin，以免 gh 的默认远端或外层 shell 的 GH_REPO 指向其他仓库。
     remote = urlsplit(origin) if "://" in origin else None
+    host, path = "", ""
     if remote and remote.hostname:
-        repo = remote.hostname + "/" + remote.path.strip("/").removesuffix(".git")
-        args.extend(["--repo", repo])
+        host, path = remote.hostname, remote.path
     elif match := re.fullmatch(r"(?:[^/@:]+@)?([^/:]+):([^:]+)", origin):
-        args.extend(["--repo", match[1] + "/" + match[2].strip("/").removesuffix(".git")])
+        host, path = match.groups()
+    if host:
+        repo = path.strip("/").removesuffix(".git")
+        # github.com 的项目包装脚本可能只接受 OWNER/REPO。
+        args.extend(["--repo", repo if host.lower() == "github.com" else host + "/" + repo])
     output = subprocess.check_output([gh, *args], cwd=cwd, stderr=subprocess.DEVNULL, timeout=15)
     pr = json.loads(output)
     if not number:
