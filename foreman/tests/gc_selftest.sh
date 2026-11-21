@@ -191,7 +191,7 @@ SH
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
     late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error base-fetch-fail \
-    cancelled engine-down timed-out thread-busy successful-then-down legacy recheck-round; do
+    cancelled engine-down timed-out thread-busy successful-then-down legacy interrupted-dispatch recheck-round; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -265,6 +265,8 @@ for d in ledger.iterdir():
         "successful-then-down": {"review-1.rc": "0", "review-1.thread": "fixture",
                                  "run-2.rc": "4", "run-2.thread": "fixture"},
         "legacy": {"run-1.jsonl": "legacy log"},
+        "interrupted-dispatch": {"run-1.started": str(old), "run-1.thread": "implement",
+                                 "run-1.jsonl": "", "run-1.pid": "88888803"},
         "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
     if d.name in {"research", "narrow", "zz-following", "partial", "late-ledger",
@@ -330,6 +332,8 @@ held = {row["pr"]: row["active"] for row in all_rows if row["ticket"] == "held"}
 assert held == {"work": True, "previous": True}, held
 assert rows["unreadable-hold"]["active"] and rows["unreadable-round"]["active"], rows
 assert not rows["gone"]["active"] and rows["gone"]["threads"][0]["state"] == "DEAD", rows["gone"]
+for ticket in ("legacy", "interrupted-dispatch"):
+    assert not rows[ticket]["active"] and rows[ticket]["threads"][0]["state"] == "PAST", rows[ticket]
 assert not any(k.startswith("_") for row in all_rows for k in row), all_rows
 manual = [row["last_activity"] for row in all_rows if row["ticket"] == "manual"]
 assert len(manual) == 2 and len(set(manual)) == 1 and manual[0] > m["last_activity"], manual
@@ -392,11 +396,10 @@ PY
     gc_has "$T/gc-preview" research '预览 no_commits'; then
     ok "单票 PID 文件不可读时跳过，其他票继续输出且预览退出 0"
   else bad "PID 文件读取失败阻断预览" "$(cat "$T/gc-preview")"; fi
-  for id in gone cancelled engine-down timed-out thread-busy; do
+  for id in gone cancelled engine-down timed-out thread-busy legacy interrupted-dispatch; do
     gc_check "$T/gc-preview" "$id" '跳过 never_dispatched'
   done
   gc_check "$T/gc-preview" successful-then-down '预览 no_commits'
-  gc_check "$T/gc-preview" legacy '预览 no_commits'
   gc_check "$T/gc-preview" recheck-round '预览 no_commits'
   gc_check "$T/gc-preview" shared '跳过 shared_worktree'
   gc_check "$T/gc-preview" ambiguous '跳过 pr_ambiguous'
@@ -607,12 +610,11 @@ PY2
   gc_check "$T/gc-force" late-check '跳过 recent_activity'
   gc_check "$T/gc-force" held '跳过 pid_unverifiable'
   gc_check "$T/gc-force" late-hold '跳过 pid_unverifiable'
-  for id in gone cancelled engine-down timed-out thread-busy; do
+  for id in gone cancelled engine-down timed-out thread-busy legacy interrupted-dispatch; do
     gc_check "$T/gc-force" "$id" '跳过 never_dispatched'
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 保留 worktree" || bad "gc $id 目录丢失"
   done
   gc_check "$T/gc-force" successful-then-down '已回收 no_commits'
-  gc_check "$T/gc-force" legacy '已回收 no_commits'
   gc_check "$T/gc-force" recheck-round '跳过 never_dispatched'
   [ -d "$GC_PROJECT/.claude/worktrees/foreman-recheck-round" ] && ok "gc 锁内复核发现成功轮次已失效并保留 worktree" ||
     bad "gc 锁内成功轮次复核未保护 worktree"

@@ -1098,8 +1098,6 @@ def pid_unverifiable(pid_path):
 
 
 def completed_round(prefix, state):
-    if state == "PAST":
-        return True
     if state not in ("DONE", "CHECKING"):
         return False
     try:
