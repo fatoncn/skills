@@ -152,6 +152,13 @@ $FOREMAN list --json --all-projects
 
 `gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因。末行汇总预览、已回收、跳过和部分回收的数量。查询网络或认证失败记为 `gh_query_failed`，跳过该条。遇到账本读取或写入等内部错误时退出非 0。worktree 已删除但账本写入失败会以原登记身份报告 `部分回收 ledger_update_failed`。
 
+以下原因在有诊断时额外向 stderr 输出一行，保留 stdout 的逐条判定格式。外部命令诊断取 stderr 末行并脱敏。GitHub 查询仅记录异常类别和可用的退出码，超时以 `TimeoutExpired` 标识。
+
+- 运行与账本：`internal_error`、`ledger_error`、`ledger_update_failed`。
+- 项目配置：`missing_project_config`、`project_config_error`、`project_root_unavailable`。
+- Git 和目录检查：`git_status_failed`、`git_refs_unavailable`、`worktree_remove_failed`、`fetch_failed`、`base_missing`、`base_changed`、`invalid_worktree`、`repo_mismatch`、`worktree_mismatch`、`worktree_changed`。
+- GitHub 查询：`gh_query_failed`。
+
 候选需要没有 `RUNNING`、`QUEUED`、`WAITING` 或 `CHECKING` 的轮次，且达到闲置阈值。GC 和 `list --json` 会额外保护 PID 无法核实的登记。对判为 `DEAD` 且无退出码的轮次，以及票下的 hold，读取各自的 PID 文件并用 `os.kill(pid, 0)` 只读复核。PID 文件不可读或探测返回 `EPERM` 时，索引标记 `active: true`，GC 按 `pid_unverifiable` 跳过。轮次只保护它所属的 PR。票下任一 hold 的 PID 无法核实时，保护该票的全部 PR。轮次状态字段沿用原有判定。以下时间都计入最后活动时间，取其中最晚的一项。
 
 - PR 登记时间。旧登记缺时间时取票创建时间，再缺则取 `meta.json` 的 mtime。

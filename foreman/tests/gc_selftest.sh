@@ -76,6 +76,7 @@ if [ "${1:-}" = -C ]; then
       fi ;;
     fetch)
       if [ "${2##*/}" = foreman-base-fetch-fail ] && [ "${GC_INJECT:-}" = 1 ]; then
+        echo 'fatal: fixture fetch failed for https://u:mock-fetch-value@example.invalid/r.git' >&2
         exit 128
       fi
       if [ -n "${GC_SNAPSHOT:-}" ]; then
@@ -562,6 +563,10 @@ PY2
   gc_check "$T/gc-force" research '已回收 no_commits'
   gc_check "$T/gc-force" base-gone '跳过 base_missing'
   gc_check "$T/gc-force" base-fetch-fail '跳过 fetch_failed'
+  if grep -Eq 'ticket=base-fetch-fail .* fetch_failed: fatal: fixture fetch failed for \[远端地址已省略\]$' "$T/gc-force-errors" &&
+    ! grep -Fq 'mock-fetch-value' "$T/gc-force" "$T/gc-force-errors"; then
+    ok "gc fetch_failed 打印脱敏的 git 诊断"
+  else bad "gc fetch_failed 未打印脱敏诊断"; fi
   for id in base-gone base-fetch-fail; do
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 保留 worktree" || bad "gc $id 目录丢失"
     touch "$GC_PROJECT/.claude/worktrees/foreman-$id/.git"
@@ -578,6 +583,10 @@ PY2
   else bad "gc 关闭未合并 PR 分支丢失或目录未回收"; fi
   gc_check "$T/gc-force" race '跳过 recent_activity'
   gc_check "$T/gc-force" gh-fail '跳过 gh_query_failed'
+  if grep -Eq 'ticket=gh-fail .* gh_query_failed: gh CalledProcessError exit=1$' "$T/gc-force-errors" &&
+    ! grep -Fq 'mock-gh-value' "$T/gc-force" "$T/gc-force-errors"; then
+    ok "gc gh_query_failed 输出退出分类且隐藏 gh 原始诊断"
+  else bad "gc gh_query_failed 分类或保密断言失败"; fi
   gc_check "$T/gc-force" unpushed '跳过 unpushed'
   gc_check "$T/gc-force" late-shared '跳过 shared_worktree'
   gc_check "$T/gc-force" head-change '跳过 worktree_changed'

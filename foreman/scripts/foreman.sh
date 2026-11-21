@@ -2483,8 +2483,11 @@ cleanup_reject() {
 
 cleanup_require_clean() {
   local mode="${1:-}" status
-  if ! status="$(git -C "$PR_WT" status --porcelain --untracked-files=all 2>/dev/null)" && [ "$mode" = gc ]; then
-    cleanup_reject "$mode" git_status_failed "git status 失败: $PR_WT"
+  if [ "$mode" = gc ]; then
+    status="$(git -C "$PR_WT" status --porcelain --untracked-files=all)" ||
+      cleanup_reject "$mode" git_status_failed "git status 失败: $PR_WT"
+  else
+    status="$(git -C "$PR_WT" status --porcelain --untracked-files=all 2>/dev/null)" || true
   fi
   [ -z "$status" ] || cleanup_reject "$mode" dirty "worktree 有未提交改动，拒绝删除: $PR_WT"
 }
@@ -2502,7 +2505,8 @@ gc_git_with_timeout() {
   python3 -c 'import subprocess, sys
 try:
     sys.exit(subprocess.run(["git", *sys.argv[2:]], timeout=int(sys.argv[1])).returncode)
-except (OSError, subprocess.TimeoutExpired):
+except (OSError, subprocess.TimeoutExpired) as exc:
+    print(f"git {type(exc).__name__}", file=sys.stderr)
     sys.exit(1)' "$@"
 }
 
@@ -2521,8 +2525,12 @@ cleanup_require_pushed() {
     git -C "$PR_WT" fetch --prune origin "$PR_BASE" --quiet || cleanup_reject "$mode" fetch_failed "$fetch_error"
   fi
   if [ "$proof" = no_commits ]; then
-    git -C "$PR_WT" merge-base --is-ancestor "$commit" "refs/remotes/origin/$PR_BASE" ||
+    local ancestor_rc=0
+    git -C "$PR_WT" merge-base --is-ancestor "$commit" "refs/remotes/origin/$PR_BASE" || ancestor_rc=$?
+    if [ "$ancestor_rc" -ne 0 ]; then
+      [ "$ancestor_rc" -ne 1 ] || printf '%s\n' "HEAD 不再是刷新后基线的祖先提交" >&2
       cleanup_reject "$mode" base_changed "更新后无法确认分支没有超出基线的提交"
+    fi
   fi
   if [ "$mode" = gc ]; then
     unpushed="$(cleanup_unpushed_count gc "$commit")" ||
@@ -2579,7 +2587,11 @@ cleanup_apply() { # 调用者已持 runs lock，并完成 worktree 检查
 
 # ---------- gc ----------
 
-gc_skip() { printf '%s\n' "$1"; exit 1; }
+gc_skip() {
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" >&2; fi
+  printf '%s\n' "$1"
+  exit 1
+}
 
 gc_git_context() {
   local top git_dir
@@ -2663,7 +2675,12 @@ try:
         if type(pr_number) is not int or pr_number <= 0 or (number and str(pr_number) != number):
             raise ValueError()
         print(f"pr_{pr['state'].lower()} {pr_number}")
-except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+    # 不回显 gh 的 argv、响应或 stderr。
+    category = type(exc).__name__
+    if isinstance(exc, subprocess.CalledProcessError):
+        category += f" exit={exc.returncode}"
+    print(f"gh {category}", file=sys.stderr)
     print("gh_query_failed")
 PY2
 }
@@ -2677,9 +2694,11 @@ gc_check_registration() {
 
 gc_pre_release_guard() {
   # 先完成可能拒绝回收的复核，避免跳过时释放空闲 hold。
-  local reason
+  local reason current_query
   if [ "$proof" != no_commits ]; then
-    [ "$(gc_github_state "$gh" "$gh_pr" "$head")" = "$query" ] || gc_skip pr_changed
+    current_query="$(gc_github_state "$gh" "$gh_pr" "$head")"
+    [ "$current_query" != gh_query_failed ] || gc_skip gh_query_failed
+    [ "$current_query" = "$query" ] || gc_skip pr_changed
   fi
   reason="$(python3 "$PY_SUMMARIZE" --gc-owners "$FOREMAN_ROOT/projects" "$dir/meta.json" \
     "$pr" "$identity" "$wt" "$branch" "$base" "$gh_pr")" || gc_skip ledger_error
@@ -2704,9 +2723,11 @@ gc_registration() {
   PR_NAME="$pr"; PR_WT="$wt"; PR_BRANCH="$branch"; PR_BASE="$base"; PR_HERE=""; IN_GIT=1
   unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GH_REPO
   export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GH_PROMPT_DISABLED=1
-  [ -f "$PROJECT_TOML" ] || gc_skip missing_project_config
+  [ -f "$PROJECT_TOML" ] ||
+    gc_skip missing_project_config "项目缺少 foreman.toml"
   PROJECT_ROOT="$(cfg project.root "")" || gc_skip project_config_error
-  [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT" ] || gc_skip project_root_unavailable
+  [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT" ] ||
+    gc_skip project_root_unavailable "项目根目录不可用，请检查 project.root"
   [ "$(python3 "$PY_SUMMARIZE" --directory-id "$wt")" = "$identity" ] || gc_skip worktree_changed
   gc_git_context
   expected_common="$common"; expected_origin="$origin"
@@ -2761,6 +2782,7 @@ gc_scan() {
       IFS= read -r -d '' gh_pr && IFS= read -r -d '' identity &&
       IFS= read -r -d '' has_completed_round && IFS= read -r -d '' reason || die "gc: 账本扫描结果不完整"
     verdict=跳过
+    diagnostic=""
     if [ "$blocked" -eq 1 ] && [ -z "$reason" ]; then reason=ledger_incomplete; fi
     if [ -z "$reason" ]; then
       # 不把子任务放进 if 的条件，否则 Bash 会禁用整个子任务的 errexit。
@@ -2786,13 +2808,6 @@ gc_scan() {
       elif [ "$rc" -ne 1 ] || ! [[ "$reason" =~ ^[a-z_]+$ ]]; then
         reason=internal_error; internal=1
       fi
-      case "$reason" in
-        internal_error|ledger_error|ledger_update_failed|project_config_error|git_refs_unavailable|worktree_remove_failed)
-          if [ -n "$diagnostic" ]; then
-            printf 'gc: project=%q repo=%q ticket=%q pr=%q %s: %s\n' "$project" "$repo" "$ticket" "$pr" "$reason" \
-              "$(printf '%s' "$diagnostic" | gc_diagnostic)" >&2
-          fi ;;
-      esac
     fi
     case "$reason" in
       ledger_error) internal=1; [ "$force" -eq 0 ] || blocked=1 ;;
@@ -2800,6 +2815,14 @@ gc_scan() {
     esac
     [ "$verdict" != 跳过 ] || skipped=$((skipped+1))
     printf 'project=%q repo=%q ticket=%q pr=%q worktree=%q %s %s\n' "$project" "$repo" "$ticket" "$pr" "$wt" "$verdict" "$reason"
+    case "$reason" in
+      internal_error|ledger_error|ledger_update_failed|missing_project_config|project_config_error|project_root_unavailable|\
+      git_status_failed|git_refs_unavailable|worktree_remove_failed|fetch_failed|base_missing|base_changed|\
+      invalid_worktree|repo_mismatch|worktree_mismatch|worktree_changed|gh_query_failed)
+        if [ -n "$diagnostic" ] && diagnostic="$(printf '%s' "$diagnostic" | gc_diagnostic)" && [ -n "$diagnostic" ]; then
+          printf 'gc: project=%q repo=%q ticket=%q pr=%q %s: %s\n' "$project" "$repo" "$ticket" "$pr" "$reason" "$diagnostic" >&2
+        fi ;;
+    esac
   done
   printf '汇总 预览=%s 已回收=%s 跳过=%s 部分回收=%s\n' "$previews" "$reclaimed" "$skipped" "$partial"
   return "$internal"
