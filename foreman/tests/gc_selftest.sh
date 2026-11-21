@@ -63,7 +63,7 @@ if [ "${1:-}" = -C ]; then
     rev-list)
       if [ "${GC_SECRET_DIAGNOSTICS:-}" = 1 ]; then
         case "${2##*/}" in
-          foreman-merged) echo 'fatal: token=mock-secret-1' >&2; exit 128 ;;
+          foreman-merged) echo 'fatal: token=mock-value-1' >&2; exit 128 ;;
           foreman-closed) echo 'fatal: cannot access https://u:mock-value-2@example.invalid/r.git' >&2; exit 128 ;;
           foreman-gh-fail) echo 'git -c http.https://example.invalid/.extraheader=Authorization: Basic mock-value-3 fetch' >&2; exit 128 ;;
         esac
@@ -358,7 +358,7 @@ PY
   if [ "$preview_rc" -eq 0 ] &&
     gc_has "$T/gc-secret-preview" merged '跳过 git_refs_unavailable' &&
     grep -Eq 'ticket=merged .* git_refs_unavailable: \[诊断含凭证标记，已省略\]$' "$T/gc-secret-errors" &&
-    ! grep -Fq 'mock-secret-1' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
+    ! grep -Fq 'mock-value-1' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
     ok "gc 诊断打印凭证字段占位且隐藏原值"
   else bad "gc 诊断凭证字段脱敏" "rc=$preview_rc"; fi
   if [ "$preview_rc" -eq 0 ] &&
