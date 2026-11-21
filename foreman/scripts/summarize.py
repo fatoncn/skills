@@ -17,9 +17,13 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
+import subprocess
 import time
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 
 from appserver_identity import TurnIdentity
 from check_state import check_result
@@ -955,8 +959,335 @@ def progress(log_path, state_path, label, status, progress_seconds, now=None, en
     return [_one_line(line, 500) for line in lines]
 
 
+ACTIVE_ROUND_STATES = {"RUNNING", "QUEUED", "WAITING", "CHECKING"}
+ROUND_NAME = re.compile(r"(run|review)-(\d+)")
+FOREMAN_SCRIPT = Path(__file__).with_name("foreman.sh")
+
+
+def repo_ledgers(projects, project="", repo=""):
+    for project_dir in sorted(projects.iterdir()) if projects.is_dir() else []:
+        if project and project_dir.name != project:
+            continue
+        issues = project_dir / "issues"
+        for ledger in sorted(issues.iterdir()) if issues.is_dir() else []:
+            if ledger.is_dir() and (not repo or ledger.name == repo):
+                yield ledger
+
+
+def read_marker(path):
+    try:
+        return path.read_text(encoding="utf-8").rstrip("\n")
+    except FileNotFoundError:
+        return ""
+
+
+def activity_time(value):
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def optional_stat(path):
+    try:
+        return os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def directory_id(info):
+    return (info.st_dev, info.st_ino) if info and stat.S_ISDIR(info.st_mode) else None
+
+
+def read_prs(meta_path):
+    with meta_path.open(encoding="utf-8") as handle:
+        meta = json.load(handle)
+        fallback_time = os.fstat(handle.fileno()).st_mtime
+    prs = meta.get("prs")
+    if prs is not None and not isinstance(prs, dict):
+        raise ValueError("invalid PR ledger")
+    prs = prs or ({"default": meta} if meta.get("worktree") else {})
+    for name, pr in prs.items():
+        if pr.get("worktree") is not None and not isinstance(pr["worktree"], str):
+            raise ValueError("invalid worktree path")
+        for value in (name, pr.get("worktree"), pr.get("branch"), pr.get("base"), pr.get("gh_pr")):
+            if "\0" in str(value):
+                raise ValueError("invalid ledger field")
+    return meta, prs, fallback_time
+
+
+def read_registrations(meta_path):
+    meta, prs, fallback_time = read_prs(meta_path)
+    if not prs:
+        return []
+    default_pr = meta.get("default_pr") or next(iter(prs))
+    thread_meta = meta.get("threads") or {}
+    thread_by_round = {stem: name for name, thread in thread_meta.items()
+                       for stem in thread.get("runs") or []}
+    issue_dir = meta_path.parent
+    rounds, hold_pids = {}, []
+    manual_check_time = 0
+    for path in issue_dir.iterdir():
+        stem, _, suffix = path.name.partition(".")
+        is_round = bool(suffix and ROUND_NAME.fullmatch(stem))
+        is_manual_check = path.name.startswith("check-") and path.suffix == ".log"
+        if not (is_round or is_manual_check):
+            if path.name.startswith("hold-") and path.is_dir():
+                hold_pids.append(path / "bridge.pid")
+            continue
+        info = optional_stat(path)
+        if info is None:
+            continue
+        if is_round:
+            rounds.setdefault(stem, []).append(info.st_mtime)
+        elif stat.S_ISREG(info.st_mode):
+            manual_check_time = max(manual_check_time, info.st_mtime)
+    grouped = {name: [] for name in prs}
+    for stem, times in rounds.items():
+        prefix = issue_dir / stem
+        name = read_marker(prefix.with_suffix(".pr")) or default_pr
+        if name not in prs:
+            continue
+        started = read_marker(prefix.with_suffix(".started"))
+        if re.fullmatch(r"[0-9]{1,11}", started.strip()):
+            times.append(int(started))
+        thread = (read_marker(prefix.with_suffix(".thread")) or thread_by_round.get(stem)
+                  or (stem if stem.startswith("review-") else "implement"))
+        grouped[name].append((prefix, thread, max(times)))
+    hold_pids = tuple(hold_pids)
+    rows = []
+    for name, pr in prs.items():
+        worktree = pr.get("worktree") or ""
+        created = activity_time(pr.get("created"))
+        if created is None:
+            created = activity_time(meta.get("created"))
+        identity = directory_id(optional_stat(worktree))
+        # git worktree add 创建 .git 指针；旧登记重建时它比 meta.created 更晚。
+        marker = optional_stat(Path(worktree) / ".git") if identity else None
+        created_worktree = marker.st_mtime if marker and stat.S_ISREG(marker.st_mode) else 0
+        last_activity = max([created if created is not None else fallback_time,
+                             manual_check_time, created_worktree] + [last for _, _, last in grouped[name]])
+        rows.append(({
+            "project": issue_dir.parents[2].name, "repo": issue_dir.parent.name,
+            "ticket": issue_dir.name, "pr": name, "worktree": worktree,
+            "exists": identity is not None, "_identity": identity, "branch": pr.get("branch") or "",
+            "base": pr.get("base") or "", "gh_pr": pr.get("gh_pr") or None,
+            "here": bool(pr.get("registered_here")) or name == "here",
+            "active": False, "_hold_pids": hold_pids, "last_activity": datetime.fromtimestamp(last_activity, timezone.utc).isoformat(),
+            "threads": [],
+        }, grouped[name], thread_meta))
+    return rows
+
+
+def pid_unverifiable(pid_path):
+    try:
+        pid = int(read_marker(pid_path))
+    except ValueError:
+        return False
+    except OSError:
+        return True
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OverflowError):
+        pass
+    return False
+
+
+def completed_round(prefix, state):
+    if state not in ("DONE", "CHECKING"):
+        return False
+    try:
+        return read_marker(prefix.with_suffix(".rc")) == "0"
+    except (OSError, UnicodeError):
+        return False
+
+
+def with_round_states(registrations, gc=False):
+    stems = [prefix for _, rounds, _ in registrations for prefix, _, _ in rounds]
+    states = {}
+    if stems:
+        result = subprocess.run(["bash", str(FOREMAN_SCRIPT), "__list_round_states"],
+                                input=b"".join(os.fsencode(prefix) + b"\0" for prefix in stems),
+                                stdout=subprocess.PIPE, check=True)
+        states = dict(zip(stems, result.stdout.decode("ascii").splitlines(), strict=True))
+    hold_protection = {}
+    for row, rounds, thread_meta in registrations:
+        hold_pids = row.pop("_hold_pids")
+        if hold_pids not in hold_protection:
+            hold_protection[hold_pids] = any(pid_unverifiable(path) for path in hold_pids)
+        unverifiable = hold_protection[hold_pids]
+        latest = {}
+        if gc:
+            row["_has_completed_round"] = any(completed_round(prefix, states[prefix]) for prefix, _, _ in rounds)
+        for prefix, name, _ in rounds:
+            state = states[prefix]
+            row["active"] |= state in ACTIVE_ROUND_STATES
+            if state == "DEAD" and not prefix.with_suffix(".rc").exists():
+                unverifiable |= pid_unverifiable(prefix.with_suffix(".pid"))
+            if name not in latest or int(prefix.name.rsplit("-", 1)[1]) > int(latest[name].name.rsplit("-", 1)[1]):
+                latest[name] = prefix
+        row["_pid_unverifiable"] = unverifiable
+        row["active"] |= unverifiable
+        for name, prefix in sorted(latest.items()):
+            thread = thread_meta.get(name, {})
+            row["threads"].append({
+                "name": name,
+                "engine": thread.get("engine") or read_marker(prefix.with_suffix(".engine")) or "codex",
+                "role": thread.get("role") or read_marker(prefix.with_suffix(".role")) or (
+                    "review" if prefix.name.startswith("review-") else "implement"),
+                "round": prefix.name,
+                "state": states[prefix],
+            })
+    return [row for row, _, _ in registrations]
+
+
+def worktree_index(projects, project="", repo=""):
+    registrations, errors = scan_ledgers(projects, read_registrations, project, repo)
+    for location, error in errors:
+        report_ledger_error("list --json", location, error)
+    rows = with_round_states(registrations)
+    for row in rows:
+        del row["_identity"], row["_pid_unverifiable"]
+    return rows
+
+
+def gc_ledger_reason(row, cutoff):
+    if row["repo"] == "_nogit":
+        return "non_git"
+    if row["here"]:
+        return "here"
+    if row["_pid_unverifiable"]:
+        return "pid_unverifiable"
+    if row["active"]:
+        return "active"
+    if not row["exists"]:
+        return "missing_worktree"
+    if activity_time(row["last_activity"]) > cutoff:
+        return "recent_activity"
+    return ""
+
+
+LEDGER_READ_ERRORS = (OSError, ValueError, TypeError, AttributeError)
+
+
+def scan_ledgers(projects, read, project_filter="", repo_filter=""):
+    """Collect readable ticket ledgers and errors without aborting the scan."""
+    result, errors = [], []
+
+    def directories(parent, location, selected=""):
+        try:
+            paths = sorted(parent.iterdir())
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            errors.append((location, type(exc).__name__))
+            return
+        for path in paths:
+            if selected and path.name != selected:
+                continue
+            try:
+                is_dir = directory_id(optional_stat(path)) is not None
+            except OSError as exc:
+                errors.append(((*location, path.name), type(exc).__name__))
+                continue
+            if is_dir:
+                yield path
+
+    for project in directories(projects, (), project_filter):
+        for repo in directories(project / "issues", (project.name,), repo_filter):
+            for ticket in directories(repo, (project.name, repo.name)):
+                meta_path = ticket / "meta.json"
+                try:
+                    meta_path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    errors.append(((project.name, repo.name, ticket.name), type(exc).__name__))
+                    continue
+                try:
+                    result.extend(read(meta_path))
+                except LEDGER_READ_ERRORS as exc:
+                    errors.append(((project.name, repo.name, ticket.name), type(exc).__name__))
+    return result, errors
+
+
+def report_ledger_error(command, location, error):
+    ledger = "/".join(location) or "projects"
+    print(f"{command}: ledger_error {ascii(ledger)} ({error})", file=sys.stderr)
+
+
+def gc_index(projects, project, cutoff, force):
+    registrations, errors = scan_ledgers(projects, read_registrations)
+    paths = Counter(row["_identity"] for row, _, _ in registrations if row["exists"])
+    selected = [entry for entry in registrations if not project or entry[0]["project"] == project]
+    rows = with_round_states(selected, gc=True)
+    fields = ("project", "repo", "ticket", "pr", "worktree", "branch", "base", "gh_pr")
+
+    payload = bytearray()
+
+    def emit(values, identity, has_completed_round, reason):
+        payload.extend(b"".join(os.fsencode(value) + b"\0"
+                               for value in [*values, str(identity or ""), str(int(has_completed_round)), reason]))
+
+    for location, error in errors:
+        report_ledger_error("gc", location, error)
+        emit([*location, *([""] * (len(fields) - len(location)))], None, False, "ledger_error")
+    for row in rows:
+        identity = row["_identity"]
+        reason = "ledger_incomplete" if force and errors else gc_ledger_reason(row, cutoff)
+        if not reason and paths[identity] > 1:
+            reason = "shared_worktree"
+        emit([str(row[key] or "") for key in fields], identity, row["_has_completed_round"], reason)
+    sys.stdout.buffer.write(payload)
+
+
+def gc_owners(projects, target, name, identity, worktree, branch, base, gh_pr):
+    def read(meta_path):
+        _, prs, _ = read_prs(meta_path)
+        return [(meta_path, pr_name, pr, directory_id(optional_stat(pr.get("worktree") or "")))
+                for pr_name, pr in prs.items()]
+
+    owners, errors = scan_ledgers(projects, read)
+    if errors:
+        report_ledger_error("gc", *errors[0])
+        return "ledger_error"
+    matches = [owner for owner in owners if str(owner[3]) == identity]
+    if len(matches) > 1:
+        return "shared_worktree"
+    if not matches:
+        return "worktree_changed"
+    meta_path, pr_name, pr, _ = matches[0]
+    actual = (meta_path, pr_name, pr.get("worktree"), pr.get("branch") or "",
+              pr.get("base") or "", str(pr.get("gh_pr") or ""))
+    if actual != (target, name, worktree, branch, base, gh_pr) or pr.get("registered_here"):
+        return "registration_changed"
+    return ""
+
+
+def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr, proof):
+    try:
+        registrations = read_registrations(meta_path)
+    except FileNotFoundError:
+        return "registration_changed"
+    rows = with_round_states([entry for entry in registrations if entry[0]["pr"] == pr], gc=True)
+    if not rows:
+        return "registration_changed"
+    row = rows[0]
+    if (row["worktree"], row["branch"], row["base"], str(row["gh_pr"] or "")) != (worktree, branch, base, gh_pr):
+        return "registration_changed"
+    reason = gc_ledger_reason(row, cutoff)
+    if not reason and proof == "no_commits" and not row["_has_completed_round"]:
+        return "never_dispatched"
+    return reason
+
+
 def listing(issues_home: str) -> int:
     rows = []
+    thread_rows = []
     for name in sorted(os.listdir(issues_home)):
         issue_dir = os.path.join(issues_home, name)
         meta_path = os.path.join(issue_dir, "meta.json")
@@ -1014,6 +1345,10 @@ def listing(issues_home: str) -> int:
             spend += (" +" if spend else "") + f"{claude_tokens // 1000}k claude tok"
         rows.append((name, branch, base, meta.get("gh_issue", "—"), "".join(engines) or "—",
                      spend or "—", check, last, "有" if os.path.isdir(worktree) else "已清理"))
+        threads = meta.get("threads") or {}
+        parts = [f"{name}[{t.get('role', '?')}/{t.get('engine', '?')}×{len(t.get('runs') or [])}]"
+                 for name, t in threads.items()]
+        thread_rows.append(f"  {name:16} 分支 {branch:40} 线程: {' '.join(parts) or '（无）'}")
     if not rows:
         print("（没有登记的 issue）")
         return 0
@@ -1026,11 +1361,38 @@ def listing(issues_home: str) -> int:
         print(line(row))
     print("\nruns 列每字符代表一轮: a=codex app-server, p=pi, l=claude, ?=未知（按轮次顺序）")
     print("codex 走 ChatGPT 订阅额度，没有美元成本，只计 token。")
+    print("\n--- 票 → 线程（角色 / 引擎 / 轮次）---")
+    print("\n".join(thread_rows))
     return 0
 
 
 if __name__ == "__main__":
     argv = sys.argv[1:]
+    if argv and argv[0] == "--list-all":
+        ledgers = list(repo_ledgers(Path(argv[1])))
+        if not ledgers:
+            print("（没有登记的 issue）")
+        for ledger in ledgers:
+            print(f"\n=== {ledger.parents[1].name} / {ledger.name} ===")
+            listing(str(ledger))
+        sys.exit(0)
+    if argv and argv[0] == "--worktree-index":
+        print(json.dumps(worktree_index(Path(argv[1]), *argv[2:]), ensure_ascii=False))
+        sys.exit(0)
+    if argv and argv[0] == "--gc-index":
+        gc_index(Path(argv[1]), argv[2], float(argv[3]), argv[4] == "1")
+        sys.exit(0)
+    if argv and argv[0] == "--gc-owners":
+        print(gc_owners(Path(argv[1]), Path(argv[2]), *argv[3:]))
+        sys.exit(0)
+    if argv and argv[0] == "--directory-id":
+        identity = directory_id(optional_stat(argv[1]))
+        if identity:
+            print(identity)
+        sys.exit(0)
+    if argv and argv[0] == "--gc-recheck":
+        print(gc_recheck(Path(argv[1]), argv[2], float(argv[3]), *argv[4:]))
+        sys.exit(0)
     engine = None
     role = None
     for flag in ("--engine", "--role"):

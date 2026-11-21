@@ -691,6 +691,9 @@ m["prs"]["here"].update({"branch":"new-branch","base":"new-base"}); json.dump(m,
 PY2
 list48_mixed="$("$F" list)"; list48_mixed_row="$(printf '%s\n' "$list48_mixed" | grep '^48 ' | head -1)"
 if printf '%s\n' "$list48_mixed_row" | grep -Eq '^48 +new-branch +new-base ' && printf '%s\n' "$list48_mixed" | grep -Eq '^  48 +分支 new-branch +' && ! printf '%s\n' "$list48_mixed" | grep -q 'old-branch'; then ok "list 两张表以新版选中 PR 覆盖旧顶层字段"; else bad "list 新旧账本优先级" "$list48_mixed"; fi
+echo "== worktree 回收与跨项目索引 =="
+source "$SKILL_DIR/tests/gc_selftest.sh"
+gc_caller_dir="$PWD"; gc_selftest; cd "$gc_caller_dir" || exit 1
 echo "== 守卫 =="
 python3 - "$FOREMAN_HOME/config.toml" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r'(?m)^thread_name = .*$', 'thread_name = "x {ids}"', s); open(p,'w').write(s)
@@ -708,6 +711,7 @@ expect_grep "项目 toml 语法错误被拦" "语法错误" "$F" status
 python3 -c 'import sys; p=sys.argv[1]; s=open(p).read().replace("\n[broken\n",""); open(p,"w").write(s)' "$ptoml"
 mkdir -p "$T/other/proj/r"; echo "# rules" > "$T/other/proj/AGENTS.md"; git -C "$T/other/proj/r" init -q -b main; git -C "$T/other/proj/r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 expect_grep "同名项目目录撞车被拒" "撞车" bash -c "cd '$T/other/proj/r' && '$F' here 9"
+expect_grep "list --json 同名项目目录撞车被拒" "撞车" bash -c "cd '$T/other/proj/r' && '$F' list --json"
 echo "== 摘要器探针 =="
 cat > "$T/probe.jsonl" <<EOF2
 {"_fleet":"thread","threadId":"t1","model":"m","reasoningEffort":"low","cwd":"/workspace/proj","workDir":"/workspace/proj/app"}
