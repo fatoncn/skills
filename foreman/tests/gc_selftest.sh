@@ -95,6 +95,11 @@ if [ "${1:-}" = -C ]; then
             mkdir -p "$(dirname "$GC_LATE_HOLD")"
             printf '88888804\n' > "$GC_LATE_HOLD"
             exit 0 ;;
+          foreman-recheck-round)
+            "$GC_REAL_GIT" "$@"
+            printf '4' > "$GC_RECHECK_ROUND"
+            touch -t 202001010000 "$GC_RECHECK_ROUND"
+            exit 0 ;;
           foreman-late-check)
             "$GC_REAL_GIT" "$@"
             printf 'check started\n' > "$GC_CHECK_LOG_DIR/check-late-fixture.log"
@@ -177,7 +182,8 @@ SH
   ledger="$FOREMAN_HOME/projects/gc project/issues/${T##*/}--gc-origin"
   for id in merged active unpushed recent research gh-fail missing race closed dirty protected \
     shared late-shared head-change late-dirty ambiguous reopened recreated manual partial narrow late-ledger zz-following \
-    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error base-fetch-fail; do
+    late-check push-snapshot check-lock held gone late-hold unreadable-hold unreadable-round never internal-error base-fetch-fail \
+    cancelled engine-down timed-out thread-busy successful-then-down legacy recheck-round; do
     "$F" bootstrap "$id" --pr work --branch "feat/gc-$id" --no-install >/dev/null 2>&1 ||
       { bad "gc bootstrap $id"; return; }
     wt="$GC_PROJECT/.claude/worktrees/foreman-$id"
@@ -243,11 +249,19 @@ for d in ledger.iterdir():
                  "run-2.thread": "blocked"},
         "unreadable-round": {"run-1.argv": "", "run-1.pid": "88888803"},
         "gone": {"run-1.argv": "", "run-1.pid": "88888803", "run-1.thread": "exited"},
+        "closed": {"run-1.cancelled": "", "run-1.rc": "130"},
+        "cancelled": {"run-1.cancelled": "", "run-1.rc": "0"},
+        "engine-down": {"run-1.rc": "4"},
+        "timed-out": {"run-1.rc": "143"},
+        "thread-busy": {"run-1.rc": "5"},
+        "successful-then-down": {"review-1.rc": "0", "review-1.thread": "fixture",
+                                 "run-2.rc": "4", "run-2.thread": "fixture"},
+        "legacy": {"run-1.jsonl": "legacy log"},
         "late-hold": {"run-1.thread": "blocked", "run-1.rc": "0"},
     }
     if d.name in {"research", "narrow", "zz-following", "partial", "late-ledger",
                   "late-shared", "head-change", "late-dirty", "late-check", "internal-error", "base-gone",
-                  "base-fetch-fail"}:
+                  "base-fetch-fail", "recheck-round"}:
         fixtures[d.name] = {"run-1.rc": "0"}
     for name, value in fixtures.get(d.name, {}).items():
         f = d / name
@@ -350,7 +364,12 @@ PY
     gc_has "$T/gc-preview" research '预览 no_commits'; then
     ok "单票 PID 文件不可读时跳过，其他票继续输出且预览退出 0"
   else bad "PID 文件读取失败阻断预览" "$(cat "$T/gc-preview")"; fi
-  gc_check "$T/gc-preview" gone '预览 no_commits'
+  for id in gone cancelled engine-down timed-out thread-busy; do
+    gc_check "$T/gc-preview" "$id" '跳过 never_dispatched'
+  done
+  gc_check "$T/gc-preview" successful-then-down '预览 no_commits'
+  gc_check "$T/gc-preview" legacy '预览 no_commits'
+  gc_check "$T/gc-preview" recheck-round '预览 no_commits'
   gc_check "$T/gc-preview" shared '跳过 shared_worktree'
   gc_check "$T/gc-preview" ambiguous '跳过 pr_ambiguous'
   gc_check "$T/gc-preview" recreated '跳过 recent_activity'
@@ -511,7 +530,7 @@ PY2
   printf '%s\n' "$reopened_pid" > "$reopened_hold/bridge.pid"
   mkdir "$ledger/internal-error/.runs.lock"
   GC_RACE=1 GC_INJECT=1 GC_CHECK_LOG_DIR="$ledger/late-check" GC_SNAPSHOT="$T/gc-snapshot" \
-    GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force" 2> "$T/gc-force-errors"; force_rc=$?
+    GC_RECHECK_ROUND="$ledger/recheck-round/run-1.rc" GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force" 2> "$T/gc-force-errors"; force_rc=$?
   if [ "$force_rc" -eq 1 ] && ! grep -q 'project=gc-nogit' "$T/gc-force" &&
     gc_has "$T/gc-force" internal-error '跳过 internal_error' &&
     grep -Eq 'ticket=internal-error .* internal_error: .*\.runs\.lock: Is a directory' "$T/gc-force-errors" &&
@@ -553,7 +572,15 @@ PY2
   gc_check "$T/gc-force" late-check '跳过 recent_activity'
   gc_check "$T/gc-force" held '跳过 pid_unverifiable'
   gc_check "$T/gc-force" late-hold '跳过 pid_unverifiable'
-  gc_check "$T/gc-force" gone '已回收 no_commits'
+  for id in gone cancelled engine-down timed-out thread-busy; do
+    gc_check "$T/gc-force" "$id" '跳过 never_dispatched'
+    [ -d "$GC_PROJECT/.claude/worktrees/foreman-$id" ] && ok "gc $id 保留 worktree" || bad "gc $id 目录丢失"
+  done
+  gc_check "$T/gc-force" successful-then-down '已回收 no_commits'
+  gc_check "$T/gc-force" legacy '已回收 no_commits'
+  gc_check "$T/gc-force" recheck-round '跳过 never_dispatched'
+  [ -d "$GC_PROJECT/.claude/worktrees/foreman-recheck-round" ] && ok "gc 锁内复核发现成功轮次已失效并保留 worktree" ||
+    bad "gc 锁内成功轮次复核未保护 worktree"
   if [ "$(grep -c ' ticket=held .* 跳过 pid_unverifiable$' "$T/gc-force")" -eq 2 ] &&
     [ -d "$GC_PROJECT/.claude/worktrees/foreman-held-previous" ] &&
     [ ! -e "$ledger/held/hold-blocked/release" ] && [ ! -e "$ledger/late-hold/hold-blocked/release" ]; then

@@ -159,7 +159,7 @@ $FOREMAN list --json --all-projects
 - worktree 根目录下 Git 创建的 `.git` 指针文件的 mtime。旧登记重建 worktree 时据此重新计闲置期。
 - 票目录内手动 `foreman check` 的 `check-*.log` 最新 mtime，对该票所有 PR 生效。手动 check 在票锁内确认 PR 登记和目录身份，写出开始日志后释放锁，再运行验收命令。
 
-没有超出 `origin/<base>` 的提交且已有 run 或 review 轮次时可作为候选。尚无轮次的登记按 `never_dispatched` 跳过。执行时用显式源、目标 refspec 刷新登记的 base。刷新失败时，远端确认基线分支已不存在则按 `base_missing` 跳过，其余按 `fetch_failed` 跳过。祖先与未推送检查都使用首次记录的 HEAD OID，删除前再核对检出仍指向该 OID。其他候选使用项目或仓库配置的 `github.gh`，并从 origin 固定 `GH_HOST`。无法确定主机、origin 是文件 URL 或 HTTP(S) 地址带显式端口时，按 `unknown_host` 跳过。优先查账本记录的 PR 号码，允许该 PR 更换 base。没有号码时按同仓库 head 和登记 base 查至多两条，多于一条按 `pr_ambiguous` 跳过。两种查询都要求 `MERGED` 或 `CLOSED`，并与本地 head 分支及首次记录的 HEAD OID 一致。执行时在票的轮次锁内重查 PR，结果变化时跳过。
+没有超出 `origin/<base>` 的提交且至少一轮 run 或 review 正常结束时可作为候选。退出码为 0 的未取消轮次，以及状态为 `PAST` 的旧格式日志轮次，均算正常结束。没有正常结束轮次的登记按 `never_dispatched` 跳过。执行时用显式源、目标 refspec 刷新登记的 base。刷新失败时，远端确认基线分支已不存在则按 `base_missing` 跳过，其余按 `fetch_failed` 跳过。祖先与未推送检查都使用首次记录的 HEAD OID，删除前再核对检出仍指向该 OID。其他候选使用项目或仓库配置的 `github.gh`，并从 origin 固定 `GH_HOST`。无法确定主机、origin 是文件 URL 或 HTTP(S) 地址带显式端口时，按 `unknown_host` 跳过。优先查账本记录的 PR 号码，允许该 PR 更换 base。没有号码时按同仓库 head 和登记 base 查至多两条，多于一条按 `pr_ambiguous` 跳过。两种查询都要求 `MERGED` 或 `CLOSED`，并与本地 head 分支及首次记录的 HEAD OID 一致。执行时在票的轮次锁内重查 PR，结果变化时跳过。
 
 非 Git、`here`、多条登记共用的目录以及已经不存在的目录都会跳过。共用判断采用目录的设备号和 inode。初次全局扫描发现账本读取失败时，仍可预览可读登记。即使指定了 `--project`，其他项目的账本错误也会显示。执行模式下所有登记停止回收，退出码非 0。执行时先扫描所有项目的登记，核对目录是否仍独占并重新计算最后活动时间，闲置不足时按 `recent_activity` 跳过。复核通过后释放空闲 hold，并在删除前再次比较目录身份、common gitdir、完整 symbolic HEAD 和 HEAD OID。最终扫描发现新的读取错误时会保留当前和后续目录。
 

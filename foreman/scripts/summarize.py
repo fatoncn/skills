@@ -1097,7 +1097,18 @@ def pid_unverifiable(pid_path):
     return False
 
 
-def with_round_states(registrations):
+def completed_round(prefix, state):
+    if state == "PAST":
+        return True
+    if state not in ("DONE", "CHECKING"):
+        return False
+    try:
+        return read_marker(prefix.with_suffix(".rc")) == "0"
+    except (OSError, UnicodeError):
+        return False
+
+
+def with_round_states(registrations, gc=False):
     stems = [prefix for _, rounds, _ in registrations for prefix, _, _ in rounds]
     states = {}
     if stems:
@@ -1112,6 +1123,8 @@ def with_round_states(registrations):
             hold_protection[hold_pids] = any(pid_unverifiable(path) for path in hold_pids)
         unverifiable = hold_protection[hold_pids]
         latest = {}
+        if gc:
+            row["_has_completed_round"] = any(completed_round(prefix, states[prefix]) for prefix, _, _ in rounds)
         for prefix, name, _ in rounds:
             state = states[prefix]
             row["active"] |= state in ACTIVE_ROUND_STATES
@@ -1213,14 +1226,14 @@ def gc_index(projects, project, cutoff, force):
     registrations, errors = scan_ledgers(projects, read_registrations)
     paths = Counter(row["_identity"] for row, _, _ in registrations if row["exists"])
     selected = [entry for entry in registrations if not project or entry[0]["project"] == project]
-    rows = with_round_states(selected)
+    rows = with_round_states(selected, gc=True)
     fields = ("project", "repo", "ticket", "pr", "worktree", "branch", "base", "gh_pr")
 
     payload = bytearray()
 
-    def emit(values, identity, has_rounds, reason):
+    def emit(values, identity, has_completed_round, reason):
         payload.extend(b"".join(os.fsencode(value) + b"\0"
-                               for value in [*values, str(identity or ""), str(int(has_rounds)), reason]))
+                               for value in [*values, str(identity or ""), str(int(has_completed_round)), reason]))
 
     for location, error in errors:
         report_ledger_error("gc", location, error)
@@ -1230,7 +1243,7 @@ def gc_index(projects, project, cutoff, force):
         reason = "ledger_incomplete" if force and errors else gc_ledger_reason(row, cutoff)
         if not reason and paths[identity] > 1:
             reason = "shared_worktree"
-        emit([str(row[key] or "") for key in fields], identity, bool(row["threads"]), reason)
+        emit([str(row[key] or "") for key in fields], identity, row["_has_completed_round"], reason)
     sys.stdout.buffer.write(payload)
 
 
@@ -1262,14 +1275,14 @@ def gc_recheck(meta_path, pr, cutoff, worktree, branch, base, gh_pr, proof):
         registrations = read_registrations(meta_path)
     except FileNotFoundError:
         return "registration_changed"
-    rows = with_round_states([entry for entry in registrations if entry[0]["pr"] == pr])
+    rows = with_round_states([entry for entry in registrations if entry[0]["pr"] == pr], gc=True)
     if not rows:
         return "registration_changed"
     row = rows[0]
     if (row["worktree"], row["branch"], row["base"], str(row["gh_pr"] or "")) != (worktree, branch, base, gh_pr):
         return "registration_changed"
     reason = gc_ledger_reason(row, cutoff)
-    if not reason and proof == "no_commits" and not row["threads"]:
+    if not reason and proof == "no_commits" and not row["_has_completed_round"]:
         return "never_dispatched"
     return reason
 

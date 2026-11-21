@@ -2696,7 +2696,7 @@ gc_final_guard() {
 
 gc_registration() {
   local project="$1" repo="$2" ticket="$3" pr="$4" wt="$5" branch="$6" base="$7" gh_pr="$8"
-  local identity="$9" force="${10}" cutoff="${11}" has_rounds="${12}" origin common expected_origin expected_common
+  local identity="$9" force="${10}" cutoff="${11}" has_completed_round="${12}" origin common expected_origin expected_common
   local gh head proof query unpushed dir
   # 从账本和现存 git 检出恢复项目上下文，与调用者所在目录无关。
   PROJECT_DIR="$FOREMAN_ROOT/projects/$project"; PROJECT_TOML="$PROJECT_DIR/foreman.toml"
@@ -2715,7 +2715,7 @@ gc_registration() {
   unpushed="$(cleanup_unpushed_count gc "$head")" || gc_skip git_refs_unavailable
   [ "$unpushed" = 0 ] || gc_skip unpushed
   if git -C "$wt" merge-base --is-ancestor "$head" "refs/remotes/origin/$base"; then
-    [ "$has_rounds" = 1 ] || gc_skip never_dispatched
+    [ "$has_completed_round" = 1 ] || gc_skip never_dispatched
     proof=no_commits
   else
     gh="$(cfg github.gh gh)" || gc_skip project_config_error
@@ -2753,13 +2753,13 @@ print(line[:400])'
 }
 
 gc_scan() {
-  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr identity has_rounds reason result rc verdict diagnostic
+  local force="$1" cutoff="$2" project repo ticket pr wt branch base gh_pr identity has_completed_round reason result rc verdict diagnostic
   local skipped=0 previews=0 reclaimed=0 partial=0 internal=0 blocked=0
   while IFS= read -r -d '' project; do
     IFS= read -r -d '' repo && IFS= read -r -d '' ticket && IFS= read -r -d '' pr &&
       IFS= read -r -d '' wt && IFS= read -r -d '' branch && IFS= read -r -d '' base &&
       IFS= read -r -d '' gh_pr && IFS= read -r -d '' identity &&
-      IFS= read -r -d '' has_rounds && IFS= read -r -d '' reason || die "gc: 账本扫描结果不完整"
+      IFS= read -r -d '' has_completed_round && IFS= read -r -d '' reason || die "gc: 账本扫描结果不完整"
     verdict=跳过
     if [ "$blocked" -eq 1 ] && [ -z "$reason" ]; then reason=ledger_incomplete; fi
     if [ -z "$reason" ]; then
@@ -2768,7 +2768,7 @@ gc_scan() {
       # fd 3 保留子任务的 stdout，stderr 只取最后一行，禁止混入逐条输出。
       result="$(
         exec 3>&1
-        diagnostic="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$identity" "$force" "$cutoff" "$has_rounds") </dev/null 2>&1 >&3 )"
+        diagnostic="$( (set -e; gc_registration "$project" "$repo" "$ticket" "$pr" "$wt" "$branch" "$base" "$gh_pr" "$identity" "$force" "$cutoff" "$has_completed_round") </dev/null 2>&1 >&3 )"
         rc=$?
         diagnostic="${diagnostic##*$'\n'}"
         printf '\037%s\037%s' "$rc" "${diagnostic//$'\037'/}"
