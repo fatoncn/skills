@@ -64,7 +64,8 @@ if [ "${1:-}" = -C ]; then
       if [ "${GC_SECRET_DIAGNOSTICS:-}" = 1 ]; then
         case "${2##*/}" in
           foreman-merged) echo 'fatal: token=mock-secret-1' >&2; exit 128 ;;
-          foreman-closed) echo 'fatal: cannot access https://u:mock-secret-2@example.invalid/r.git' >&2; exit 128 ;;
+          foreman-closed) echo 'fatal: cannot access https://u:mock-value-2@example.invalid/r.git' >&2; exit 128 ;;
+          foreman-gh-fail) echo 'git -c http.https://example.invalid/.extraheader=Authorization: Basic mock-value-3 fetch' >&2; exit 128 ;;
         esac
       fi
       if [ "$2" = "${GC_REV_LIST_FAILURE_WT:-}" ]; then
@@ -359,9 +360,15 @@ PY
   if [ "$preview_rc" -eq 0 ] &&
     gc_has "$T/gc-secret-preview" closed '跳过 git_refs_unavailable' &&
     grep -Eq 'ticket=closed .* git_refs_unavailable: .*\[远端地址已省略\]$' "$T/gc-secret-errors" &&
-    ! grep -Fq 'mock-secret-2' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
+    ! grep -Fq 'mock-value-2' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
     ok "gc 诊断打印远端地址占位且隐藏 URL 凭证"
   else bad "gc 诊断远端地址脱敏" "rc=$preview_rc"; fi
+  if [ "$preview_rc" -eq 0 ] &&
+    gc_has "$T/gc-secret-preview" gh-fail '跳过 git_refs_unavailable' &&
+    grep -Eq 'ticket=gh-fail .* git_refs_unavailable: \[诊断含凭证标记，已省略\]$' "$T/gc-secret-errors" &&
+    ! grep -Fq 'mock-value-3' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
+    ok "gc 在替换 URL 前识别 extraheader 的 Authorization 并省略整行"
+  else bad "gc extraheader 诊断脱敏" "rc=$preview_rc"; fi
   gc_check "$T/gc-preview" merged '预览 pr_merged'
   gc_check "$T/gc-preview" active '跳过 active'
   gc_check "$T/gc-preview" unpushed '跳过 unpushed'

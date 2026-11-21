@@ -2764,12 +2764,13 @@ gc_diagnostic() {
   python3 -c 'import re, sys
 
 line = "".join(ch for ch in sys.stdin.read() if ch.isprintable()).strip()
-line = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|[^\s/]+@[^\s/:]+:\S+", "[远端地址已省略]", line)
 credential_field = (r"(?i)(?<![a-z0-9])(?:authorization|bearer|token|password|passphrase|"
                     r"credentials?|secret|private[ _-]?key|cookie|api[ _-]?key)(?![a-z0-9])")
 credential_value = r"gh[pousr]_|github_pat_|AKIA[A-Z0-9]{16}"
 if re.search(credential_field, line) or re.search(credential_value, line):
     line = "[诊断含凭证标记，已省略]"
+else:
+    line = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|[^\s/]+@[^\s/:]+:\S+", "[远端地址已省略]", line)
 print(line[:400])'
 }
 
