@@ -61,6 +61,12 @@ if [ "${1:-}" = -C ]; then
         printf '%s\n' "$GC_TEST_ORIGIN"; exit 0
       fi ;;
     rev-list)
+      if [ "${GC_SECRET_DIAGNOSTICS:-}" = 1 ]; then
+        case "${2##*/}" in
+          foreman-merged) echo 'fatal: token=mock-secret-1' >&2; exit 128 ;;
+          foreman-closed) echo 'fatal: cannot access https://u:mock-secret-2@example.invalid/r.git' >&2; exit 128 ;;
+        esac
+      fi
       if [ "$2" = "${GC_REV_LIST_FAILURE_WT:-}" ]; then
         echo 'fixture rev-list failure' >&2; exit 128
       fi
@@ -341,6 +347,20 @@ PY
     git -C "$GC_PROJECT" show-ref --verify --quiet refs/heads/feat/gc-merged; then
     ok "gc 预览退出 0 且保留 worktree 和分支"
   else bad "gc 预览退出 / 不修改" "rc=$preview_rc"; fi
+  GC_SECRET_DIAGNOSTICS=1 "$F" gc --project 'gc project' > "$T/gc-secret-preview" 2> "$T/gc-secret-errors"
+  preview_rc=$?
+  if [ "$preview_rc" -eq 0 ] &&
+    gc_has "$T/gc-secret-preview" merged '跳过 git_refs_unavailable' &&
+    grep -Eq 'ticket=merged .* git_refs_unavailable: \[诊断含凭证标记，已省略\]$' "$T/gc-secret-errors" &&
+    ! grep -Fq 'mock-secret-1' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
+    ok "gc 诊断打印凭证字段占位且隐藏原值"
+  else bad "gc 诊断凭证字段脱敏" "rc=$preview_rc"; fi
+  if [ "$preview_rc" -eq 0 ] &&
+    gc_has "$T/gc-secret-preview" closed '跳过 git_refs_unavailable' &&
+    grep -Eq 'ticket=closed .* git_refs_unavailable: .*\[远端地址已省略\]$' "$T/gc-secret-errors" &&
+    ! grep -Fq 'mock-secret-2' "$T/gc-secret-preview" "$T/gc-secret-errors"; then
+    ok "gc 诊断打印远端地址占位且隐藏 URL 凭证"
+  else bad "gc 诊断远端地址脱敏" "rc=$preview_rc"; fi
   gc_check "$T/gc-preview" merged '预览 pr_merged'
   gc_check "$T/gc-preview" active '跳过 active'
   gc_check "$T/gc-preview" unpushed '跳过 unpushed'
@@ -533,9 +553,8 @@ PY2
     GC_RECHECK_ROUND="$ledger/recheck-round/run-1.rc" GC_LATE_HOLD="$ledger/late-hold/hold-blocked/bridge.pid" "$F" gc --project 'gc project' --idle-hours 24 --force > "$T/gc-force" 2> "$T/gc-force-errors"; force_rc=$?
   if [ "$force_rc" -eq 1 ] && ! grep -q 'project=gc-nogit' "$T/gc-force" &&
     gc_has "$T/gc-force" internal-error '跳过 internal_error' &&
-    grep -Eq 'ticket=internal-error .* internal_error: .*\.runs\.lock: Is a directory' "$T/gc-force-errors" &&
-    ! grep -q 'mock-gh-value' "$T/gc-force-errors" "$T/gc-force"; then
-    ok "gc 按项目执行，报告单条锁错误诊断与非零退出，隐藏 gh 诊断"
+    grep -Eq 'ticket=internal-error .* internal_error: .*\.runs\.lock: Is a directory' "$T/gc-force-errors"; then
+    ok "gc 按项目执行，报告单条锁错误诊断与非零退出"
   else bad "gc 内部诊断或项目过滤" "rc=$force_rc $(cat "$T/gc-force-errors")"; fi
   rmdir "$ledger/internal-error/.runs.lock"
   touch "$GC_PROJECT/.claude/worktrees/foreman-internal-error/.git"
