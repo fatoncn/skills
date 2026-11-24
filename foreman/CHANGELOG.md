@@ -45,7 +45,7 @@
 
 - 高风险的票，对抗复审循环结束后、大验收和报可合之前，再补一次 Claude Code 内置的 `/code-review`（high 档）。单票流水线变为：调研 → 实现 → 小验收 → 复审 ↔ 改 → 高风险再补 `/code-review` → 大验收。
 - 风险档从「低 | 中高」改成「低 | 中 | 高」。高 = 项目规则点名的核心链路、数据写路径 / 迁移 / 权限 / 计费、会在生产上无人值守执行的操作，或面积大（几十个文件、跨多个区域）；由编排者判，写进任务书和 PR 描述。review 机器人的轮次上限不变（低 1 轮，中、高 2 轮）。
-- 跑法：另起一张票，`run --role review --engine claude --model claude-opus-5-5`，任务书用新增的 `CR-<id>.md` 模板，只调用内置 `code-review` skill、结论原样进报告。**这一轮的 claude 引擎不算 beta、不需要用户另行点名**；claude 引擎的其他用途仍是 beta、用户明确要求才派。
+- 跑法：另起一张票，`run --role review --engine claude --model <Opus 系列旗舰，如 claude-opus-5-5>`，任务书用新增的 `CR-<id>.md` 模板，只调用内置 `code-review` skill、结论原样进报告。**这一轮的 claude 引擎不算 beta、不需要用户另行点名**；claude 引擎的其他用途仍是 beta、用户明确要求才派。
 - 结论仅供参考，不一定都是真问题：编排者逐条对着代码核实，成立且影响本 PR 正确性的才派返工，其余记「不是问题 + 理由」；返工后只对增量再跑，最多 2 轮，不占对抗复审的轮次，到上限交用户。PR 描述加一行 `Code review: …` 记录。
 - 依据 cookie 2026-11-18：「foreman这边我想复审完对于高风险的需求，再补一次claude /code-review（其实就是aha项目新增的规则，但是我觉得这挺好，补进foreman流程里）」「claude code-review，出来的问题一样仅供参考，不一定都是真问题」「这里注意推荐opus系列旗舰模型（如Opus 5.5）」「仅把claude-review视为非beta，其他的claude引擎依然保留beta和必须明确指定」。来源做法：Ahaboard `AGENTS.md` 第七节（Peter 2026-10-29）。
 
@@ -339,7 +339,7 @@
 - 修复：`init` 尾行 `$PROJECT_TOML，` 未加花括号导致 unbound variable（全文件再扫一遍，已无同类写法）。
 - SKILL.md：去掉项目专有词（治理 PR / promote / 规则激活迁移 / data/<批次>），改成「走项目自己的流程」；`foreman.toml` 措辞改为按项目生成、按仓库覆盖；安装说明去掉用户/日期专属口径；角色表只留「第一次用」一份，阶段 3 指回。
 - 「分工模式」整节重写为**三条通道（foreman 派 codex / 宿主 spawn 子 agent / 外部会话转发）对同一项活互斥**：会话开头对齐默认通道，每项活按判据表选（进 PR 且机械可判 → foreman；只读调研 / 要宿主工具 → spawn；≤50 行强依赖上下文 → 自己做；验收永不派回 codex；额度告急改 spawn 不降沙箱）。spawn 通道的具体规则（次旗舰模型、同消息并发派、SendMessage 续同一 agent、不单独放宽权限）并入。来源：工作区 AGENTS.md「分工协作模式」+ cookie 09-11 晚的补充。
-- **角色文件归使用者**：每个角色一份角色文件（契约），运行时读 `~/.foreman/roles/<名>.md`（或 `[roles.<名>].prompt`）。pi-fleet 的 implement / mechanical / review 作为 skill 的**参考角色**放 `assets/roles/`，`setup` 拷过去；**implement / review / mechanical 三个参考角色都必需**（cookie 09-11 晚），角色档位按**描述**定义，模型可随代际更新（实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + high；轻活 = 次旗舰 + low～medium、便宜但精准），模型名只作当日对应；再多的可选、使用者自定。缺必需角色或缺文件，`run` / `review` / `setup --confirm` 拒绝。
+- **角色文件归使用者**：每个角色一份角色文件（契约），运行时读 `~/.foreman/roles/<名>.md`（或 `[roles.<名>].prompt`）。pi-fleet 的 implement / mechanical / review 作为 skill 的**参考角色**放 `assets/roles/`，`setup` 拷过去；**implement / review / mechanical 三个参考角色都必需**（cookie 09-11 晚），角色档位按**描述**定义、不绑死模型名（实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + high；轻活 = 次旗舰 + low～medium、便宜但精准），模型名只作当日对应；再多的可选、使用者自定。缺必需角色或缺文件，`run` / `review` / `setup --confirm` 拒绝。
 - **closeout 角色取消**（cookie 09-11 晚：实现者带着初始口径收尾更合理）：`run --closeout` 改为实现者续同一 `codex_thread`，把 `assets/CLOSEOUT.md`「收尾阶段契约」（放行对自己 PR 的 push / gh 写 + 本轮输出格式）放在那一轮 prompt 顶部；契约 skill 持有、只给实现角色；`codex_closeout_thread` 线程键与 `[roles.closeout]` 示例删除。
 - **角色文件只写契约，干活纪律出注入文件**（cookie 09-11 晚：skill 管「如何分工」，「如何干活」由编排者写进 prompt）：ROLE / REVIEWER / CLOSEOUT 瘦身到位置、沙箱事实、分工边界（探针会查什么；与项目规则冲突以项目规则为准）、提问、输出格式。拿出来的内容进模板：任务书加可选「工作纪律」段、新增 `REVIEW-<id>.md` 复审关注点模板（`foreman review --prompt` 传入）、收尾任务书模板并入工作循环与轮次规则。
 - 顶部新增「项目规则优先于本 skill」；`executor_rules_file` 明确只放仓库外规则（实测 codex 只注入仓库根到 cwd 链上的 AGENTS.md）。
