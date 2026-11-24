@@ -1400,6 +1400,8 @@ expect_rejection "run 未经同意改模型被拒" "指定模型是 gpt-6.2-sol"
 expect_rejection "空白原话不能放行模型偏离" '带 --model-consent "<原话>"' "${model_run[@]}" --role implement --model alternate-model --model-consent " "
 expect_rejection "pi 角色模型为空时显式改模型须同意" "指定模型是 （未配置）" "${model_run[@]}" --role pi-no-model --engine pi --model alternate-model
 expect_rejection "review 未经同意改模型被拒" "指定模型是 gpt-6.2-astra" "$F" review role-model --model alternate-model
+expect_rejection "run 的 --model-consent 缺值时不吞下一个选项" "--model-consent 必须带用户原话" "${model_run[@]}" --role implement --model alternate-model --model-consent --detach
+expect_rejection "review 的 --model-consent 缺值时不吞下一个选项" "--model-consent 必须带用户原话" "$F" review role-model --model alternate-model --model-consent --detach
 expect_rc "run 指定同一模型无需同意" 4 "${model_run[@]}" --role implement --model gpt-6.2-sol
 expect_rejection "已有 implement 也不能隐式省略角色" "$role_error" "${model_run[@]}"
 expect_rc "为其他场景建 mechanical 线程" 4 "${model_run[@]}" --role mechanical --thread worker

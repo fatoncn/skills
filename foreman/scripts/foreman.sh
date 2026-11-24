@@ -1104,7 +1104,7 @@ cmd_run() {
       --closeout) closeout=1; shift ;;
       --engine) engine="$2"; shift 2 ;;
       --model) model="$2"; [ -n "$model" ] || die "--model 必须指定模型"; shift 2 ;;
-      --model-consent) [ "$#" -ge 2 ] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
+      --model-consent) [[ "$#" -ge 2 && "$2" != --* ]] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
       --thinking) thinking="$2"; shift 2 ;;
       --detach) detach=1; shift ;;
@@ -1357,7 +1357,7 @@ cmd_review() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --model) model="$2"; [ -n "$model" ] || die "--model 必须指定模型"; shift 2 ;;
-      --model-consent) [ "$#" -ge 2 ] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
+      --model-consent) [[ "$#" -ge 2 && "$2" != --* ]] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
       --engine) engine="$2"; shift 2 ;;
       --prompt) focus="$2"; shift 2 ;;
