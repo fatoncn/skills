@@ -916,7 +916,7 @@ POSITION_TIMEOUT=""
 POSITION_ENGINE=""
 POSITION_MAX_TURNS=""
 POSITION_MAX_BUDGET_USD=""
-position_block() {   # 只写事实（规矩在角色文件里说一遍，这里不重复）
+position_block() {
   echo "# 本轮位置（foreman 生成，以此为准；规矩见角色文件）"; echo
   echo "- cwd：\`${PROJECT_ROOT}\`（项目根）"
   if command -v rg >/dev/null 2>&1; then echo "- 执行环境：rg: 有"
@@ -935,6 +935,7 @@ position_block() {   # 只写事实（规矩在角色文件里说一遍，这里
     echo "- Claude 预算：工具调用轮数上限 ${POSITION_MAX_TURNS}、预算 \$${POSITION_MAX_BUDGET_USD}"
   fi
   local d; for d in $POSITION_WRITABLE; do echo "- 交付目录（额外可写）：\`${d}\`"; done
+  echo '- 临时文件：测试与脚本的临时目录、中间产物写系统临时目录（$TMPDIR 或 /tmp），不写工作树或交付目录；交付目录只放交付物'
 }
 prepend_position() {  # <prompt 文件>
   local tmp; tmp="$(mktemp)"; { position_block; printf '\n---\n\n'; cat "$1"; } > "$tmp" && mv "$tmp" "$1"
