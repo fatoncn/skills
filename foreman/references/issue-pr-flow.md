@@ -7,7 +7,7 @@
 | `BACKGROUND.md` | `bootstrap --context`，进每个执行者的开发者指令（全批共享） | 这批活的整体目标、共享契约、共同约束 | 每个执行者 |
 | `research-<id>.md` | 调研票首轮 `run --role research --prompt`，交付目录用 `--writable` 放开 | 要核哪些事实、交什么格式的锚点；问事实不问方案 | 调研者 + 你 |
 | `brief-<id>.md`（要建 issue 时它就是 issue 正文） | 首轮 `run --role implement --prompt` | 单张票的任务书，首段写明真源 | 一个执行者 + 人 |
-| `rework-<id>-N.md` | 后续轮 `run --thread <已有线程> --prompt` | 具体哪里不对、证据、期望 | 同一个执行者（线程连续） |
+| `rework-<id>-N.md` | 后续轮 `run <id> --role <同一角色> [--pr <名>] --prompt <rework.md>` | 具体哪里不对、证据、期望 | 同一个执行者（线程连续） |
 | `REVIEW-<id>.md` | `review --prompt` | 需求口径（前因后果、做到什么程度、有意不做的、用户原话、定过的口径、相关材料；越全越好）+ 本票特有关注点 | 复审者（只提意见，你拍板） |
 | `CR-<id>.md` | 高风险票另起一张票，`run --role review --engine claude --prompt`，报告目录用 `--writable` 放开 | 审哪段改动、背景与已知并接受的事项、报告格式；只调用内置 `code-review` skill | Claude 执行者 + 你 |
 | `accept-brief-<id>.md` | 验收线程首轮 `run --role accept --prompt`，证据目录用 `--writable` 放开 | 复测入口、账号、逐步操作与应看到什么、证据要求、不在范围项 | 验收者 + 你 |
@@ -130,7 +130,7 @@
 
 ## rework-<id>-N.md
 
-线程是连续的，执行者记得上一轮，**不要重复整个任务书**。
+线程是连续的，执行者记得上一轮，**不要重复整个任务书**。脚本按首轮的角色和 PR 续线程。需要手选线程时，加 `--thread <名>` 并填首轮实际的线程名。
 
 ```markdown
 ## 你上一轮的问题

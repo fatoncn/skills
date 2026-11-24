@@ -86,12 +86,12 @@ $FOREMAN init              # 生成 ~/.foreman/projects/<项目>/foreman.toml �
 ```bash
 $FOREMAN bootstrap <id> --slug <slug> [--pr <名>] [--type feat] --base <汇总分支或base> --context <BACKGROUND.md> --gh-issue <n>   # 给票建一个 PR（worktree + 分支）
 $FOREMAN run <id> --role implement --prompt <brief.md> --title "…" --detach --timeout 1800   # 首轮建线程；票有多个 PR 时加 --pr <名>
-$FOREMAN run <id> --thread implement --prompt <rework.md> --title "…" --detach   # 返工续已有的 implement 线程
+$FOREMAN run <id> --role implement [--pr <名>] --prompt <rework.md> --title "…" --detach   # 返工按同一角色和 PR 续线程
 ```
 
 实现轮需要把工作树之外的交付物写到指定目录时，用 `run --writable <目录>` 显式放开并登记该目录。
 
-线程 cwd 永远是项目根，不用 `cd`；这轮针对哪个 PR、它的 worktree / 分支 / 基线由脚本写进 prompt 顶部的「本轮位置」。一票多 PR 时每条命令用 `--pr` 指定，只有一个时省略。
+线程 cwd 永远是项目根，不用 `cd`；这轮针对哪个 PR、它的 worktree / 分支 / 基线由脚本写进 prompt 顶部的「本轮位置」。一票多 PR 时每条命令用 `--pr` 指定，只有一个时省略。返工沿用首轮的角色和 PR。需要手选线程时，加 `--thread <名>` 并填首轮实际的线程名，可用 `threads <id>` 查看。
 
 **调研线程**（排查、核事实、找锚点、复现，交付物给你拆票、下判断）用同一套命令，只是没有 PR：
 
@@ -100,7 +100,7 @@ $FOREMAN bootstrap <id> --slug research-<slug> --no-install [--gh-issue <n>]    
 $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writable <交付目录> --detach
 ```
 
-调研不必先建 issue，票 id 用一个词就行；但**有背景 issue 就 `--gh-issue` 挂上**，线程名的 `{ids}` 才带号，桌面端一眼能认出它归哪张票。交付目录放项目约定的中间产物目录（项目没规定就 `~/.foreman/projects/<项目>/batches/<批次>/`）；`--writable` 把它放开，`report` 的越界探针把它当作内部，改到检出里的文件照样标出。调研票不走 `check` / `diff` / `pr`，验收就是你逐条核交付物（阶段 4）。追问用 `run --thread <已有线程>` 续同一线程；用完 `cleanup <id> --force`（分支没有提交，直接删）。任务书模板 `research-<id>.md` 见 `issue-pr-flow.md`：问事实不问方案。
+调研不必先建 issue，票 id 用一个词就行；但**有背景 issue 就 `--gh-issue` 挂上**，线程名的 `{ids}` 才带号，桌面端一眼能认出它归哪张票。交付目录放项目约定的中间产物目录（项目没规定就 `~/.foreman/projects/<项目>/batches/<批次>/`）；`--writable` 把它放开，`report` 的越界探针把它当作内部，改到检出里的文件照样标出。调研票不走 `check` / `diff` / `pr`，验收就是你逐条核交付物（阶段 4）。追问用 `run <id> --role research [--pr <名>] --prompt <followup.md>`，脚本按同一角色和 PR 续线程。用完 `cleanup <id> --force`（分支没有提交，直接删）。任务书模板 `research-<id>.md` 见 `issue-pr-flow.md`：问事实不问方案。
 
 - **线程按对象模型走**：`run` 必须给 `--role`，按角色开或续线程。用 `--thread <已有线程>` 续线程或用 `--closeout` 时可省略角色。一票多 PR 时，非默认 PR 的 `run --pr <名>` 会自动用 `<角色>@<pr>`（如 `implement@b`）并行，仍可显式 `--thread` 覆盖。`--role mechanical` 走 `mechanical` 线程，`--role research` 走 `research` 线程（调研，见上），`--role accept` 走 `accept` 线程（验收，见阶段 4）。`--closeout` 默认续目标 PR 最近的 `implement` / `mechanical` 实现线程，显式 `--role` / `--thread` 优先，并把 `../assets/CLOSEOUT.md`「收尾阶段契约」放在 prompt 顶部、探针按收尾白名单判；`--role <角色> --thread <新名>` 另起；显式续已有线程可沿用记录的角色和引擎。同名线程不覆盖，要重开就 `release` 旧的再用 `--role <角色> --thread <新名>` 另起（旧线程的账本保留）；换引擎只能另起线程，它不记得旧线程干过什么，返工上下文要在 prompt 里补。复审每次新开 `review-N`。`threads <id>` 看全表；没有这本账，隔几个小时或换个会话回来就找不到之前的线程。
 - **模型和默认推理档**按角色和引擎从配置读取。单次 `--effort` 可调，`--model` 与指定模型不同时须带 `--model-consent "<用户原话>"`，原话写入轮次记录并在 `report` 显示。派活后看 `report` 首行的 `model= effort=` 确认，不要等验收才发现。到并发上限脚本拒绝派发，`status` 尾行显示当前在跑数。
