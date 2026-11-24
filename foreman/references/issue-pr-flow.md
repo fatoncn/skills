@@ -6,10 +6,10 @@
 |---|---|---|---|
 | `BACKGROUND.md` | `bootstrap --context`，进每个执行者的开发者指令（全批共享） | 这批活的整体目标、共享契约、共同约束 | 每个执行者 |
 | `research-<id>.md` | 调研票首轮 `run --role research --prompt`，交付目录用 `--writable` 放开 | 要核哪些事实、交什么格式的锚点；问事实不问方案 | 调研者 + 你 |
-| `brief-<id>.md`（要建 issue 时它就是 issue 正文） | 首轮 `run --prompt` | 单张票的任务书，首段写明真源 | 一个执行者 + 人 |
-| `rework-<id>-N.md` | 后续轮 `run --prompt` | 具体哪里不对、证据、期望 | 同一个执行者（线程连续） |
+| `brief-<id>.md`（要建 issue 时它就是 issue 正文） | 首轮 `run --role implement --prompt` | 单张票的任务书，首段写明真源 | 一个执行者 + 人 |
+| `rework-<id>-N.md` | 后续轮 `run --thread <已有线程> --prompt` | 具体哪里不对、证据、期望 | 同一个执行者（线程连续） |
 | `REVIEW-<id>.md` | `review --prompt` | 需求口径（前因后果、做到什么程度、有意不做的、用户原话、定过的口径、相关材料；越全越好）+ 本票特有关注点 | 复审者（只提意见，你拍板） |
-| `CR-<id>.md` | 高风险票另起一张票，`run --role review --engine claude --model <Opus 系列旗舰> --prompt`，报告目录用 `--writable` 放开 | 审哪段改动、背景与已知并接受的事项、报告格式；只调用内置 `code-review` skill | Claude 执行者 + 你 |
+| `CR-<id>.md` | 高风险票另起一张票，`run --role review --engine claude --prompt`，报告目录用 `--writable` 放开 | 审哪段改动、背景与已知并接受的事项、报告格式；只调用内置 `code-review` skill | Claude 执行者 + 你 |
 | `accept-brief-<id>.md` | 验收线程首轮 `run --role accept --prompt`，证据目录用 `--writable` 放开 | 复测入口、账号、逐步操作与应看到什么、证据要求、不在范围项 | 验收者 + 你 |
 | PR 描述 | `foreman pr --body-file` | 改了什么、风险档、复测入口、项目要求的实测证据 | review 机器人 + 收尾者 + 合并的人 |
 | `HANDOFF-<PR>-closeout.md` | `run <id> --closeout --prompt`（实现者续同一线程） | 收尾任务书 | 实现者（收尾轮） |
@@ -179,7 +179,7 @@
 
 ---
 
-## CR-<id>.md（高风险票的 Claude `/code-review`；另起一张票，`run --role review --engine claude --model <Opus 系列旗舰> --writable <报告目录>/ --prompt` 传入）
+## CR-<id>.md（高风险票的 Claude `/code-review`；另起一张票，`run --role review --engine claude --writable <报告目录>/ --prompt` 传入）
 
 对抗复审循环结束后才跑，只对高风险的票（判定标准见编排指导阶段 4）。它给的结论仅供参考，成立与否由你逐条对着代码判。
 

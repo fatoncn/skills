@@ -222,12 +222,12 @@ expect_grep "init 生成骨架" "骨架已生成" "$F" init
 echo task > "$T/brief.md"
 expect_grep "here 登记为 PR「here」" "PR「here」" "$F" here 1
 expect_grep "无可续接 turn 时 steer 被拒" "用 run 起新一轮" "$F" steer 1 "纠偏"
-expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --prompt "$T/brief.md"
+expect_grep "confirm 前 run 被拒" "确认" "$F" run 1 --role implement --prompt "$T/brief.md"
 expect_rc   "setup --confirm" 0 "$F" setup --confirm
 printf '# 缺报告标记\n\n## 输出格式（强制）\n\n正文里没有二级标题。\n' > "$T/role-without-report-marker.md"
 cp "$FOREMAN_HOME/roles/implement.md" "$T/implement-role.saved.md"
 cp "$T/role-without-report-marker.md" "$FOREMAN_HOME/roles/implement.md"
-missing_run_marker_out="$("$F" run 1 --prompt "$T/brief.md" --title x 2>&1)"; missing_run_marker_rc=$?
+missing_run_marker_out="$("$F" run 1 --role implement --prompt "$T/brief.md" --title x 2>&1)"; missing_run_marker_rc=$?
 cp "$T/implement-role.saved.md" "$FOREMAN_HOME/roles/implement.md"
 if [ "$missing_run_marker_rc" -ne 0 ] && printf '%s' "$missing_run_marker_out" | grep -q '角色 implement 的输出格式段没有二级标题，无法生成报告标记'; then ok "run 拒绝缺报告标记的角色文件"; else bad "run 缺报告标记守卫" "rc=$missing_run_marker_rc"; fi
 cp "$FOREMAN_HOME/roles/review.md" "$T/review-role.saved.md"
@@ -237,7 +237,7 @@ cp "$T/review-role.saved.md" "$FOREMAN_HOME/roles/review.md"
 if [ "$missing_review_marker_rc" -ne 0 ] && printf '%s' "$missing_review_marker_out" | grep -q '角色 review 的输出格式段没有二级标题，无法生成报告标记'; then ok "review 拒绝缺报告标记的角色文件"; else bad "review 缺报告标记守卫" "rc=$missing_review_marker_rc"; fi
 retired_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/1/meta.json' -print -quit)")"
 retired_before="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
-retired_run_out="$("$F" run 1 --thread retired-run --engine codex-exec --prompt "$T/brief.md" --title x 2>&1)"; retired_run_rc=$?
+retired_run_out="$("$F" run 1 --role implement --thread retired-run --engine codex-exec --prompt "$T/brief.md" --title x 2>&1)"; retired_run_rc=$?
 retired_after_run="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -name 'review-*' \) -print | sort)"
 if [ "$retired_run_rc" -ne 0 ] && printf '%s' "$retired_run_out" | grep -q '只能是 codex / pi' && [ "$retired_before" = "$retired_after_run" ]; then ok "run 拒绝已退役引擎且不落轮次文件"; else bad "run 已退役引擎守卫" "rc=$retired_run_rc"; fi
 retired_review_out="$("$F" review 1 --engine codex-exec 2>&1)"; retired_review_rc=$?
@@ -245,7 +245,7 @@ retired_after_review="$(find "$retired_dir" -maxdepth 1 \( -name 'run-*' -o -nam
 if [ "$retired_review_rc" -ne 0 ] && printf '%s' "$retired_review_out" | grep -q '只能是 codex / pi' && [ "$retired_before" = "$retired_after_review" ]; then ok "review 拒绝已退役引擎且不落轮次文件"; else bad "review 已退役引擎守卫" "rc=$retired_review_rc"; fi
 echo "== 票 / PR / 线程 =="
 echo task > "$T/brief.md"
-expect_rc   "假 codex 下前台 run 返回 4（ENGINE_DOWN）" 4 "$F" run 1 --prompt "$T/brief.md" --title "自测" --timeout 30
+expect_rc   "假 codex 下前台 run 返回 4（ENGINE_DOWN）" 4 "$F" run 1 --role implement --prompt "$T/brief.md" --title "自测" --timeout 30
 req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json 2>/dev/null | head -1)"
 steer_dir="$(dirname "$req")"; make_hold_fixture "$steer_dir" steer-path 90 999999 here implement
 rm -f "$steer_dir/hold-steer-path/hold.json" "$steer_dir/hold-steer-path/queue/run-90.request.json"
@@ -269,7 +269,7 @@ import pathlib,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); assert "[codex]" in s
 p.write_text(s.replace("[codex]", "[codex]\nrequest_user_input = false",1))
 PY2
-expect_rc "关闭提问功能仍正常派发（假 codex）" 4 "$F" run 1 --prompt "$T/brief.md" --title "提问关闭" --timeout 30
+expect_rc "关闭提问功能仍正常派发（假 codex）" 4 "$F" run 1 --role implement --prompt "$T/brief.md" --title "提问关闭" --timeout 30
 ask_req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json | head -1)"
 python3 -c 'import json,sys; assert dict(json.load(open(sys.argv[1]))["config_overrides"])["features.default_mode_request_user_input"] == "false"' "$ask_req" && ok "项目可关闭提问功能位" || bad "项目关闭提问功能位"
 python3 - "$ask_toml" <<'PY2'
@@ -351,7 +351,7 @@ timeout47_nometa="$("$F" report 47 1 2>&1)"; timeout47_nometa_rc=$?
 if [ "$timeout47_nometa_rc" -eq 0 ] && printf '%s\n' "$timeout47_nometa" | grep -q '^--- 超时时的状态 ---$' && printf '%s\n' "$timeout47_nometa" | grep -q '工作树不可用' && printf '%s\n' "$timeout47_nometa" | grep -q '事件日志不可用'; then ok "rc=143 缺 meta / 日志仍合成可用部分"; else bad "report 缺 meta 超时现场" "rc=$timeout47_nometa_rc $timeout47_nometa"; fi
 mv "$timeout47_dir/meta.json.saved" "$timeout47_dir/meta.json"; cp "$T/timeout47.jsonl.saved" "$timeout47_dir/run-1.jsonl"
 expect_grep "超时现场报告测试清理" "已删登记" "$F" cleanup 47 --force
-expect_grep "续线程不给角色自动取记录" "线程=implement" "$F" run 1 --prompt "$T/brief.md" --title "续" --timeout 30
+expect_grep "显式续已有线程自动取角色" "线程=implement" "$F" run 1 --thread implement --prompt "$T/brief.md" --title "续" --timeout 30
 expect_rc "mechanical 实现轮（假 codex）" 4 "$F" run 1 --thread closeout-mech --role mechanical --prompt "$T/brief.md" --title "机械实现" --timeout 30
 expect_rc "closeout 默认续最后一条 run 的线程" 4 "$F" run 1 --closeout --prompt "$T/brief.md" --title "收尾" --timeout 30
 close_req="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/1/run-*.request.json | head -1)"
@@ -363,13 +363,13 @@ expect_rc "最后一轮 accept 时 closeout 仍续 mechanical" 4 "$F" run 5 --cl
 close5="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/5/run-*.request.json | head -1)"
 [ "$(cat "${close5%.request.json}.thread")" = mechanical ] && ok "closeout 只选目标 PR 的实现角色" || bad "closeout 错续 accept"
 expect_grep "同名线程换角色被拒" "角色" "$F" run 1 --thread implement --role mechanical --prompt "$T/brief.md" --title x --timeout 30
-expect_grep "--new-thread 已取消" "已取消" "$F" run 1 --new-thread --prompt "$T/brief.md" --title x --timeout 30
-expect_grep "同名线程换引擎被拒" "引擎" "$F" run 1 --engine pi --prompt "$T/brief.md" --title x --timeout 30
+expect_grep "--new-thread 已取消" "已取消" "$F" run 1 --role implement --new-thread --prompt "$T/brief.md" --title x --timeout 30
+expect_grep "同名线程换引擎被拒" "引擎" "$F" run 1 --role implement --engine pi --prompt "$T/brief.md" --title x --timeout 30
 expect_grep "bootstrap 第一个 PR" "ready: 2  PR「a」" "$F" bootstrap 2 --slug a --no-install
 expect_grep "bootstrap 第二个 PR（--pr b）" "ready: 2  PR「b」" "$F" bootstrap 2 --slug b --pr b --no-install
 expect_grep "threads 列出两个 PR" "PR「b」" "$F" threads 2
-expect_grep "多 PR 不带 --pr 被拒" "有多个 PR" "$F" run 2 --prompt "$T/brief.md" --title x --timeout 30
-expect_rc   "run 2 --pr b" 4 "$F" run 2 --pr b --prompt "$T/brief.md" --title "b 轮" --timeout 30
+expect_grep "多 PR 不带 --pr 被拒" "有多个 PR" "$F" run 2 --role implement --prompt "$T/brief.md" --title x --timeout 30
+expect_rc   "run 2 --pr b" 4 "$F" run 2 --role implement --pr b --prompt "$T/brief.md" --title "b 轮" --timeout 30
 req2="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev/null | head -1)"
 [ -n "$req2" ] && [ "$(cat "${req2%.request.json}.pr")" = "b" ] && ok "run-N.pr 记下针对的 PR" || bad "run-N.pr"
 [ -n "$req2" ] && [ "$(cat "${req2%.request.json}.thread")" = "implement@b" ] && ok "非默认 PR 自动使用 角色@PR 线程名" || bad "非默认 PR 自动线程名"
@@ -396,10 +396,10 @@ expect_grep "pr 只打印命令且带 --head" "\-\-head" "$F" pr 2 --pr b --titl
 expect_grep "cleanup 一个 PR，票保留" "剩余 PR: a" "$F" cleanup 2 --pr b --force
 expect_grep "bootstrap 稳定线程测试默认 PR" "ready: 6" "$F" bootstrap 6 --slug stable-a --no-install
 expect_grep "bootstrap 稳定线程测试第二 PR" "ready: 6" "$F" bootstrap 6 --slug stable-b --pr b --no-install
-expect_rc "第二 PR 首轮自动线程" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b1 --timeout 30
+expect_rc "第二 PR 首轮自动线程" 4 "$F" run 6 --role implement --pr b --prompt "$T/brief.md" --title b1 --timeout 30
 stable_dir="$(dirname "$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/6/run-*.request.json | head -1)")"; stable_before="$(cat "$stable_dir/run-1.thread")"
 expect_grep "清理首个 PR" "剩余 PR: b" "$F" cleanup 6 --pr stable-a --force
-expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --pr b --prompt "$T/brief.md" --title b2 --timeout 30
+expect_rc "清理首 PR 后第二 PR 续跑" 4 "$F" run 6 --role implement --pr b --prompt "$T/brief.md" --title b2 --timeout 30
 [ "$stable_before" = "$(cat "$stable_dir/run-2.thread")" ] && ok "清理默认 PR 后自动线程名保持稳定" || bad "自动线程名漂移"
 expect_grep "登记脏检出 here cleanup 测试" "PR「here」" "$F" here 31
 printf 'dirty\ncontent must stay\n' > "$T/proj/app/here-dirty.tmp"; here_dirty_sha="$(git hash-object "$T/proj/app/here-dirty.tmp")"
@@ -424,7 +424,7 @@ if [ "$cleanup_b_rc" -ne 0 ] && printf '%s' "$cleanup_b_out" | grep -q 'run-302:
 printf 0 > "$cleanup40_dir/run-301.rc"; rm -f "$cleanup40_dir/run-301.pid" "$cleanup40_dir/hold-shared-pr/active.json"
 rm -f "$T/cleanup-lock.ready" "$T/cleanup-lock.release"; FOREMAN_SELFTEST_LOCK_READY="$T/cleanup-lock.ready" FOREMAN_SELFTEST_LOCK_RELEASE="$T/cleanup-lock.release" "$F" cleanup 40 --pr a --force > "$T/cleanup40-a.out" 2>&1 & cleanup40_cli=$!
 for _ in $(seq 1 100); do [ -f "$T/cleanup-lock.ready" ] && break; sleep 0.02; done
-"$F" run 40 --pr a --prompt "$T/brief.md" --title blocked-by-cleanup --timeout 30 > "$T/cleanup40-run.out" 2>&1 & cleanup40_run_cli=$!
+"$F" run 40 --role implement --pr a --prompt "$T/brief.md" --title blocked-by-cleanup --timeout 30 > "$T/cleanup40-run.out" 2>&1 & cleanup40_run_cli=$!
 sleep 1; run_was_blocked=0; kill -0 "$cleanup40_run_cli" 2>/dev/null && run_was_blocked=1
 : > "$T/cleanup-lock.release"; wait "$cleanup40_cli"; cleanup40_rc=$?; wait "$cleanup40_run_cli"; cleanup40_run_rc=$?
 if [ "$cleanup40_rc" -eq 0 ] && [ "$run_was_blocked" -eq 1 ] && [ "$cleanup40_run_rc" -ne 0 ] && grep -q '没有名为 a 的 PR' "$T/cleanup40-run.out"; then ok "cleanup 全程持锁，run 阻塞后因 PR 已删被拒"; else bad "cleanup 全程持锁"; fi
@@ -698,13 +698,13 @@ echo "== 守卫 =="
 python3 - "$FOREMAN_HOME/config.toml" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r'(?m)^thread_name = .*$', 'thread_name = "x {ids}"', s); open(p,'w').write(s)
 PY
-expect_grep "线程名模板缺 {title} 被拒" "thread_name" "$F" run 1 --prompt "$T/brief.md" --title x --timeout 30
+expect_grep "线程名模板缺 {title} 被拒" "thread_name" "$F" run 1 --role implement --prompt "$T/brief.md" --title x --timeout 30
 python3 - "$FOREMAN_HOME/config.toml" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r'(?m)^thread_name = .*$', 'thread_name = "foreman {ids}: {title}"', s); open(p,'w').write(s)
 PY
 ptoml="$FOREMAN_HOME/projects/proj/foreman.toml"
 python3 -c 'import sys,re; p=sys.argv[1]; s=open(p).read(); s=s.replace("[engines]\n","[engines]\nconcurrency = 0\n",1) if "concurrency" not in s else re.sub(r"(?m)^concurrency = .*$","concurrency = 0",s); open(p,"w").write(s)' "$ptoml"
-expect_grep "项目并发上限 0 → 拒绝派发" "并发已达上限" "$F" run 1 --prompt "$T/brief.md" --title x --timeout 30
+expect_grep "项目并发上限 0 → 拒绝派发" "并发已达上限" "$F" run 1 --role implement --prompt "$T/brief.md" --title x --timeout 30
 python3 -c 'import sys,re; p=sys.argv[1]; s=open(p).read(); s=re.sub(r"(?m)^concurrency = .*$","concurrency = 20",s); open(p,"w").write(s)' "$ptoml"
 printf '\n[broken\n' >> "$ptoml"
 expect_grep "项目 toml 语法错误被拦" "语法错误" "$F" status
@@ -897,10 +897,19 @@ for n in (7,9,10):
     req=json.loads((d/"run-1.request.json").read_text()); b.write_json(d/f"run-{n}.request.json",req)
     (d/f"run-{n}.thread").write_text("implement"); (d/f"run-{n}.argv").write_bytes(b"python3\0")
     b.write_json(hd/"queue"/f"run-{n}.request.json",req)
-b.submit_steer(d,"implement","","",7)
+(d/"run-7.model-consent").write_text("同意沿用 alternate-model")
+req=json.loads((d/"run-7.request.json").read_text()); req["model"]="alternate-model"
+b.write_json(d/"run-7.request.json",req)
+path=pathlib.Path(b.submit_steer(d,"implement","","",7))
 assert not list(d.glob("run-7.*")) and max(b.run_numbers(d))==10
 assert [pathlib.Path(p).name for p in h._queued()]==["run-9.request.json","run-10.request.json"]
-print("8 种引导/竞态路径及旧正文、账本、FIFO 断言通过")
+h.current=None
+h.consume_steers(srv)
+ack=json.loads((hd/"steer/sent"/path.name).read_text()); n=ack["run"]
+assert ack["_fleet"]=="steer_requeued" and ack["fromRun"]==7
+assert json.loads((hd/"queue"/f"run-{n}.request.json").read_text())["model"]=="alternate-model"
+assert (d/f"run-{n}.model-consent").read_text()=="同意沿用 alternate-model"
+print("8 种引导/竞态路径及旧正文、账本、FIFO、模型同意保留断言通过")
 PY2
 cancel_dir="$(dirname "$req")"
 sleep 300 & cancel_first_pid=$!; make_hold_fixture "$cancel_dir" cancel-first 91 "$cancel_first_pid" here implement
@@ -1249,7 +1258,7 @@ expect_rc "Claude 回放整体退出码 0" 0 test "$claude_replay_rc" -eq 0
 echo "== claude 摘要器 =="
 python3 -B "$SKILL_DIR/tests/claude_events_replay.py" --selftest && ok "claude 事件夹具与旧引擎黄金输出" || bad "claude 事件夹具与旧引擎黄金输出"
 
-expect_rc "Claude --model haiku 可单次覆盖" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --thread claude-haiku --engine claude --model haiku --effort low --prompt "$T/brief.md" --title haiku --timeout 30 --no-check
+expect_rc "Claude --model haiku 经用户同意可单次覆盖" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" run 1 --role implement --thread claude-haiku --engine claude --model haiku --model-consent "同意这轮用 haiku" --effort low --prompt "$T/brief.md" --title haiku --timeout 30 --no-check
 claude_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
 python3 - "$claude_req" <<'PY2' && ok "Claude 首轮写 session 且 argv 使用真实模板" || bad "Claude 首轮 argv / session"
 import json,pathlib,sys
@@ -1266,7 +1275,7 @@ p=pathlib.Path(sys.argv[1]); a=pathlib.Path(str(p)[:-len('.request.json')]+'.arg
 i=a.index(b'--resume'); assert a[i+1]==b'session-replay-001'
 PY2
 
-env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=question_answered "$F" run 1 --thread claude-question --engine claude --prompt "$T/brief.md" --title question --question-timeout 10 --detach --no-check >/dev/null
+env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=question_answered "$F" run 1 --role implement --thread claude-question --engine claude --prompt "$T/brief.md" --title question --question-timeout 10 --detach --no-check >/dev/null
 question_req="$(find "$steer_dir" -maxdepth 1 -name 'run-*.request.json' -print | sort -V | tail -1)"
 question_stem="${question_req%.request.json}"
 for _ in $(seq 1 100); do [ -f "$question_stem.questions.json" ] && break; sleep 0.05; done
@@ -1300,13 +1309,13 @@ python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
 import pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)3',r'\g<1>0',s,count=1); p.write_text(s)
 PY2
-expect_grep "Claude 独立池满拒绝" "claude 线程在跑" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --thread claude-pool-full --engine claude --prompt "$T/brief.md" --title pool --detach --no-check
+expect_grep "Claude 独立池满拒绝" "claude 线程在跑" env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" "$F" run 1 --role implement --thread claude-pool-full --engine claude --prompt "$T/brief.md" --title pool --detach --no-check
 python3 - "$FOREMAN_HOME/config.toml" <<'PY2'
 import pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
 PY2
 
-expect_rc "Claude 复审使用只读工具集" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" review 1 --engine claude --model sonnet --effort low --timeout 30
+expect_rc "Claude 复审使用只读工具集" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" review 1 --engine claude --model sonnet --model-consent "同意这轮复审用 sonnet" --effort low --timeout 30
 claude_review_req="$(find "$steer_dir" -maxdepth 1 -name 'review-*.request.json' -print | sort -V | tail -1)"
 python3 - "$claude_review_req" <<'PY2' && ok "Claude 复审 argv / MCP / 标记契约" || bad "Claude 复审契约"
 import json,pathlib,sys
@@ -1318,6 +1327,7 @@ assert b'--no-session-persistence' in argv and b'--tools' in argv and b'Read,Glo
 assert meta['mcp_servers']==['foreman'] and all(x in settings['permissions']['deny'] for x in ('Bash(*)','Write(*)','Edit(*)','MultiEdit(*)'))
 assert events[0]['_foreman']['review_readonly']=='tools_only'
 PY2
+expect_grep "Claude 复审报告展示用户同意原话" "本轮模型的用户同意原话: 同意这轮复审用 sonnet" "$F" report 1 "$(basename "${claude_review_req%.request.json}" | tr -d '-')"
 expect_grep "Claude 复审拒绝 --full-access" "未知参数" "$F" review 1 --engine claude --full-access x
 expect_grep "Claude steer 只排下一轮" "claude 引擎：steer 已排队，下一轮 run 生效（当前轮不中断）" "$F" steer 1 --thread claude-haiku "只使用追加说明"
 expect_grep "status 标出 Claude 待生效 steer" "claude.*NEXT" "$F" status 1
@@ -1368,6 +1378,54 @@ printf '{"run":"run-1"}' > "$nogit91_dir/hold-implement/active.json"
 nogit91_out="$(cd "$T/nogit-cleanup" && "$F" cleanup 91 --force 2>&1)"; nogit91_rc=$?
 if [ "$nogit91_rc" -eq 0 ] && [ ! -e "$nogit91_dir" ] && ! kill -0 "$nogit91_pid" 2>/dev/null; then ok "非 git 票 cleanup --force 释放执行体并删除账本"; else bad "非 git 票 cleanup --force" "rc=$nogit91_rc $nogit91_out"; fi
 wait "$nogit91_pid" 2>/dev/null || true
+
+echo "== 角色与指定模型 =="
+expect_rejection() {
+  local name="$1" message="$2" out rc
+  shift 2
+  out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -eq 1 ] && printf '%s\n' "$out" | grep -Fq -- "$message"; then
+    ok "$name"
+  else
+    bad "$name" "rc=$rc $out"
+  fi
+}
+expect_rc "角色与指定模型测试登记" 0 "$F" here role-model
+model_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/role-model/meta.json' -print -quit)")"
+model_run=("$F" run role-model --prompt "$T/brief.md" --title model-guard --timeout 30 --no-check)
+role_error='必须用 --role <角色>；续已有线程用 --thread <名>'
+expect_rejection "首轮缺 --role 拒绝" "$role_error" "${model_run[@]}"
+expect_rejection "新 --thread 缺 --role 拒绝" "$role_error" "${model_run[@]}" --thread new-worker
+expect_rejection "run 未经同意改模型被拒" "指定模型是 gpt-6.2-sol" "${model_run[@]}" --role implement --model alternate-model
+expect_rejection "空白原话不能放行模型偏离" '带 --model-consent "<原话>"' "${model_run[@]}" --role implement --model alternate-model --model-consent " "
+expect_rejection "pi 角色模型为空时显式改模型须同意" "指定模型是 （未配置）" "${model_run[@]}" --role pi-no-model --engine pi --model alternate-model
+expect_rejection "review 未经同意改模型被拒" "指定模型是 gpt-6.2-astra" "$F" review role-model --model alternate-model
+expect_rc "run 指定同一模型无需同意" 4 "${model_run[@]}" --role implement --model gpt-6.2-sol
+expect_rejection "已有 implement 也不能隐式省略角色" "$role_error" "${model_run[@]}"
+expect_rc "为其他场景建 mechanical 线程" 4 "${model_run[@]}" --role mechanical --thread worker
+expect_rc "续已有线程可省略角色" 4 "${model_run[@]}" --thread worker --effort high
+python3 - "$model_dir/run-3.request.json" <<'PY2' && ok "续线程沿用 mechanical 模型且 --effort 可调" || bad "续线程角色 / 模型 / 推理档"
+import json,pathlib,sys
+req=pathlib.Path(sys.argv[1]); values=json.loads(req.read_text())
+assert req.with_suffix("").with_suffix(".role").read_text()=="mechanical"
+assert values["model"]=="gpt-6.1-terra" and values["effort"]=="high"
+PY2
+expect_rc "closeout 无需 --role" 4 "${model_run[@]}" --closeout
+if [ "$(cat "$model_dir/run-4.thread")" = worker ] && [ "$(cat "$model_dir/run-4.role")" = closeout ]; then
+  ok "closeout 续同一 mechanical 线程"
+else
+  bad "closeout 线程 / 角色记录"
+fi
+"${model_run[@]}" --role implement --model alternate-model --model-consent x > "$T/model-consent.out" 2> "$T/model-consent.stderr"; model_rc=$?
+if [ "$model_rc" -eq 4 ] && [ "$(cat "$model_dir/run-5.model-consent")" = x ] &&
+    grep -Fq '本轮模型的用户同意原话: x' "$T/model-consent.stderr" &&
+    python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["model"]=="alternate-model"' "$model_dir/run-5.request.json"; then
+  ok "run 经同意派发其他模型并记录原话"
+else
+  bad "run 模型同意留痕" "rc=$model_rc"
+fi
+expect_grep "run 报告展示用户同意原话" "本轮模型的用户同意原话: x" "$F" report role-model 5
+
 echo
 echo "通过 $pass 项，失败 ${#fails[@]} 项${fails[@]:+：}"; for f in "${fails[@]:-}"; do [ -n "$f" ] && echo "  - $f"; done
 [ "$KEEP" -eq 1 ] && echo "保留临时目录: $T" || rm -rf "$T"

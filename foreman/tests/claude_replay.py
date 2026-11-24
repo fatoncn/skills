@@ -284,7 +284,7 @@ def codex_snapshot(d1: pathlib.Path, d2: pathlib.Path, tmp_root: pathlib.Path, s
                     "--timeout", "30"], cwd=cwd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     resume = max(set(d1.glob("run-*.request.json")) - before, key=round_number)
     before = set(d1.glob("run-*.request.json"))
-    subprocess.run([shell, "run", "1", "--thread", "full-snapshot", "--prompt", brief, "--title", "full-snapshot",
+    subprocess.run([shell, "run", "1", "--role", "implement", "--thread", "full-snapshot", "--prompt", brief, "--title", "full-snapshot",
                     "--full-access", "用户明确要求完全权限", "--timeout", "30"], cwd=cwd, env=env,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     full = max(set(d1.glob("run-*.request.json")) - before, key=round_number)

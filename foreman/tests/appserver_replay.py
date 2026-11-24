@@ -155,8 +155,13 @@ def nested_case(outer_first):
 
 
 def outer_timeout():
-    replay = Replay([{"method": "outer", "emit": [{"delay": .15, "message": {"id": 1, "result": {}}}]}])
+    replay = Replay([
+        {"method": "initialize", "emit": [{"message": {"$requestId": True, "result": {"ready": True}}}]},
+        {"method": "outer", "emit": [{"delay": .15, "message": {"$requestId": True, "result": {}}}]},
+    ])
     def client(server, bridge):
+        # Wait for the fixture to start before measuring the short request deadline.
+        assert server.request("initialize", {}, 2) == {"ready": True}
         try:
             server.request("outer", {}, .03)
         except bridge.ProtocolError as exc:
@@ -598,13 +603,38 @@ def child_second_turn_is_tracked():
     print("turn identity: child second turn tracked PASS")
 
 
+def held_turns_use_each_request_model():
+    models = ["alternate-model", "role-model"]
+    steps = []
+    for i in range(len(models)):
+        turn_id = f"turn-{i}"
+        steps.append({"method": "turn/start", "emit": [
+            {"message": {"$requestId": True, "result": {"turn": {"id": turn_id}}}},
+            {"message": turn_event("turn/completed", "root-thread", turn_id, status="completed")},
+        ]})
+
+    def client(server, bridge):
+        for model in models:
+            runner = bridge.Runner({"thread_id": "root-thread", "prompt": "fixture", "model": model})
+            runner.server = server
+            server.on_notification = runner.handle_notification
+            assert runner.turn() == 0
+
+    _, record = Replay(steps).run(client)
+    requests = [event["params"] for event in record["events"]
+                if event.get("_fleet") == "out" and event.get("method") == "turn/start"]
+    assert [params.get("model") for params in requests] == models
+    print("held turns: per-request model PASS")
+
+
 def summary_uses_same_identity_rules():
     spec = importlib.util.spec_from_file_location("foreman_summarize", ROOT / "scripts" / "summarize.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
     events = [
-        {"_fleet": "thread", "threadId": "root-thread"},
+        {"_fleet": "thread", "threadId": "root-thread", "model": "thread-model"},
+        {"_fleet": "out", "method": "turn/start", "params": {"model": "turn-model"}},
         turn_event("item/completed", "root-thread", "root-turn", item={
             "type": "collabAgentToolCall", "receiverThreadIds": ["child-thread"]}),
         turn_event("item/completed", "child-thread", "child-turn", item={
@@ -621,6 +651,7 @@ def summary_uses_same_identity_rules():
     ]
     state = module.scan_appserver(events)
     assert state["settled"] and state["final"] == "ROOT"
+    assert state["model"] == "turn-model"
     assert state["child_tokens"]["subagent-1"]["total"]["inputTokens"] == 3
     assert state["tokens"] == 11
     legacy = module.scan_appserver([{"method": "turn/completed", "params": {"turn": {"status": "completed"}}}])
@@ -639,7 +670,7 @@ CASES = [baseline_request, lambda: nested_case(True), lambda: nested_case(False)
          root_final_then_child_final, missing_report_marker_fails, present_report_marker_succeeds,
          old_turn_is_ignored, child_completion_is_not_root_completion,
          pre_response_notifications_replayed, no_root_completion_is_not_inferred, child_second_turn_is_tracked,
-         summary_uses_same_identity_rules]
+         held_turns_use_each_request_model, summary_uses_same_identity_rules]
 
 
 def selftest() -> int:

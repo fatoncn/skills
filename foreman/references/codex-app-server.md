@@ -82,7 +82,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 | `config_overrides` | `[[key, tomlValue], …]` 进程级 `-c` |
 | `approval_policy`, `approvals_reviewer`, `approvals` | `on-request`（默认）/`never`；`auto_review`（默认）/`user`/`guardian_subagent`；兜底 `decline`/`accept` |
 | `user_explicitly_approved_full_access`, `full_access_reason` | 完全权限口子：仅 `foreman run --full-access "<原话>"` 生成；没有标记的 `danger-full-access` 被拒 |
-| `model`, `effort` | 模型；推理档（turn 级） |
+| `model`, `effort` | 模型与推理档（每轮随 `turn/start` 发送） |
 | `developer_instructions` | 角色提示词 + 批次背景 + 额外 context（foreman 组装成 `run-N.dev.md` 后读入） |
 | `prompt` | 本轮 user 输入（任务书 / 返工 prompt） |
 | `thread_id` | 空 = 新线程；非空 = `thread/resume` |
@@ -108,7 +108,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 - `turn/start.effort="low"` 被接受，`thread/start` 响应里 `reasoningEffort` 回显一致；`model` 回显一致。
 - `thread/resume` + `excludeTurns:true` 正常，续线程后模型记得上一轮。
 - **hold 模式（1.1.2）**：`codex_appserver.py serve <hold-dir>` 一条线程一个常驻进程，boot 一次（`thread/start|resume`）后持有写锁，队列 `<hold-dir>/queue/run-N.request.json` 来一轮跑一轮（请求多 `out_rc` / `timeout`，超时由执行体自己 `turn/interrupt` → rc 143），`release` 文件出现或空闲超 `idle_seconds` 才退；启动失败给队列里每轮写 rc 并抄失败事件。轮间的服务端通知落 `hold.jsonl`，每轮切到那轮的 jsonl（`_fleet: thread` 事件带 `held: true`）。开发者指令在载入时定死，所以「本轮位置」放 prompt 顶部。
-- **shared home 下 `thread/resume` 可能被桌面端抢锁**（2026-09-11 首张真票实测）：桌面端 ChatGPT 自带的 app-server 一旦打开同一条线程，resume 回 -32600「already has an active writer」，run 立即失败（rc=3）；本机并没有 foreman 自己的进程残留。处置：关掉桌面端那条线程再续，或 `release` 后 `run --thread <新名>` 另起并在 prompt 里补上下文（1.1.2 起 foreman 自己持锁，桌面端反而打不开它）；桌面端只看不开就不会占锁。
+- **shared home 下 `thread/resume` 可能被桌面端抢锁**（2026-09-11 首张真票实测）：桌面端 ChatGPT 自带的 app-server 一旦打开同一条线程，resume 回 -32600「already has an active writer」，run 立即失败（rc=3）；本机并没有 foreman 自己的进程残留。处置：关掉桌面端那条线程再续，或 `release` 后 `run --role <角色> --thread <新名>` 另起并在 prompt 里补上下文（1.1.2 起 foreman 自己持锁，桌面端反而打不开它）；桌面端只看不开就不会占锁。
 - `item/completed` 的 `fileChange`（apply_patch）与 `commandExecution` 事件形状与 schema 一致；apply_patch 的工具返回是 `{}`。
 - `thread/tokenUsage/updated.tokenUsage.total` 字段是 camelCase（`inputTokens` / `cachedInputTokens` / `outputTokens`）。
 - 后台 detach（setsid）+ `wait` + `tail` 全链路可用；`status` 在 3 秒内即显示 RUNNING。编排者优先把 `wait --timeout <按本轮总时长> --progress <通知节奏>` 放 Monitor；只能跑一次性后台 Bash 时，timeout 改成想看一次摘要的间隔；前台只等短活。
@@ -157,7 +157,7 @@ CODEX_HOME=<foreman home> codex app-server --listen stdio:// [-c key=value ...]
 
 执行体将此类前置条件失败、已 completed、当前无活动 turn 转为完整新排队轮次，标题「引导转排队」，记录 `_fleet: steer_requeued`；其它错误记录 `steer_error` 并保留原消息。提交时固定目标 turn，不能把原 turn 的纠偏误投到下一轮。RUNNING 的主循环和 WAITING 的 answer 轮询都消费 `hold-<线程>/steer/*.json`；成功回执放 `sent/`，失败放 `failed/`，CLI 最多等 30 秒，超时只表示尚无回执，不应重复发送。
 
-`--from-queue` 只撤回尚在 queue 的轮次；取队列与撤回共用票目录 `.runs.lock`。撤回清理 `run-N.*` 和 meta 的线程 runs，允许编号有空洞。`run-N.argv` 实际是 NUL 分隔的执行器 argv，没有原 `--prompt`；新请求的 `prompt_source` 存原任务书绝对路径，旧请求退回 `run-N.prompt.md` 并去掉完整生成位置块。转排队沿用原请求的模型、权限、工作目录等配置，重新建立全部轮次路径和账本。已有 hold 进程不会热加载新代码；CLI 用与 bridge.pid 匹配的 steer.pid 标记识别支持此通道的执行体，旧进程会明确拒绝且不改队列。结束并 release 后新起的进程才支持此通道。
+`--from-queue` 只撤回尚在 queue 的轮次；取队列与撤回共用票目录 `.runs.lock`。撤回清理 `run-N.*` 和 meta 的线程 runs，允许编号有空洞。`run-N.argv` 实际是 NUL 分隔的执行器 argv，没有原 `--prompt`；新请求的 `prompt_source` 存原任务书绝对路径，旧请求退回 `run-N.prompt.md` 并去掉完整生成位置块。转排队沿用原请求的模型、权限、工作目录等配置及模型同意原话，重新建立全部轮次路径和账本。已有 hold 进程不会热加载新代码；CLI 用与 bridge.pid 匹配的 steer.pid 标记识别支持此通道的执行体，旧进程会明确拒绝且不改队列。结束并 release 后新起的进程才支持此通道。
 
 ## Default 协作模式下的提问实测（2026-09-11）
 

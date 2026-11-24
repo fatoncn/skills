@@ -85,7 +85,7 @@ pi -p --mode json \
 
 `openrouter` + `qwen/qwen3.8-max` + thinking `high`。只认证了 openrouter 一家。
 `~/.pi/agent/trust.json` 里 `/Users/<you>/workspace` 已信任。
-换模型用 `$PF run --model <pattern>`，不要去改用户的全局 settings。
+经用户同意换模型后，用 `$PF run <id> --role <角色> --engine pi --model <pattern> --model-consent "<用户原话>" --prompt <file>`。用户的全局 settings 由用户维护。
 
 ## 模型实测（26-08-17）
 

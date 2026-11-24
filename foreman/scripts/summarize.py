@@ -321,6 +321,8 @@ def scan_appserver(events, role=None):
     for event in events:
         foreman = event.get("_fleet")
         if foreman == "out":
+            if event.get("method") == "turn/start":
+                state["model"] = (event.get("params") or {}).get("model") or state["model"]
             continue
         if foreman == "thread":
             state["id"] = event.get("threadId") or state["id"]

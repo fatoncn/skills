@@ -133,7 +133,7 @@ ensure_global_config() {
 # foreman 全局配置（本机一份，所有项目共用）。项目配置在 projects/<项目>/foreman.toml。
 schema = 1
 # 角色分工必须先由使用者过目确认，skill 才能派活：foreman setup 看表 → 和用户确认 → foreman setup --confirm 把它置 true。
-# 以后改角色直接编辑本文件即可，不用重新确认。
+# 指定模型见通用编排指导的角色表，模型换代先更新角色表。
 roles_confirmed = false
 
 [engines]
@@ -147,20 +147,14 @@ concurrency = 3
 
 # 角色分工（跨项目）：按活分档，每个角色 = 执行器 + 模型 + 推理档 + 角色文件。
 # 三个参考角色 implement / review / mechanical 都必需（foreman setup --confirm 会查）；再多的自己起名，foreman run --role <名> 取用。
-# 档位按「描述」定，不绑死模型名——模型会迭代，届时按描述重选（foreman doctor 打印当前可用模型与推理档）：
-#   implement  = 旗舰或次旗舰 + medium
-#   review     = 旗舰 + high
-#   mechanical = Codex 用 medium；Claude 用 low
-#   research   = 旗舰 + medium；只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；调研线程 run --role research
-#   accept     = 旗舰或次旗舰 + high（比实现者高一档）；验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；验收线程 run --role accept
-# 下面的 model 是 2026-11-20 的对应：旗舰 gpt-6.2-astra、次旗舰 gpt-6.2-sol；mechanical 用 gpt-6.1-terra。
+# 模型和默认推理档与通用编排指导的角色表一致。派发可按难度调整推理档。
 # 收尾不是角色：PR 收尾由实现者带着原口径续同一线程做（foreman run --closeout），skill 会把收尾阶段契约放进那一轮的 prompt。
-# 项目文件里写同名 [roles.<名>] 可以覆盖。可用模型与推理档用 foreman doctor 看。
+# 项目文件里写同名 [roles.<名>] 可以覆盖。覆盖 model 前须经用户同意。可用模型与推理档用 foreman doctor 看。
 # 每个角色还有一份「角色文件」= 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律），
 # 默认在 ~/.foreman/roles/<名>.md，foreman setup 会从 skill 的 assets/roles/ 拷五份参考角色样例，可随意改；要用别的路径就写 prompt = "<路径>"。
 # 干活纪律不写在角色文件里，每轮由编排者写进任务书。
 [roles.implement]
-# 实现 + 测试等一切写码活；foreman run 的默认角色。档位：旗舰或次旗舰 + medium
+# 实现 + 测试等一切写码活；foreman run --role implement 用
 engine = "codex"
 model = "gpt-6.2-sol"
 effort = "medium"
@@ -171,7 +165,7 @@ model = "claude-sonnet-5-5"
 effort = "medium"
 
 [roles.review]
-# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。档位：旗舰 + high。硬规矩：复审永远开新线程，绝不沿用实现的会话
+# 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见编排者拍板；foreman review 用，只读沙箱。硬规矩：复审永远开新线程，绝不沿用实现的会话
 engine = "codex"
 model = "gpt-6.2-astra"
 effort = "high"
@@ -191,7 +185,7 @@ model = "claude-sonnet-5-5"
 effort = "low"
 
 [roles.research]
-# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>。档位：旗舰 + medium
+# 只读调研：排查、核事实、找代码锚点、复现问题，交事实清单不下判断；调研线程用 foreman run --role research --writable <交付目录>
 engine = "codex"
 model = "gpt-6.2-astra"
 effort = "medium"
@@ -201,7 +195,7 @@ model = "claude-opus-5-5"
 effort = "high"
 
 [roles.accept]
-# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>。档位：旗舰或次旗舰 + high（比实现者高一档）
+# 验收：把产品真跑起来对清单看（浏览器 / 预览 / 查库），证据落交付目录，发现问题只报不修；验收线程用 foreman run --role accept --writable <证据目录>
 engine = "codex"
 model = "gpt-6.2-sol"
 effort = "high"
@@ -304,7 +298,7 @@ if extra: print("  参考角色样例、未在表里（档位没定义时 run --
 PY2
   echo
   echo "implement / review / mechanical 三个参考角色必需；research（只读调研）、accept（验收）随样例一起给，建议保留；再多的自己起名。收尾不是角色，由实现者续线程做。"
-  echo "档位口径（按描述选，模型迭代后重选，foreman doctor 看当前可用模型）：实现者 = 旗舰或次旗舰 + low～medium；复审 = 旗舰 + medium；轻活 = 次旗舰 + low～medium（便宜但精准）；调研 = 与实现者同级 + high 及以上；验收 = 与实现者同级 + medium。"
+  echo "配置按通用编排指导的指定模型与默认推理档。改用其他模型前须经用户同意。foreman doctor 可看当前可用模型与推理档。"
   echo "角色文件 = 注入执行者的契约（位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式），不含干活纪律；干活纪律每轮写进任务书。"
   echo "改角色：直接编辑角色文件；加角色：加 [roles.<名>] + 同名 .md（或 prompt = \"<路径>\"）。"
   echo "下一步：把这张表和角色文件念给用户过目；用户确认后执行: foreman setup --confirm 。确认前 run / review 会拒绝派活。"
@@ -1079,10 +1073,26 @@ PY
   CLAUDE_STEER_INBOX=""; CLAUDE_STEER_PENDING=()
 }
 
+specified_role_model() {
+  if [ "$2" = claude ]; then claude_role_cfg "$1" model; else role_cfg "$1" model; fi
+}
+require_model_consent() { # <覆盖模型> <指定模型> <用户原话>
+  [ -z "$1" ] || [ "$1" = "$2" ] || [[ "$3" = *[![:space:]]* ]] ||
+    die "指定模型是 ${2:-（未配置）}；用别的模型须经用户同意，带 --model-consent \"<原话>\""
+}
+record_model_consent() { # <轮次文件前缀> <用户原话>
+  if [[ "$2" = *[![:space:]]* ]]; then
+    printf '%s' "$2" > "$1.model-consent"
+    printf '!! 本轮模型的用户同意原话: %s\n' "$2" >&2
+  else
+    rm -f "$1.model-consent"
+  fi
+}
+
 cmd_run() {
   local issue="" prompt_file="" role="" closeout=0 engine="" model="" effort="" detach=0 timeout=1800 title="" tname="" prname=""
   local writable="" extra_ctx="" thinking="" qtimeout="" full_access_reason="" full_access_flag=0 no_check=0
-  local max_turns="" max_budget_usd=""
+  local max_turns="" max_budget_usd="" model_consent=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --prompt) prompt_file="$2"; shift 2 ;;
@@ -1093,14 +1103,15 @@ cmd_run() {
       --pr) prname="$2"; shift 2 ;;
       --closeout) closeout=1; shift ;;
       --engine) engine="$2"; shift 2 ;;
-      --model) model="$2"; shift 2 ;;
+      --model) model="$2"; [ -n "$model" ] || die "--model 必须指定模型"; shift 2 ;;
+      --model-consent) [ "$#" -ge 2 ] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
       --thinking) thinking="$2"; shift 2 ;;
       --detach) detach=1; shift ;;
       --timeout) timeout="$2"; shift 2 ;;
       --no-check) no_check=1; shift ;;
       --writable) writable="$writable $2"; shift 2 ;;
-      --new-thread|--new-session) die "run: --new-thread 已取消。同名线程不覆盖：要重开就 foreman release <id> --thread <名> 放掉旧的，再 run --thread <新名> 另起（旧线程的账本保留）" ;;
+      --new-thread|--new-session) die "run: --new-thread 已取消。同名线程不覆盖：要重开就 foreman release <id> --thread <名> 放掉旧的，再 run --role <角色> --thread <新名> 另起（旧线程的账本保留）" ;;
       --question-timeout) qtimeout="$2"; shift 2 ;;
       --max-turns) max_turns="$2"; shift 2 ;;
       --max-budget-usd) max_budget_usd="$2"; shift 2 ;;
@@ -1110,7 +1121,7 @@ cmd_run() {
       *) [ -z "$issue" ] && issue="$1" || die "run: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman run <票 id> --prompt <file> [--role <名>] [--thread <线程名>] [--closeout] [--engine codex|pi|claude] [--model m] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
+  [ -n "$issue" ] || die "用法: foreman run <票 id> --role <名> --prompt <file> [--thread <线程名>] [--closeout] [--engine codex|pi|claude] [--model m] [--model-consent \"<原话>\"] [--effort e] [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <file>] [--full-access \"<原话>\"]"
   [ -n "$prompt_file" ] || die "必须给 --prompt <file>"
   [ -f "$prompt_file" ] || die "prompt 文件不存在: $prompt_file"
   # 完全权限的口子：只有用户在本会话明确要求时才用，且必须把用户原话作为理由传进来（进日志、进摘要横幅）。
@@ -1127,6 +1138,10 @@ cmd_run() {
 
   local dir wt; dir="$(issue_dir "$issue")"
   lock_runs "$dir"
+  if [ "$closeout" -eq 0 ] && [ -z "$role" ]; then
+    [ -n "$tname" ] && [ -n "$(thread_get "$issue" "$tname" role)" ] ||
+      die "run: 必须用 --role <角色>；续已有线程用 --thread <名>"
+  fi
   resolve_pr "$issue" "$prname"; wt="$PR_WT"
   [ -z "$wt" ] || [ -d "$wt" ] || die "PR「${PR_NAME}」的 worktree 不存在（被清理过？）: $wt"
   require_work_dir_in_project "$wt"
@@ -1141,7 +1156,7 @@ cmd_run() {
         [ -n "$tname" ] || die "PR「${PR_NAME}」没有 implement / mechanical 实现轮；closeout 请显式给 --thread <实现线程>"
       fi
     else
-      local desired_role existing_thread default_pr; desired_role="${role:-implement}"
+      local desired_role existing_thread default_pr; desired_role="$role"
       existing_thread="$(thread_for_pr_role "$dir" "$PR_NAME" "$desired_role")"
       if [ -n "$existing_thread" ]; then tname="$existing_thread"
       else default_pr="$(default_pr_name "$issue")"; tname="$desired_role"; [ "$PR_NAME" = "$default_pr" ] || tname="${desired_role}@${PR_NAME}"; fi
@@ -1158,15 +1173,18 @@ cmd_run() {
   else
     [ -n "$role" ] || role="implement"
   fi
-  require_role "$role"
   local rf_role; rf_role="$role"
   [ -n "$engine" ] || engine="$(role_cfg "$role" engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
   case "$engine" in codex|pi|claude) ;; *) die "run: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
+  local specified_model; specified_model="$(specified_role_model "$role" "$engine")"
+  require_model_consent "$model" "$specified_model" "$model_consent"
+  require_role "$role"
+  [ -n "$model" ] || model="$specified_model"
   if [ "$engine" != "claude" ] && [ -n "$max_turns$max_budget_usd" ]; then die "run: --max-turns / --max-budget-usd 只对 claude 引擎有效"; fi
   if [ "$engine" = "claude" ]; then
-    local claude_model claude_effort; claude_model="$(claude_role_cfg "$role" model)"; claude_effort="$(claude_role_cfg "$role" effort)"
-    [ -n "$claude_model" ] && [ -n "$claude_effort" ] || die "角色 ${role} 没有 claude 档位，在 [roles.${role}.claude] 配 model / effort"
-    [ -n "$model" ] || model="$claude_model"; [ -n "$effort" ] || effort="$claude_effort"
+    local claude_effort; claude_effort="$(claude_role_cfg "$role" effort)"
+    [ -n "$specified_model" ] && [ -n "$claude_effort" ] || die "角色 ${role} 没有 claude 档位，在 [roles.${role}.claude] 配 model / effort"
+    [ -n "$effort" ] || effort="$claude_effort"
     case "$model" in sonnet|fable|opus|best|haiku|claude-*) ;; *) die "run: Claude --model 只接受 sonnet / fable / opus / best / haiku 或 claude- 开头的完整模型 id（收到 '$model'）" ;; esac
     case "$effort" in low|medium|high|xhigh|max) ;; *) die "run: Claude --effort 只接受 low / medium / high / xhigh / max（收到 '$effort'）" ;; esac
     require_claude_slot
@@ -1175,7 +1193,6 @@ cmd_run() {
     case "$max_turns" in ''|*[!0-9]*|0) die "run: --max-turns 必须是正整数" ;; esac
     python3 -c 'import sys; assert float(sys.argv[1]) > 0' "$max_budget_usd" 2>/dev/null || die "run: --max-budget-usd 必须是正数"
   else
-    [ -n "$model" ] || model="$(role_cfg "$role" model)"
     [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
   fi
 
@@ -1202,6 +1219,7 @@ cmd_run() {
   # run-N.role 给 summarize 选探针放行表：收尾轮写 closeout（阶段标记，放行对自己 PR 的 push / gh 写），其它写角色名
   if [ "$closeout" -eq 1 ]; then printf 'closeout' > "$dir/run-$n.role"; else printf '%s' "$role" > "$dir/run-$n.role"; fi
   if [ "$full_access" -eq 1 ]; then printf '%s' "$full_access_reason" > "$dir/run-$n.full-access"; else rm -f "$dir/run-$n.full-access"; fi
+  record_model_consent "$dir/run-$n" "$model_consent"
   printf '%s' "$tname" > "$dir/run-$n.thread"
   thread_set "$issue" "$tname" engine "$engine"; thread_set "$issue" "$tname" role "$role"; thread_set "$issue" "$tname" kind run; thread_set "$issue" "$tname" runs "run-$n"
   # 只看不改的角色：起跑前记一份 worktree 的 git status，report 时比对。事件流里的 fileChange 只有 apply_patch 才有，
@@ -1335,10 +1353,11 @@ append_review_focus() {
 }
 
 cmd_review() {
-  local issue="" model="" effort="" timeout=1800 detach=0 engine="" focus="" rtitle="" prname=""
+  local issue="" model="" model_consent="" effort="" timeout=1800 detach=0 engine="" focus="" rtitle="" prname=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --model) model="$2"; shift 2 ;;
+      --model) model="$2"; [ -n "$model" ] || die "--model 必须指定模型"; shift 2 ;;
+      --model-consent) [ "$#" -ge 2 ] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
       --engine) engine="$2"; shift 2 ;;
       --prompt) focus="$2"; shift 2 ;;
@@ -1350,25 +1369,26 @@ cmd_review() {
       *) [ -z "$issue" ] && issue="$1" || die "review: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi|claude] [--model m] [--effort e] [--detach] [--timeout 1800]"
+  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi|claude] [--model m] [--model-consent \"<原话>\"] [--effort e] [--detach] [--timeout 1800]"
   if [ -n "$focus" ]; then [ -f "$focus" ] || die "review: --prompt 文件不存在: ${focus}"; focus="$(cd "$(dirname "$focus")" && pwd)/$(basename "$focus")"; fi
   init_repo_context; require_git; require_project; require_issue "$issue"
   require_roles_confirmed
+  [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
+  case "$engine" in codex|pi|claude) ;; *) die "review: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
+  local specified_model; specified_model="$(specified_role_model review "$engine")"
+  require_model_consent "$model" "$specified_model" "$model_consent"
   require_role review
+  [ -n "$model" ] || model="$specified_model"
   local review_role_file report_marker
   review_role_file="$(role_prompt_file review)"
   report_marker="$(report_marker_from_file "$review_role_file")"
   [ -n "$report_marker" ] || die "角色 review 的输出格式段没有二级标题，无法生成报告标记"
-  [ -n "$engine" ] || engine="$(role_cfg review engine)"; [ -n "$engine" ] || engine="$(cfg engines.default codex)"
-  case "$engine" in codex|pi|claude) ;; *) die "review: --engine 只能是 codex / pi / claude（收到 '$engine'）" ;; esac
   if [ "$engine" = claude ]; then
-    [ -n "$model" ] || model="$(claude_role_cfg review model)"
     [ -n "$effort" ] || effort="$(claude_role_cfg review effort)"
     [ -n "$model" ] && [ -n "$effort" ] || die "角色 review 没有 claude 档位，在 [roles.review.claude] 配 model / effort"
     case "$model" in sonnet|fable|opus|best|haiku|claude-*) ;; *) die "review: Claude --model 非法（收到 '$model'）" ;; esac
     case "$effort" in low|medium|high|xhigh|max) ;; *) die "review: Claude --effort 非法（收到 '$effort'）" ;; esac
   else
-    [ -n "$model" ] || model="$(role_cfg review model)"
     [ -n "$effort" ] || effort="$(role_cfg review effort)"
   fi
   # 硬规矩（用户 09-11）：复审永远是新线程（ephemeral、thread_id 为空），绝不沿用实现或收尾的会话
@@ -1410,6 +1430,7 @@ $unclean"
   else echo "(没有留存交付报告)" > "$inbox/REVIEW_REPORT.md"; fi
 
   echo "==> $engine 复审 #$n  model=$model effort=$effort  diff=$(wc -l < "$inbox/REVIEW_DIFF.patch") 行"
+  record_model_consent "$dir/review-$n" "$model_consent"
   printf 'review' > "$dir/review-$n.role"; printf '%s' "$PR_NAME" > "$dir/review-$n.pr"
   [ "$IN_GIT" -eq 1 ] && git -C "$wt" status --porcelain > "$dir/review-$n.wt-before" 2>/dev/null || true
 
@@ -1667,6 +1688,9 @@ PY
     [ "$n" -gt 0 ] || die "$issue 还没有任何 $kind"
   fi
   if [ -n "$filter_pr" ] && [ "$(cat "$dir/$kind-$n.pr" 2>/dev/null || true)" != "$filter_pr" ]; then die "$kind-$n 不属于 PR「${filter_pr}」"; fi
+  if [ -s "$dir/$kind-$n.model-consent" ]; then
+    printf '⚠ 本轮模型的用户同意原话: %s\n' "$(cat "$dir/$kind-$n.model-consent")"
+  fi
   if [ "$(call_state "$dir/$kind-$n")" = "CANCELLED" ]; then echo "== $issue $kind#$n CANCELLED：$(cat "$dir/$kind-$n.cancelled")"; print_check_report "$dir/$kind-$n"; return 0; fi
   if [ "$(cat "$dir/$kind-$n.rc" 2>/dev/null || true)" = 6 ]; then
     echo "!!!! 需要人工/编排者判断 !!!!"
@@ -2204,7 +2228,7 @@ EOF
         CHECKING)        printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  check 中\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
         DONE)            printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  rc=%s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" "$(cat "$f.rc")" ;;
         ENGINE_DOWN)     printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  执行器暂时不可用（看 report 顶部的原始报错），告知用户\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
-        THREAD_BUSY)     printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  线程被别的客户端占着（桌面端打开了它），关掉再续，急就 release 后 run --thread <新名> 另起\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
+        THREAD_BUSY)     printf '%-16s %-9s %-6s %-10s %-8s %-8s %s  线程被别的客户端占着（桌面端打开了它），关掉再续，急就 release 后 run --role <角色> --thread <新名> 另起\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
         *)               printf '%-16s %-9s %-6s %-10s %-8s %-8s %s\n' "$id" "$kind#$n" "$eng" "$role" "$st" "$check" "$(elapsed_of "$f")" ;;
       esac
     done
@@ -2218,7 +2242,7 @@ EOF
     done
   done
   [ "$any" -eq 1 ] || echo "（没有本机制下的会话记录；历史轮次用 list 看）"
-  echo "状态: RUNNING 在跑（主用时从本轮派发、即 request 写入账本起算，QUEUED→RUNNING 不归零）| WAITING 执行者在等编排者回答（foreman questions / answer）| CHECKING 自动 check 中 | DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
+  echo "状态: RUNNING 在跑（主用时从本轮派发、即 request 写入账本起算，QUEUED→RUNNING 不归零）| WAITING 执行者在等编排者回答（foreman questions / answer）| CHECKING 自动 check 中 | DONE 结束（看 rc）| QUEUED 在常驻执行体队列里等上一轮 | ENGINE_DOWN 执行器不可用（404 / 5xx / 额度 / 登录）→ 告知用户 | THREAD_BUSY 线程被桌面端占着 → 关掉再续，急就 release 后 run --role <角色> --thread <新名> 另起 | DEAD 进程消失且无完成标记=按失败处理"
   local hd hid; for hd in "$ISSUES_DIR"/*/hold-*; do [ -d "$hd" ] && hold_alive "$hd" || continue; hid="$(basename "$(dirname "$hd")")"; echo "HOLD   $hid  线程「$(basename "$hd" | sed 's/^hold-//')」由常驻执行体占着（pid $(cat "$hd/bridge.pid")；桌面端此时打不开它；foreman release $hid 释放）"; done
   echo "本机 codex 线程在跑: $(active_codex_runs) / 上限 $(concurrency_limit) | claude: $(active_claude_runs) / 上限 $(claude_concurrency_limit)"
 }
@@ -2996,18 +3020,19 @@ foreman <command>            执行器: codex（默认，app-server）| claude�
   硬规矩: 线程 cwd 永远 = 项目根（编排者的工作目录），worktree / 交付目录写进每轮 prompt 顶部的「本轮位置」；
           沙箱：复审 read-only（只看 diff）；其余角色（实现 / 轻活 / 调研 / 验收）workspace-write；审批默认「替我审批」(on-request + auto_review)。
           完全权限只有一个口子: run --full-access "<用户明确要求的原话>"（无沙箱无审批，原话进日志与摘要横幅；review 没有这个口子）
-  run <id> --prompt <f> [--role <名>] [--title <线程名内容>] [--closeout] [--engine codex|pi|claude] [--model m] [--effort e]
+  run <id> --role <名> --prompt <f> [--title <线程名内容>] [--thread <名>] [--closeout] [--engine codex|pi|claude] [--model m] [--model-consent "<原话>"] [--effort e]
            [--detach] [--timeout 1800] [--no-check] [--writable <dir>] [--context <f>] [--question-timeout s]
            [--max-turns n] [--max-budget-usd usd]
            [--full-access "<用户要求原话>"]
                            跑一轮（首轮建线程，之后自动续线程）。并发派活一律 --detach，再 status / wait 收敛
-                           --role 取 ~/.foreman/config.toml 的 [roles.<名>]（跨项目，可自定；项目 foreman.toml 同名可覆盖），默认 implement
+                           --role 取配置中的 [roles.<名>]；用 --thread 续已有线程或用 --closeout 时可省略
                            --role research = 只读调研线程（排查 / 核事实 / 找锚点，交事实清单）；--role accept = 验收线程（产品真跑起来对清单看，只报不修）
                            两者都配 --writable <交付目录> 放开交付目录，探针把该目录当作内部
                            --closeout = PR 收尾轮：默认续目标 PR 最近的 implement / mechanical 实现线程（显式 --role / --thread 优先），prompt 顶部自动加收尾阶段契约
+                           --model 偏离指定模型须经用户同意，用 --model-consent 记录原话；--effort 可调
                            写码角色 rc=0 后自动 detached 跑 check；--no-check 只跳过本轮
                            codex 与 claude 使用独立并发池；claude 档位来自 [roles.<名>.claude]，池上限来自 [engines.claude] concurrency（默认 3）
-  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|claude|pi] [--model m] [--effort e] [--detach] [--timeout 1800]
+  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|claude|pi] [--model m] [--model-consent "<原话>"] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
                            口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N

@@ -389,7 +389,7 @@ def template_for(directory, n):
     prefix = Path(directory) / f"run-{n}"
     req = json.loads(Path(str(prefix) + ".request.json").read_text(encoding="utf-8"))
     fields = {}
-    for suffix in ("role", "pr", "cwd", "timeout", "rmwt", "engine", "home", "dev.md", "full-access"):
+    for suffix in ("role", "pr", "cwd", "timeout", "rmwt", "engine", "home", "dev.md", "full-access", "model-consent"):
         path = Path(str(prefix) + "." + suffix)
         if path.is_file():
             fields[suffix] = path.read_text(encoding="utf-8")
@@ -788,6 +788,8 @@ class Runner:
             "threadId": self.thread_id,
             "input": [{"type": "text", "text": req["prompt"]}],
         }
+        if req.get("model"):
+            turn_params["model"] = req["model"]
         if req.get("effort"):
             turn_params["effort"] = req["effort"]
         # 只在显式要求时才传 turn 级 sandboxPolicy。0.153.4 实测：带上它，git 写 worktree gitdir 的
@@ -866,7 +868,7 @@ class Runner:
         rc = 3 if self.turn_id is None else 1
         if "active writer" in error:
             rc = 5
-            hint = "这条线程正被别的客户端打开着（shared home 下多半是 Codex 桌面端），关掉它再续；急的话 foreman release 后 run --thread <新名> 另起并在 prompt 里补上下文"
+            hint = "这条线程正被别的客户端打开着（shared home 下多半是 Codex 桌面端），关掉它再续；急的话 foreman release 后 run --role <角色> --thread <新名> 另起并在 prompt 里补上下文"
             srv.log_event({"_fleet": "thread_busy", "hint": hint, "error": error})
             sys.stderr.write(f"codex_appserver: THREAD_BUSY {hint}\n")
             return rc
