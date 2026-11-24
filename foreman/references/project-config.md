@@ -58,6 +58,7 @@
 | `engines.claude.concurrency` | 在跑 Claude 轮次上限，独立计数 | 3 |
 | `roles.<名>` | 角色 = `engine` / `model` / `effort` + 角色文件；implement / review / mechanical 三个都必需，再多的自定 | Codex 档位 |
 | `roles.<名>.claude` | 该角色在 Claude 引擎下的 `model` / `effort`；缺失则 `--engine claude` 直接拒绝 | 见[角色表](orchestration-guide.md#角色与模型档位) |
+| `roles.<名>.full_access` | 该角色的 codex 轮次常开完全权限（无沙箱、无审批，同 `run --full-access`，理由记为该配置项）；review 角色不生效；用户明确要求才打开 | false |
 | `roles.<名>.prompt` | 角色文件路径（契约：位置 / 沙箱事实 / 分工边界 / 提问 / 输出格式，不含干活纪律） | `~/.foreman/roles/<名>.md`，`setup` 从 `assets/roles/` 拷样例 |
 
 项目 foreman.toml 里写同名 `[roles.<名>]` 可覆盖档位与角色文件。项目级 `[roles.*]` 修改 `model` 视为偏离角色表的指定模型，须经用户同意后再加。

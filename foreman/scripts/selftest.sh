@@ -458,6 +458,22 @@ expect_grep "threads 记下 research 线程" "research" "$F" threads 2
 mkdir -p "$T/evidence"
 expect_rc   "run --role accept --writable（假 codex）" 4 "$F" run 2 --pr a --role accept --writable "$T/evidence" --prompt "$T/brief.md" --title "验收" --timeout 30
 expect_grep "threads 记下 accept 线程" "accept" "$F" threads 2
+python3 - "$FOREMAN_HOME/config.toml" <<'PY'
+import sys; p=sys.argv[1]; s=open(p).read(); assert "[roles.accept]\n" in s; open(p,'w').write(s.replace("[roles.accept]\n","[roles.accept]\nfull_access = true\n",1))
+PY
+expect_rc   "accept 角色配置 full_access 后续跑（假 codex）" 4 "$F" run 2 --pr a --role accept --writable "$T/evidence" --prompt "$T/brief.md" --title "验收-完全权限" --timeout 30
+req_fa="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev/null | head -1)"
+[ -n "$req_fa" ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["sandbox"]=="danger-full-access" and r["approval_policy"]=="never", (r["sandbox"], r["approval_policy"])' "$req_fa" && grep -q 'roles.accept' "${req_fa%.request.json}.full-access" && ok "角色配置 full_access：codex 无沙箱无审批并留痕" || bad "角色配置 full_access 未生效或未留痕"
+expect_rc   "未配 full_access 的角色不受影响（假 codex）" 4 "$F" run 2 --pr a --role research --writable "$T/deliver" --prompt "$T/brief.md" --title "调研-对照" --timeout 30
+req_nofa="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev/null | head -1)"
+[ -n "$req_nofa" ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["sandbox"]=="workspace-write", r["sandbox"]' "$req_nofa" && [ ! -e "${req_nofa%.request.json}.full-access" ] && ok "未配 full_access 的角色仍是 workspace-write" || bad "full_access 串到了别的角色"
+python3 - "$FOREMAN_HOME/config.toml" <<'PY'
+import sys; p=sys.argv[1]; s=open(p).read(); open(p,'w').write(s.replace("[roles.accept]\nfull_access = true\n","[roles.accept]\nfull_access = \"maybe\"\n",1))
+PY
+expect_grep "full_access 非布尔值被拒" "full_access 只能是 true 或 false" "$F" run 2 --pr a --role accept --writable "$T/evidence" --prompt "$T/brief.md" --title "验收-坏值" --timeout 30
+python3 - "$FOREMAN_HOME/config.toml" <<'PY'
+import sys; p=sys.argv[1]; s=open(p).read(); open(p,'w').write(s.replace("[roles.accept]\nfull_access = \"maybe\"\n","[roles.accept]\n",1))
+PY
 expect_grep "DEAD TOCTOU 测试登记" "PR「here」" "$F" here 41
 toctou_dir="$(dirname "$(find "$FOREMAN_HOME/projects/proj/issues" -path '*/41/meta.json' -print -quit)")"; sleep 300 & toctou_pid=$!
 make_hold_fixture "$toctou_dir" toctou 12 "$toctou_pid" here implement; rm -f "$toctou_dir/hold-toctou/queue/run-12.request.json" "$toctou_dir/hold-toctou/active.json"

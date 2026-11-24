@@ -199,6 +199,7 @@ effort = "high"
 engine = "codex"
 model = "gpt-6.2-sol"
 effort = "high"
+# full_access = true   # 只对 codex 生效：本角色每轮都无沙箱、无审批（同 run --full-access），用户明确要求才打开
 
 [roles.accept.claude]
 model = "claude-sonnet-5-5"
@@ -1196,6 +1197,15 @@ cmd_run() {
   else
     [ -n "$effort" ] || effort="$(role_cfg "$role" effort)"
   fi
+  # 本机配置可给单个角色常开完全权限（cookie 2026-11-24：只开验收）：只对 codex 生效，review 不放开；效果、留痕、横幅同 --full-access
+  if [ "$full_access" -eq 0 ] && [ "$engine" = "codex" ] && [ "$role" != "review" ]; then
+    case "$(role_cfg "$role" full_access)" in
+      ""|false) ;;
+      true) full_access=1; full_access_reason="本机配置 [roles.${role}].full_access = true"
+            echo "!! 本轮按本机配置使用完全权限（无沙箱、无审批）：[roles.${role}].full_access = true" >&2 ;;
+      *) die "roles.${role}.full_access 只能是 true 或 false" ;;
+    esac
+  fi
 
   local n; n=$(( $(latest_n "$dir" run) + 1 ))
   local orig_prompt; orig_prompt="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$prompt_file")"
@@ -1247,7 +1257,7 @@ cmd_run() {
       fi
       if [ -n "$thread" ]; then echo "==> codex run #$n  issue=$issue  线程=$tname role=$role$([ "$closeout" -eq 1 ] && echo '(收尾)')  续 ${thread:0:8}…  model=$model effort=$effort"
       else echo "==> codex run #$n  issue=$issue  线程=$tname role=$role$([ "$closeout" -eq 1 ] && echo '(收尾)')  新开  model=$model effort=$effort"; fi
-      local sb ap ar; sb="workspace-write"; ap="$(cfg codex.approval_policy on-request)"; ar="$(cfg codex.approvals_reviewer auto_review)"   # review 之外的角色一律 workspace-write + 替我审批（cookie 09-11）；复审只看 diff，固定 read-only；完全权限只走 --full-access
+      local sb ap ar; sb="workspace-write"; ap="$(cfg codex.approval_policy on-request)"; ar="$(cfg codex.approvals_reviewer auto_review)"   # review 之外的角色一律 workspace-write + 替我审批（cookie 09-11）；复审只看 diff，固定 read-only；完全权限只走 --full-access 或本机角色配置 full_access
       if [ "$full_access" -eq 1 ]; then sb="danger-full-access"; ap="never"; ar=""; fi
       write_request "$dir/run-$n.request.json" \
         "codex_bin=$CODEX_BIN" "home=$run_home" "cwd=$PROJECT_ROOT" "work_dir=$wt" \
