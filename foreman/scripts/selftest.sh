@@ -277,7 +277,8 @@ import pathlib,sys
 p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("\nrequest_user_input = false", "",1))
 PY2
 expect_grep "prompt 顶部有「本轮位置」" "本轮位置" head -1 "${req%.request.json}.prompt.md"
-expect_grep "位置块提示系统临时目录" '临时文件：本轮需要写测试或脚本的临时文件时，写系统临时目录（\$TMPDIR[，]或已确认可写的 /tmp）。这是上面写入范围的例外。不要写进工作树或交付目录，交付目录只放交付物。' cat "${req%.request.json}.prompt.md"
+expect_grep "位置块提示系统临时目录" '临时文件：本轮需要写测试或脚本的临时文件时，写系统临时目录（\$TMPDIR' cat "${req%.request.json}.prompt.md"
+expect_grep "位置块注明临时目录是写入范围的例外" '这是上面写入范围的例外。不要写进工作树或交付目录，交付目录只放交付物。' cat "${req%.request.json}.prompt.md"
 expect_grep "位置块按环境写 rg 可用性" "执行环境：rg:" cat "${req%.request.json}.prompt.md"
 expect_grep "Codex 位置块写本轮 timeout" "本轮时限：30 秒" cat "${req%.request.json}.prompt.md"
 expect_no_grep "Codex 位置块不写 Claude 轮数 / 美元预算" "Claude 预算" cat "${req%.request.json}.prompt.md"

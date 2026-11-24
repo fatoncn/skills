@@ -936,7 +936,7 @@ position_block() {
     echo "- Claude 预算：工具调用轮数上限 ${POSITION_MAX_TURNS}、预算 \$${POSITION_MAX_BUDGET_USD}"
   fi
   local d; for d in $POSITION_WRITABLE; do echo "- 交付目录（额外可写）：\`${d}\`"; done
-  echo '- 临时文件：本轮需要写测试或脚本的临时文件时，写系统临时目录（$TMPDIR，或已确认可写的 /tmp）。这是上面写入范围的例外。不要写进工作树或交付目录，交付目录只放交付物。'
+  echo '- 临时文件：本轮需要写测试或脚本的临时文件时，写系统临时目录（$TMPDIR''，或已确认可写的 /tmp）。这是上面写入范围的例外。不要写进工作树或交付目录，交付目录只放交付物。'
 }
 prepend_position() {  # <prompt 文件>
   local tmp; tmp="$(mktemp)"; { position_block; printf '\n---\n\n'; cat "$1"; } > "$tmp" && mv "$tmp" "$1"
