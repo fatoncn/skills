@@ -2,7 +2,7 @@
 name: foreman
 description: 使用 Foreman 外派执行器并管理其票、线程、验收和收尾。用户明确要求 Foreman 外派，或任务涉及已有 Foreman 票或线程时使用；普通调研、排查和代码审查不触发。
 metadata:
-  version: "1.5.37"
+  version: "1.5.38"
 ---
 
 # Foreman
@@ -19,3 +19,13 @@ Foreman 是本地 Agent 外派框架。按用户或项目规则已选定的执�
 不要预读全部文档。只使用宿主子 agent 或仅查通用编排指导时，不加载 Foreman 操作手册、不运行 setup/init/doctor。用户明确要求亲自执行或不派发时遵循该要求。
 
 执行权限仍受用户授权及项目规则约束；合并由人执行。分工指导和脚本操作分别在上述文档维护，不在入口重复展开。
+
+## 反馈
+
+使用中发现 Foreman 自身的问题（脚本报错或行为异常、文档与实际行为不符、流程设计缺陷），欢迎到 [fatoncn/skills](https://github.com/fatoncn/skills/issues) 提 issue：
+
+- 先用 `gh issue list --repo fatoncn/skills --state all --search "<关键词>"` 查重；已有同类 issue 的，在原 issue 下补充。
+- 写明版本（本文件 `metadata.version`）、执行的命令、现象和报错原文、复现步骤；去掉密钥和与问题无关的项目内容。
+- 发 issue 或评论前，先把草稿给用户确认，同意后再提交；`gh` 不可用时，把草稿和链接交给用户。
+
+只报 Foreman 本身的问题；用户项目里的问题和执行器的偶发失误不在此列。

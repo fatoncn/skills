@@ -1,5 +1,10 @@
 # foreman 版本记录
 
+## 1.5.38 — 2026-11-24
+
+- SKILL.md 末尾新增「反馈」一节：使用中发现 Foreman 自身的问题时，查重、整理草稿，经用户确认后到 fatoncn/skills 提 issue；`gh` 不可用时把草稿和链接交给用户。
+- 依据 cookie 2026-11-24「按你的建议加」。
+
 ## 1.5.37 — 2026-11-24
 
 - 本机 `config.toml` 的 `[roles.<名>]` 可写 `full_access = true`，让该角色的 codex 轮次常开完全权限，效果与留痕同 `run --full-access`；review 角色不生效，默认关闭。
