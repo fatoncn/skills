@@ -20,9 +20,9 @@
 
 表里的推理档是默认值，编排者可按任务难度调整，无需征求同意。模型换代等角色表改动走 PR，由用户合并。`doctor` 打印当前可用模型与推理档。
 
-| 角色 | 干什么 | Codex 指定模型 / 默认档位（2026-11-24） | Claude 指定模型 / 默认档位 |
+| 角色 | 干什么 | Codex 指定模型 / 默认档位（2026-11-26） | Claude 指定模型 / 默认档位 |
 |---|---|---|---|
-| `implement` | 实现、补测试、接线等一切写码活；`run --role implement` | gpt-6.2-sol / medium | claude-sonnet-5-5 / medium |
+| `implement` | 实现、补测试、接线等一切写码活；`run --role implement` | gpt-6.2-astra / medium | claude-sonnet-5-5 / medium |
 | `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | gpt-6.2-astra / high | claude-opus-5-5 / xhigh |
 | `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | gpt-6.1-terra / medium | claude-sonnet-5-5 / low |
 | `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | gpt-6.2-astra / medium | claude-opus-5-5 / high |

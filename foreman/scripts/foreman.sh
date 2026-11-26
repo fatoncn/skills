@@ -156,7 +156,7 @@ concurrency = 3
 [roles.implement]
 # 实现 + 测试等一切写码活；foreman run --role implement 用
 engine = "codex"
-model = "gpt-6.2-sol"
+model = "gpt-6.2-astra"
 effort = "medium"
 # prompt = "~/.foreman/roles/implement.md"   # 默认值，可省略
 

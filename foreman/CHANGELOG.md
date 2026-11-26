@@ -1,5 +1,10 @@
 # foreman 版本记录
 
+## 1.5.39 — 2026-11-26
+
+- Codex 实现角色的指定模型由 `gpt-6.2-sol` 改为 `gpt-6.2-astra`，默认推理档仍为 medium。角色表、setup 模板、项目配置示例与自测同步。已有的本机 `config.toml` 不会自动改写，要手动把 `[roles.implement]` 的 `model` 改成新值。
+- 依据 cookie 2026-11-26「把 codex 的实现推荐模型改为 6.2astra」。
+
 ## 1.5.38 — 2026-11-24
 
 - SKILL.md 末尾新增「反馈」一节：使用中发现 Foreman 自身的问题时，查重、整理草稿，经用户确认后到 fatoncn/skills 提 issue；`gh` 不可用时把草稿和链接交给用户。
