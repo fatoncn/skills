@@ -126,8 +126,11 @@ foreman diff   <id>     # 完整改动
 
 ```bash
 foreman review <id> --prompt <REVIEW-id.md>   # codex：只读沙箱、新线程、就地审；档位取 roles.review；REVIEW-id.md 首段是你写的需求口径
+foreman review <id> --prompt <REVIEW-id.md> --out <批次目录>/REVIEW-<id>-r<N>.md   # 要存档时：跑完由脚本把报告拷过去
 foreman review <id> --engine pi     # pi：一次性副本 worktree，审完丢弃
 ```
+
+**复审报告就是复审者的最后一条消息**：复审是只读沙箱，写不了任何文件。报告由脚本存成票目录下的 `review-N.last.md`，`wait` 收敛时和 `report` 都会打印全文和这个路径。任务书里**不要**要求复审者把结果写到某个文件、也不要给输出路径或交付目录：它写不了，只会在消息里说明没写成，你再去找文件会误以为它没干活。要在批次目录留档，用 `--out <文件>`，由脚本拷过去（不能落在被审的 worktree 里）。
 
 ```bash
 foreman run <id> --role accept --prompt <accept-id.md> --title "…" --writable <证据目录> --detach   # 位置是这张 PR 的 worktree（只读用，可起本地服务）；实现者线程已停手
@@ -217,7 +220,7 @@ HEAD 已进入 `origin/<base>` 时一律按「无新提交」判断，跳过 PR 
 | `foreman bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
 | `foreman here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
 | `foreman run <id> --role 名 --prompt f --title 内容 [--pr 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|claude\|pi] [--model m] [--model-consent "<原话>"] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮。用 `--thread` 续已有线程或用 `--closeout` 时可省略 `--role`。并发一律 `--detach`；claude 一轮一进程并用 session resume |
-| `foreman review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model m] [--model-consent "<原话>"] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
+| `foreman review <id> [--pr 名] [--prompt f] [--out 文件] --title 内容 [--engine] [--model m] [--model-consent "<原话>"] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板；报告是最后一条消息（`review-N.last.md`），`--out` 让脚本拷一份到指定文件 |
 | `foreman steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 口径变化默认立刻通知；`tail` 确认方向已改；刚排队的任务用 `--from-queue` 立刻生效 |
 | `foreman questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
 | `foreman status` / `wait [<id>...] [--timeout 秒] [--progress 秒]` / `tail <id>` | 收敛与进度；推荐在 Monitor 下等，单次最长 30 分钟：`timeout_ms` 拉满 1800000，`wait --timeout` 不超过 1800；每条到期通知先 `status` 查已结束线程、再立刻重挂，到期通知不是进展行，一轮超过 30 分钟至少重挂一次（cookie 2026-09-28 实测：Monitor 到期杀掉 wait，只发 expired 通知）；Bash `run_in_background` 最长 10 分钟；`--progress 0` 只关周期进展，WAITING 返回 3，仍在跑返回 2 并附事件尾 |

@@ -177,6 +177,8 @@
 
 **只提意见，不下判决**：复审者的每条意见带依据（哪条项目 / 仓库约定、哪个最佳实践、什么输入会出错）；你逐条判采不采纳，采纳的进返工任务书。
 
+**不写输出路径**：复审只读，报告就是它的最后一条消息，脚本存成 `review-N.last.md`，`wait` / `report` 打印全文。这份 REVIEW 不加「输出写到某文件」「交付目录」之类的节；要留档用 `foreman review --out <文件>`。
+
 ---
 
 ## CR-<id>.md（高风险票的 Claude `/code-review`；另起一张票，`run --role review --engine claude --writable <报告目录>/ --prompt` 传入）

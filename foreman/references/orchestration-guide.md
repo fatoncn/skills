@@ -23,7 +23,7 @@
 | 角色 | 干什么 | Codex 指定模型 / 默认档位（2026-11-26） | Claude 指定模型 / 默认档位 |
 |---|---|---|---|
 | `implement` | 实现、补测试、接线等一切写码活；`run --role implement` | gpt-6.2-astra / medium | claude-sonnet-5-5 / medium |
-| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱；`review` 用 | gpt-6.2-astra / high | claude-opus-5-5 / xhigh |
+| `review` | 对抗性复审：只看 diff，挑破坏项目约定 / 仓库约定 / 最佳实践的地方，只提意见你拍板；永远新线程、只读沙箱，报告是最后一条消息（不写文件，留档用 `review --out`）；`review` 用 | gpt-6.2-astra / high | claude-opus-5-5 / xhigh |
 | `mechanical` | 轻活：按既定契约接线、补测试、改文案、批量重命名，不做设计取舍；`run --role mechanical` | gpt-6.1-terra / medium | claude-sonnet-5-5 / low |
 | `research` | 只读调研：排查、核事实、找锚点、复现，交事实清单不下判断；`run --role research --writable <交付目录>` | gpt-6.2-astra / medium | claude-opus-5-5 / high |
 | `accept` | 验收：把产品真跑起来对清单看，证据落交付目录，发现问题只报不修；`run --role accept --writable <证据目录>` | gpt-6.2-sol / high | claude-sonnet-5-5 / high |

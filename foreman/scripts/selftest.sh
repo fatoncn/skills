@@ -381,6 +381,7 @@ expect_rc   "run 2 --pr b" 4 "$F" run 2 --role implement --pr b --prompt "$T/bri
 req2="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/run-*.request.json 2>/dev/null | head -1)"
 [ -n "$req2" ] && [ "$(cat "${req2%.request.json}.pr")" = "b" ] && ok "run-N.pr 记下针对的 PR" || bad "run-N.pr"
 [ -n "$req2" ] && [ "$(cat "${req2%.request.json}.thread")" = "implement@b" ] && ok "非默认 PR 自动使用 角色@PR 线程名" || bad "非默认 PR 自动线程名"
+expect_grep "review --out 不能落在被审 worktree" "不能落在被审的 worktree" "$F" review 2 --pr b --title x --timeout 30 --out "$T/proj/app/.claude/worktrees/foreman-2-b/R.md"
 expect_rc   "review 2 --pr b（假 codex）" 4 "$F" review 2 --pr b --title "审 b" --timeout 30
 rreq="$(ls -t "$FOREMAN_HOME"/projects/proj/issues/*/2/review-*.request.json 2>/dev/null | head -1)"
 [ -n "$rreq" ] && python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["sandbox"]=="read-only" and r.get("ephemeral") is True' "$rreq" && ok "review 请求：只读 + ephemeral" || bad "review 请求"
@@ -1339,7 +1340,7 @@ import pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text(); s=re.sub(r'(\[engines\.claude\][^\[]*?concurrency\s*=\s*)0',r'\g<1>3',s,count=1); p.write_text(s)
 PY2
 
-expect_rc "Claude 复审使用只读工具集" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" review 1 --engine claude --model sonnet --model-consent "同意这轮复审用 sonnet" --effort low --timeout 30
+expect_rc "Claude 复审使用只读工具集" 0 env FOREMAN_SELFTEST=1 CLAUDE_BIN="$SKILL_DIR/tests/claude_replay.py" CLAUDE_REPLAY_SCENARIO=success "$F" review 1 --engine claude --model sonnet --model-consent "同意这轮复审用 sonnet" --effort low --timeout 30 --out "$T/review-archive/sub/R1.md"
 claude_review_req="$(find "$steer_dir" -maxdepth 1 -name 'review-*.request.json' -print | sort -V | tail -1)"
 python3 - "$claude_review_req" <<'PY2' && ok "Claude 复审 argv / MCP / 标记契约" || bad "Claude 复审契约"
 import json,pathlib,sys
@@ -1352,6 +1353,9 @@ assert meta['mcp_servers']==['foreman'] and all(x in settings['permissions']['de
 assert events[0]['_foreman']['review_readonly']=='tools_only'
 PY2
 expect_grep "Claude 复审报告展示用户同意原话" "本轮模型的用户同意原话: 同意这轮复审用 sonnet" "$F" report 1 "$(basename "${claude_review_req%.request.json}" | tr -d '-')"
+if [ -s "$T/review-archive/sub/R1.md" ] && cmp -s "$T/review-archive/sub/R1.md" "${claude_review_req%.request.json}.last.md"; then ok "review --out 由脚本把报告拷到指定文件"; else bad "review --out 拷贝" "$T/review-archive/sub/R1.md 不存在或与 last.md 不一致"; fi
+expect_grep "report 点明复审报告原文路径" "原文存在: ${claude_review_req%.request.json}.last.md" "$F" report 1 "$(basename "${claude_review_req%.request.json}" | tr -d '-')"
+expect_grep "report 点明 --out 拷贝位置" "已按 --out 拷到: .*/review-archive/sub/R1.md$" "$F" report 1 "$(basename "${claude_review_req%.request.json}" | tr -d '-')"
 expect_grep "Claude 复审拒绝 --full-access" "未知参数" "$F" review 1 --engine claude --full-access x
 expect_grep "Claude steer 只排下一轮" "claude 引擎：steer 已排队，下一轮 run 生效（当前轮不中断）" "$F" steer 1 --thread claude-haiku "只使用追加说明"
 expect_grep "status 标出 Claude 待生效 steer" "claude.*NEXT" "$F" status 1

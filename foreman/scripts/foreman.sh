@@ -770,6 +770,8 @@ exec_call() {
   wd=$!
   wait "$pid" || rc=$?
   { kill "$wd" && wait "$wd"; } >/dev/null 2>&1 || true
+  # review --out：复审者只读写不了文件，由脚本把报告（最后一条消息）拷到编排者指定的位置；先拷再写 rc，wait 看到结束时文件已在
+  if [ -s "$f.out" ] && [ -s "$f.last.md" ]; then cp "$f.last.md" "$(cat "$f.out")" 2>/dev/null || true; fi
   printf '%s' "$rc" > "$f.rc"
   rm -f "$f.pid"
   if [ -n "$rmwt" ] && [ -d "$rmwt" ]; then
@@ -1373,9 +1375,10 @@ append_review_focus() {
 }
 
 cmd_review() {
-  local issue="" model="" model_consent="" effort="" timeout=1800 detach=0 engine="" focus="" rtitle="" prname=""
+  local issue="" model="" model_consent="" effort="" timeout=1800 detach=0 engine="" focus="" rtitle="" prname="" out=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --out) out="$2"; [ -n "$out" ] || die "--out 必须给文件路径"; shift 2 ;;
       --model) model="$2"; [ -n "$model" ] || die "--model 必须指定模型"; shift 2 ;;
       --model-consent) [[ "$#" -ge 2 && "$2" != --* ]] || die "--model-consent 必须带用户原话"; model_consent="$2"; shift 2 ;;
       --effort) effort="$2"; shift 2 ;;
@@ -1389,7 +1392,7 @@ cmd_review() {
       *) [ -z "$issue" ] && issue="$1" || die "review: 多余参数 $1"; shift ;;
     esac
   done
-  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--engine codex|pi|claude] [--model m] [--model-consent \"<原话>\"] [--effort e] [--detach] [--timeout 1800]"
+  [ -n "$issue" ] || die "用法: foreman review <票 id> [--prompt REVIEW.md] [--out 报告文件] [--engine codex|pi|claude] [--model m] [--model-consent \"<原话>\"] [--effort e] [--detach] [--timeout 1800]"
   if [ -n "$focus" ]; then [ -f "$focus" ] || die "review: --prompt 文件不存在: ${focus}"; focus="$(cd "$(dirname "$focus")" && pwd)/$(basename "$focus")"; fi
   init_repo_context; require_git; require_project; require_issue "$issue"
   require_roles_confirmed
@@ -1419,6 +1422,14 @@ cmd_review() {
   local unclean; unclean="$(git -C "$wt" status --porcelain | grep -v '^??' || true)"
   [ -z "$unclean" ] || die "$issue 的 worktree 有未提交的已跟踪改动，先让它提交再审:
 $unclean"
+  if [ -n "$out" ]; then
+    [ ! -d "$out" ] || die "review: --out 要给文件路径，不是目录: ${out}"
+    mkdir -p "$(dirname "$out")" || die "review: --out 的目录建不了: $(dirname "$out")"
+    out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
+    case "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$out")/" in
+      "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$wt")/"*) die "review: --out 不能落在被审的 worktree 里（会弄脏被审改动）: ${out}" ;;
+    esac
+  fi
 
 
   lock_runs "$dir"
@@ -1452,6 +1463,7 @@ $unclean"
   echo "==> $engine 复审 #$n  model=$model effort=$effort  diff=$(wc -l < "$inbox/REVIEW_DIFF.patch") 行"
   record_model_consent "$dir/review-$n" "$model_consent"
   printf 'review' > "$dir/review-$n.role"; printf '%s' "$PR_NAME" > "$dir/review-$n.pr"
+  if [ -n "$out" ]; then printf '%s' "$out" > "$dir/review-$n.out"; else rm -f "$dir/review-$n.out"; fi
   [ "$IN_GIT" -eq 1 ] && git -C "$wt" status --porcelain > "$dir/review-$n.wt-before" 2>/dev/null || true
 
   if [ "$engine" = "codex" ]; then
@@ -1736,6 +1748,13 @@ PY
     echo "  - 执行者自报完成，但自动 check 失败"
   ;; esac
   python3 "$PY_SUMMARIZE" ${role:+--role "$role"} "$dir/$kind-$n.jsonl" "$dir/$kind-$n.stderr" "$dir/$kind-$n.last.md" || summary_rc=$?
+  if [ "$kind" = review ] && [ -s "$dir/review-$n.last.md" ]; then
+    echo "== 复审报告就是上面这条最后一条消息（复审只读、不写文件），原文存在: $dir/review-$n.last.md"
+    if [ -s "$dir/review-$n.out" ]; then
+      if [ -f "$(cat "$dir/review-$n.out")" ]; then echo "   已按 --out 拷到: $(cat "$dir/review-$n.out")"
+      else echo "!! 没能按 --out 拷到 $(cat "$dir/review-$n.out")，用上面的原文路径"; fi
+    fi
+  fi
   print_check_report "$dir/$kind-$n"
   timeout_state_report "$dir" "$kind" "$n"
   [ "$timed_out" -eq 1 ] && return 0
@@ -3060,7 +3079,7 @@ foreman <command>            执行器: codex（默认，app-server）| claude�
                            --model 偏离指定模型须经用户同意，用 --model-consent 记录原话；--effort 可调
                            写码角色 rc=0 后自动 detached 跑 check；--no-check 只跳过本轮
                            codex 与 claude 使用独立并发池；claude 档位来自 [roles.<名>.claude]，池上限来自 [engines.claude] concurrency（默认 3）
-  review <id> [--prompt REVIEW.md] [--title <内容>] [--engine codex|claude|pi] [--model m] [--model-consent "<原话>"] [--effort e] [--detach] [--timeout 1800]
+  review <id> [--prompt REVIEW.md] [--out 报告文件] [--title <内容>] [--engine codex|claude|pi] [--model m] [--model-consent "<原话>"] [--effort e] [--detach] [--timeout 1800]
                            对抗性复审：只读沙箱、新线程（ephemeral）、就地审，挑破坏项目 / 仓库约定与最佳实践的地方，只提意见编排者拍板；--prompt 给需求口径；pi 档一次性副本
   steer <id> [--thread <名>] (<文本> | --file <f> | --from-queue N)
                            口径变化默认立刻通知并用 tail 确认方向；已排队的 run 想立即生效用 --from-queue N
