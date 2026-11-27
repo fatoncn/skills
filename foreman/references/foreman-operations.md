@@ -8,11 +8,7 @@
 
 框架主线使用 Codex app-server 常驻线程；Claude Code CLI 引擎处于 beta，pi 为可选引擎。源仓库为 github.com/fatoncn/skills 的 foreman/ 目录，本机源目录为 ~/skills/foreman；客户端通过安装目录或符号链接使用。
 
-脚本入口（下文统一用 `$FOREMAN`）：
-
-```bash
-FOREMAN=~/.claude/skills/foreman/scripts/foreman.sh
-```
+命令入口是 `foreman`，即 PATH 上指向 `scripts/foreman.sh` 的软链（建法见「第一次用」），下文命令都这样写。`command -v foreman` 找不到，或 `foreman doctor` 报 PATH 上的不是本脚本时，改用安装目录下的全路径（如 `~/.claude/skills/foreman/scripts/foreman.sh`），并提醒用户按「第一次用」加上。
 
 ## 两条硬规矩（使用者在本机定的红线，脚本层强制，项目规则不能放宽）
 
@@ -49,16 +45,19 @@ skill 以**仓库内的票**为工作单位；票下挂若干线程；每条线�
 **本机一次（跨项目）**：
 
 ```bash
-$FOREMAN doctor                              # 二进制 / 登录 / app-server 握手 / 沙箱边界，零 token
-$FOREMAN setup --codex-home shared|isolated  # 必须显式二选一，不设不能派活
-$FOREMAN setup                               # 生成角色表 + 拷五份角色文件样例 → 表和文件都念给用户过目
-$FOREMAN setup --confirm                     # 用户确认后打标记；没确认之前 run / review 一律拒绝
+ln -sfn ~/.claude/skills/foreman/scripts/foreman.sh ~/.local/bin/foreman  # 加到 PATH，之后直接敲 foreman
+foreman doctor                              # 二进制 / 登录 / app-server 握手 / 沙箱边界，零 token
+foreman setup --codex-home shared|isolated  # 必须显式二选一，不设不能派活
+foreman setup                               # 生成角色表 + 拷五份角色文件样例 → 表和文件都念给用户过目
+foreman setup --confirm                     # 用户确认后打标记；没确认之前 run / review 一律拒绝
 ln -sfn ~/skills/foreman ~/.codex/skills/foreman  # 装到 Codex；Codex 新会话生效
 ```
 
+建议把 `foreman` 加到 PATH（上面第一行），agent 就不用每次写全路径。软链的源按实际安装位置写（只装到 Codex 的用 `~/.codex/skills/foreman/scripts/foreman.sh`）；`~/.local/bin` 要在 agent 所用 shell 的 PATH 上，不在就换一个在的目录。装完用 `command -v foreman` 核对，`foreman doctor` 也会检查。
+
 建议先安装 ripgrep（`brew install ripgrep`）：执行者搜索更快、更省轮次，`foreman doctor` 会在未安装时提示，但不阻塞使用。
 
-这一节只在要把活外派给 spawn 之外的 Agent（codex / claude / pi 执行器）时才需要做。没做完，受影响的只有 `$FOREMAN` 命令（`run` / `review` 拒绝派发）：分工判断、任务书、验收纪律照用；告知用户 foreman 尚未初始化，让用户选：现在初始化，还是本会话改用 spawn；不替用户跑 `setup --confirm`。
+这一节只在要把活外派给 spawn 之外的 Agent（codex / claude / pi 执行器）时才需要做。没做完，受影响的只有 `foreman` 命令（`run` / `review` 拒绝派发）：分工判断、任务书、验收纪律照用；告知用户 foreman 尚未初始化，让用户选：现在初始化，还是本会话改用 spawn；不替用户跑 `setup --confirm`。
 
 codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 foreman 线程，但执行者继承桌面端 config.toml 里的 MCP、插件、notify 和全局 AGENTS.md，**foreman 占着的线程桌面端打不开（这是有意的：线程由常驻执行体持锁，直到 `release` / `cleanup`）；反过来桌面端先打开了某条线程时 foreman 续不上，`status` 显示 `THREAD_BUSY`，关掉它再续**。把差别念给用户选。切换后旧线程仍按创建时的 home 续；复审线程是 ephemeral，两种模式都不留。
 
@@ -69,7 +68,7 @@ codex home：`shared` = 共用桌面端的 `~/.codex`，桌面端能看到 forem
 **每个项目一次**（在项目内任一仓库里跑）：
 
 ```bash
-$FOREMAN init              # 生成 ~/.foreman/projects/<项目>/foreman.toml 骨架
+foreman init              # 生成 ~/.foreman/projects/<项目>/foreman.toml 骨架
 ```
 
 `init` 只生成中性骨架并打印要填的清单（gh 入口、worktree 落点与前缀、分支规范与是否严格）；仓库事实（origin、远端默认分支、装依赖命令、验收命令）运行时推导，不写文件。**你读项目规则**填项目特有字段，按仓库不同的（基线分支、要拷的 env、验收命令）写进 `[repos."<slug>"]`，填完**念给用户过一遍再开工**。它是配置不是规则；字段说明见 `project-config.md`。协作流程规则只放本 skill 与项目规则，不写进代码仓库。
@@ -84,9 +83,9 @@ $FOREMAN init              # 生成 ~/.foreman/projects/<项目>/foreman.toml �
 ### 每张票若干 PR、若干线程
 
 ```bash
-$FOREMAN bootstrap <id> --slug <slug> [--pr <名>] [--type feat] --base <汇总分支或base> --context <BACKGROUND.md> --gh-issue <n>   # 给票建一个 PR（worktree + 分支）
-$FOREMAN run <id> --role implement --prompt <brief.md> --title "…" --detach --timeout 1800   # 首轮建线程；票有多个 PR 时加 --pr <名>
-$FOREMAN run <id> --role implement [--pr <名>] --prompt <rework.md> --title "…" --detach   # 返工按同一角色和 PR 续线程
+foreman bootstrap <id> --slug <slug> [--pr <名>] [--type feat] --base <汇总分支或base> --context <BACKGROUND.md> --gh-issue <n>   # 给票建一个 PR（worktree + 分支）
+foreman run <id> --role implement --prompt <brief.md> --title "…" --detach --timeout 1800   # 首轮建线程；票有多个 PR 时加 --pr <名>
+foreman run <id> --role implement [--pr <名>] --prompt <rework.md> --title "…" --detach   # 返工按同一角色和 PR 续线程
 ```
 
 实现轮需要把工作树之外的交付物写到指定目录时，用 `run --writable <目录>` 显式放开并登记该目录。
@@ -96,8 +95,8 @@ $FOREMAN run <id> --role implement [--pr <名>] --prompt <rework.md> --title "�
 **调研线程**（排查、核事实、找锚点、复现，交付物给你拆票、下判断）用同一套命令，只是没有 PR：
 
 ```bash
-$FOREMAN bootstrap <id> --slug research-<slug> --no-install [--gh-issue <n>]                     # 最新 origin/<base> 的检出；只读是角色契约，不装依赖；有背景 issue 就挂上
-$FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writable <交付目录> --detach
+foreman bootstrap <id> --slug research-<slug> --no-install [--gh-issue <n>]                     # 最新 origin/<base> 的检出；只读是角色契约，不装依赖；有背景 issue 就挂上
+foreman run <id> --role research --prompt <research-id.md> --title "…" --writable <交付目录> --detach
 ```
 
 调研不必先建 issue，票 id 用一个词就行；但**有背景 issue 就 `--gh-issue` 挂上**，线程名的 `{ids}` 才带号，桌面端一眼能认出它归哪张票。交付目录放项目约定的中间产物目录（项目没规定就 `~/.foreman/projects/<项目>/batches/<批次>/`）；`--writable` 把它放开，`report` 的越界探针把它当作内部，改到检出里的文件照样标出。调研票不走 `check` / `diff` / `pr`，验收就是你逐条核交付物（阶段 4）。追问用 `run <id> --role research [--pr <名>] --prompt <followup.md>`，脚本按同一角色和 PR 续线程。用完 `cleanup <id> --force`（分支没有提交，直接删）。任务书模板 `research-<id>.md` 见 `issue-pr-flow.md`：问事实不问方案。
@@ -120,23 +119,23 @@ $FOREMAN run <id> --role research --prompt <research-id.md> --title "…" --writ
 审核判据、复审风险档、返工及交付纪律见 [通用编排指导](orchestration-guide.md#阶段-4--验收你的核心工作)。本节只列 Foreman 操作。
 
 ```bash
-$FOREMAN report <id>     # 摘要：模型档位、token、命令失败、越界探针、审批请求、提问、交付报告
-$FOREMAN check  <id>     # 真跑 verify.commands（或票里的完成定义命令）
-$FOREMAN diff   <id>     # 完整改动
+foreman report <id>     # 摘要：模型档位、token、命令失败、越界探针、审批请求、提问、交付报告
+foreman check  <id>     # 真跑 verify.commands（或票里的完成定义命令）
+foreman diff   <id>     # 完整改动
 ```
 
 ```bash
-$FOREMAN review <id> --prompt <REVIEW-id.md>   # codex：只读沙箱、新线程、就地审；档位取 roles.review；REVIEW-id.md 首段是你写的需求口径
-$FOREMAN review <id> --engine pi     # pi：一次性副本 worktree，审完丢弃
+foreman review <id> --prompt <REVIEW-id.md>   # codex：只读沙箱、新线程、就地审；档位取 roles.review；REVIEW-id.md 首段是你写的需求口径
+foreman review <id> --engine pi     # pi：一次性副本 worktree，审完丢弃
 ```
 
 ```bash
-$FOREMAN run <id> --role accept --prompt <accept-id.md> --title "…" --writable <证据目录> --detach   # 位置是这张 PR 的 worktree（只读用，可起本地服务）；实现者线程已停手
+foreman run <id> --role accept --prompt <accept-id.md> --title "…" --writable <证据目录> --detach   # 位置是这张 PR 的 worktree（只读用，可起本地服务）；实现者线程已停手
 ```
 
 ```bash
 git -C <wt> log --oneline origin/<base>..HEAD          # 提交历史干净
-$FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只打印命令（预览）
+foreman pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只打印命令（预览）
 ```
 
 `report` 里这些信号出现就是**没通过**：turn 没正常完成；模型 / 协议错误；命中越界探针（push / gh 写 / 部署 / 关掉 lint 规则 / skip 测试 / 破坏性 git）；请求过沙箱外权限（看它有没有绕路）；报告贴不出真实命令输出。
@@ -144,10 +143,10 @@ $FOREMAN pr <id> --title "..." --body-file <body.md> --yes   # 不带 --yes 只�
 ### 批量回收与 worktree 索引
 
 ```bash
-$FOREMAN gc                              # 预览所有项目
-$FOREMAN gc --project my-project --idle-hours 72
-$FOREMAN gc --project my-project --force # 按默认 24 小时阈值执行
-$FOREMAN list --json --all-projects
+foreman gc                              # 预览所有项目
+foreman gc --project my-project --idle-hours 72
+foreman gc --project my-project --force # 按默认 24 小时阈值执行
+foreman list --json --all-projects
 ```
 
 `gc` 可从任意目录运行，读取 `FOREMAN_HOME/projects`。默认预览，不刷新 Git 引用、不写账本。每条登记输出一行，含项目、仓库、票、PR、worktree、判定和原因。末行汇总预览、已回收、跳过和部分回收的数量。查询网络或认证失败记为 `gh_query_failed`，跳过该条。遇到账本读取或写入等内部错误时退出非 0。worktree 已删除但账本写入失败会以原登记身份报告 `部分回收 ledger_update_failed`。
@@ -211,24 +210,24 @@ HEAD 已进入 `origin/<base>` 时一律按「无新提交」判断，跳过 PR 
 
 | 命令 | 用途 |
 |---|---|
-| `$FOREMAN setup [--codex-home shared\|isolated] [--confirm]` | 本机一次：codex home 模式（必须显式选）+ 角色分工 + 角色文件样例，确认后才能派活 |
-| `$FOREMAN init [--force]` / `config` | 项目配置（一个项目一份，按仓库覆盖） |
-| `$FOREMAN doctor [<wt>]` | 前置 + app-server 握手 + 沙箱自检（零 token） |
-| `$FOREMAN selftest [--keep]` | 零 token 自测：隔离目录 + 假 codex，把 setup / init / here / bootstrap / run / review / check / diff / pr / cleanup 和各条守卫走一遍。**改过 skill 的脚本就跑它**，全绿再用 |
-| `$FOREMAN bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
-| `$FOREMAN here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
-| `$FOREMAN run <id> --role 名 --prompt f --title 内容 [--pr 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|claude\|pi] [--model m] [--model-consent "<原话>"] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮。用 `--thread` 续已有线程或用 `--closeout` 时可省略 `--role`。并发一律 `--detach`；claude 一轮一进程并用 session resume |
-| `$FOREMAN review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model m] [--model-consent "<原话>"] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
-| `$FOREMAN steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 口径变化默认立刻通知；`tail` 确认方向已改；刚排队的任务用 `--from-queue` 立刻生效 |
-| `$FOREMAN questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
-| `$FOREMAN status` / `wait [<id>...] [--timeout 秒] [--progress 秒]` / `tail <id>` | 收敛与进度；推荐在 Monitor 下等，单次最长 30 分钟：`timeout_ms` 拉满 1800000，`wait --timeout` 不超过 1800；每条到期通知先 `status` 查已结束线程、再立刻重挂，到期通知不是进展行，一轮超过 30 分钟至少重挂一次（cookie 2026-09-28 实测：Monitor 到期杀掉 wait，只发 expired 通知）；Bash `run_in_background` 最长 10 分钟；`--progress 0` 只关周期进展，WAITING 返回 3，仍在跑返回 2 并附事件尾 |
-| `$FOREMAN threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
-| `$FOREMAN report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
-| `$FOREMAN pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
-| `$FOREMAN release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
-| `$FOREMAN list [--all-projects] [--json]` | 票与线程状态，或每条 PR 登记一项的机器可读索引 |
-| `$FOREMAN cleanup <id> [--pr 名] --force` | 清理一个 PR 的 worktree，未提交、未推送或目标 PR 有活跃轮次时拒绝 |
-| `$FOREMAN gc [--project 名] [--idle-hours N] [--force]` | 批量预览或回收符合条件的闲置 worktree，详见「批量回收与 worktree 索引」 |
+| `foreman setup [--codex-home shared\|isolated] [--confirm]` | 本机一次：codex home 模式（必须显式选）+ 角色分工 + 角色文件样例，确认后才能派活 |
+| `foreman init [--force]` / `config` | 项目配置（一个项目一份，按仓库覆盖） |
+| `foreman doctor [<wt>]` | 前置 + app-server 握手 + 沙箱自检（零 token） |
+| `foreman selftest [--keep]` | 零 token 自测：隔离目录 + 假 codex，把 setup / init / here / bootstrap / run / review / check / diff / pr / cleanup 和各条守卫走一遍。**改过 skill 的脚本就跑它**，全绿再用 |
+| `foreman bootstrap <id> (--branch b \| --slug s) [--pr 名] [--base] [--copy-env f] [--context] [--gh-issue]` | 给票建一个 PR：worktree + 分支 + 环境（需要在 git 仓库里）；再跑一次加 `--pr` 就是第二个 PR；id 任意。调研票加 `--no-install`，只要检出 |
+| `foreman here <id> [--base] [--context] [--gh-issue]` | 不建 worktree，把当前检出登记为票的一个 PR「here」（不在 git 仓库里也行） |
+| `foreman run <id> --role 名 --prompt f --title 内容 [--pr 名] [--thread 名] [--closeout] [--writable dir] [--engine codex\|claude\|pi] [--model m] [--model-consent "<原话>"] [--effort] [--detach] [--timeout] [--full-access "<原话>"]` | 跑一轮。用 `--thread` 续已有线程或用 `--closeout` 时可省略 `--role`。并发一律 `--detach`；claude 一轮一进程并用 session resume |
+| `foreman review <id> [--pr 名] [--prompt f] --title 内容 [--engine] [--model m] [--model-consent "<原话>"] [--effort] [--detach]` | 对抗性复审（只读、新线程）；`--prompt` 给需求口径与关注点，只提意见你拍板 |
+| `foreman steer <id> [--thread <名>] <文本> / --file <f> / --from-queue N` | 口径变化默认立刻通知；`tail` 确认方向已改；刚排队的任务用 `--from-queue` 立刻生效 |
+| `foreman questions [<id>]` / `answer <id> <文本>` | 执行者提问 / 你回答 |
+| `foreman status` / `wait [<id>...] [--timeout 秒] [--progress 秒]` / `tail <id>` | 收敛与进度；推荐在 Monitor 下等，单次最长 30 分钟：`timeout_ms` 拉满 1800000，`wait --timeout` 不超过 1800；每条到期通知先 `status` 查已结束线程、再立刻重挂，到期通知不是进展行，一轮超过 30 分钟至少重挂一次（cookie 2026-09-28 实测：Monitor 到期杀掉 wait，只发 expired 通知）；Bash `run_in_background` 最长 10 分钟；`--progress 0` 只关周期进展，WAITING 返回 3，仍在跑返回 2 并附事件尾 |
+| `foreman threads <id>` | 这张票下的全部线程（名字 / 引擎 / 角色 / 引擎内引用 / 轮次） |
+| `foreman report <id> [N\|reviewN] [--pr 名]` / `check <id> [--pr 名] [cmd...]` / `diff <id> [--pr 名]` | 验收三件；多 PR 时都可用 `--pr` 定位 |
+| `foreman pr <id> [--pr 名] --title --body-file [--yes]` | push + 建 GitHub PR（`--yes` 执行；不带只打印预览） |
+| `foreman release <id> [--thread 名]` | 释放常驻执行体占着的线程（编排者明确结束这轮工作时；cleanup 也会做） |
+| `foreman list [--all-projects] [--json]` | 票与线程状态，或每条 PR 登记一项的机器可读索引 |
+| `foreman cleanup <id> [--pr 名] --force` | 清理一个 PR 的 worktree，未提交、未推送或目标 PR 有活跃轮次时拒绝 |
+| `foreman gc [--project 名] [--idle-hours N] [--force]` | 批量预览或回收符合条件的闲置 worktree，详见「批量回收与 worktree 索引」 |
 
 ## 参考
 

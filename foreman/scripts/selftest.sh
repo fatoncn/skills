@@ -86,6 +86,7 @@ else:
 PY
 chmod +x "$T/fake-codex"
 ln -s "$SKILL_DIR/tests/claude_replay.py" "$T/bin/claude"
+ln -s "$F" "$T/bin/foreman.real"; ln -s foreman.real "$T/bin/foreman"   # 模拟加到 PATH：两跳、第二跳是相对目标
 pass=0; fails=()
 ok()   { pass=$((pass+1)); echo "  [OK]  $1"; }
 bad()  { fails+=("$1"); echo "  [!!]  $1${2:+ —— $2}"; }
@@ -164,6 +165,10 @@ if [ "$doctor_nogit_rc" -eq 0 ] && ! printf '%s\n' "$doctor_nogit_out" | grep -q
 else
   bad "非 git 目录 doctor" "rc=${doctor_nogit_rc}，输出尾行: $(printf '%s\n' "$doctor_nogit_out" | tail -1)"
 fi
+if printf '%s\n' "$doctor_nogit_out" | grep -qxF "foreman: $T/bin/foreman"; then ok "doctor 认出 PATH 上的 foreman 是本脚本"; else bad "doctor PATH 检查" "没找到 foreman: ${T}/bin/foreman"; fi
+mkdir -p "$T/otherbin"; printf '#!/bin/sh\nexit 0\n' > "$T/otherbin/foreman"; chmod +x "$T/otherbin/foreman"
+doctor_dup_out="$(cd "$T/nogit-doctor" && PATH="$T/otherbin:$PATH" FOREMAN_DOCTOR_FAKE=1 FOREMAN_CODEX_HOME="$T/doctor-home" "$F" doctor 2>&1)"
+if printf '%s\n' "$doctor_dup_out" | grep -qF "!! PATH 上的 foreman 是 $T/otherbin/foreman"; then ok "doctor 标出 PATH 上的同名 foreman 不是本脚本"; else bad "doctor 同名 foreman" "输出里没有同名告警"; fi
 if printf '%s\n' "$doctor_nogit_out" | python3 -E -c '
 import sys
 out=sys.stdin.read()
@@ -307,6 +312,7 @@ if [ -n "$req" ]; then
   rm -rf "$rd/hold-release-test" "$rd"/run-88.*
 fi
 expect_grep "status 能跑（无 HOLD）" "本机 codex 线程在跑" "$F" status
+expect_grep "经 PATH 上的软链调用（多跳、相对目标）能定位 skill 目录" "本机 codex 线程在跑" foreman status
 
 # 用两个不同的活 PID 模拟执行体与自动检查，避免 PID 去重掩盖重复计数。
 count_dir="$FOREMAN_HOME/projects/pid-count/issues/test/1"

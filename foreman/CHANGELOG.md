@@ -1,5 +1,11 @@
 # foreman 版本记录
 
+## 1.5.40 — 2026-11-27
+
+- `foreman` 可以加到 PATH：`foreman.sh` 经软链调用时逐跳解析到脚本本身再定位 skill 目录（以前经软链调用会找错目录，加载不到配套脚本）。「第一次用」第一行改为建软链 `ln -sfn ~/.claude/skills/foreman/scripts/foreman.sh ~/.local/bin/foreman`，文档里的 `$FOREMAN` 统一改成 `foreman`，没加 PATH 时退回安装目录下的全路径。
+- `doctor` 检查 PATH 上的 `foreman`：没加时提示建软链；指向的不是本脚本（同名工具或旧安装）时告警。只提示，不自动建。
+- 依据 cookie 2026-11-27「foreman每次用的时候都要写绝对路径，能不能加到path里面」「foreman的setup指导也建议加到path」。
+
 ## 1.5.39 — 2026-11-26
 
 - Codex 实现角色的指定模型由 `gpt-6.2-sol` 改为 `gpt-6.2-astra`，默认推理档仍为 medium。角色表、setup 模板、项目配置示例与自测同步。已有的本机 `config.toml` 不会自动改写，要手动把 `[roles.implement]` 的 `model` 改成新值。

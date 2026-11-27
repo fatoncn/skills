@@ -4,7 +4,16 @@
 # 默认执行器是 codex（app-server 协议）；claude 为 Claude Code CLI 非交互引擎；pi 可选。
 set -euo pipefail
 
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 经 PATH 上的软链（如 ~/.local/bin/foreman）调用时，逐跳解析到脚本本身再定位 skill 目录；
+# 只解析文件这一层，安装目录本身的软链（~/.claude/skills/foreman）保持原样。
+_foreman_self="${BASH_SOURCE[0]}"
+while [ -L "$_foreman_self" ]; do
+  _foreman_link_dir="$(cd "$(dirname "$_foreman_self")" && pwd)"
+  _foreman_self="$(readlink "$_foreman_self")"
+  case "$_foreman_self" in /*) ;; *) _foreman_self="$_foreman_link_dir/$_foreman_self" ;; esac
+done
+SKILL_DIR="$(cd "$(dirname "$_foreman_self")/.." && pwd)"
+unset _foreman_self _foreman_link_dir
 SCRIPT_PATH="$SKILL_DIR/scripts/foreman.sh"
 ASSETS_DIR="$SKILL_DIR/assets"
 PY_APPSERVER="$SKILL_DIR/scripts/codex_appserver.py"
@@ -2943,6 +2952,14 @@ cmd_doctor() {
   python3 -c 'import tomllib' 2>/dev/null || echo "!! python3 需要 3.11+（tomllib）"
   command -v gh >/dev/null && echo "gh:      $(gh --version | head -1)" || echo "!! 缺 gh"
   command -v rg >/dev/null && echo "rg:      $(command -v rg) → $(rg --version | head -1)" || echo "rg:      未装（建议 brew install ripgrep：执行者常先敲 rg，缺它会多耗一轮）"
+  local on_path; on_path="$(command -v foreman 2>/dev/null || true)"
+  if [ -z "$on_path" ]; then
+    echo "foreman: 未加到 PATH（建议 ln -sfn ${SCRIPT_PATH} ~/.local/bin/foreman，该目录须在 PATH 上；之后直接敲 foreman）"
+  elif same_path "$on_path" "$SCRIPT_PATH"; then
+    echo "foreman: ${on_path}"
+  else
+    echo "!! PATH 上的 foreman 是 ${on_path}，不是本脚本（同名工具或旧安装）；先用全路径 ${SCRIPT_PATH}，再调整 PATH 或软链"
+  fi
   if [ -n "$CODEX_BIN" ]; then
     echo "codex:   $CODEX_BIN → $("$CODEX_BIN" --version 2>&1)"
     "$CODEX_BIN" login status 2>&1 | sed 's/^/         /' || true
